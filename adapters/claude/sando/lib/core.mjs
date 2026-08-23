@@ -189,12 +189,13 @@ export function normalizeEvent(input) {
   return event;
 }
 
-export function createReceipt({ host, event, optimization } = {}) {
+export function createReceipt({ host, event, optimization, replacement } = {}) {
   if (typeof host !== 'string' || !host || !event || !optimization?.stats) throw new Error('receipt input is invalid');
   const body = {
     schema: 'sando-receipt/v1', host, eventName: event.eventName, toolName: event.toolName,
     sessionId: event.sessionId ?? null, inputDigest: sha256(textOutput(event.output)),
-    inlineDigest: sha256(optimization.inline), artifactRef: optimization.artifact?.ref ?? null, stats: optimization.stats,
+    inlineDigest: sha256(textOutput(replacement === undefined ? optimization.inline : replacement)),
+    artifactRef: optimization.artifact?.ref ?? null, stats: optimization.stats,
   };
   return { ...body, digest: sha256(stableJson(body)) };
 }

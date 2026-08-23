@@ -51,26 +51,27 @@ export function runHookCli({ host, env = process.env } = {}) {
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
       const optimization = optimizeToolOutput({ toolName: event.toolName, output: event.output, cwd: event.cwd, policy });
-      const receipt = createReceipt({ host, event, optimization });
-      try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
-      if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
-        process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
-        return;
-      }
+      let shaped;
       if (host === 'claude' && policy.mode === 'apply') {
-        const shaped = shapeForClaude({
+        shaped = shapeForClaude({
           original: event.output,
           optimization,
           toolName: event.toolName,
           cwd: event.cwd,
           policy,
         });
-        if (shaped !== undefined) {
-          process.stdout.write(`${JSON.stringify({ hookSpecificOutput: {
-            hookEventName: 'PostToolUse', updatedToolOutput: shaped,
-          } })}\n`);
-          return;
-        }
+      }
+      const receipt = createReceipt({ host, event, optimization, replacement: shaped });
+      try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
+      if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
+        process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
+        return;
+      }
+      if (host === 'claude' && policy.mode === 'apply' && shaped !== undefined) {
+        process.stdout.write(`${JSON.stringify({ hookSpecificOutput: {
+          hookEventName: 'PostToolUse', updatedToolOutput: shaped,
+        } })}\n`);
+        return;
       }
     }
   } catch {}
@@ -94,7 +95,10 @@ export function buildCodexFallback({ optimization, cwd }) {
 function shapeForClaude({ original, optimization, toolName, cwd, policy }) {
   if (typeof original === 'string') return materialize(optimization, cwd);
   if (!original || typeof original !== 'object' || Array.isArray(original)
-    || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')) return undefined;
+    || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')
+    || typeof original.stdout !== 'string' || typeof original.stderr !== 'string'
+    || (Object.hasOwn(original, 'interrupted') && typeof original.interrupted !== 'boolean')
+    || (Object.hasOwn(original, 'isImage') && typeof original.isImage !== 'boolean')) return undefined;
   const result = { ...original };
   if (typeof original.stdout === 'string') {
     result.stdout = materialize(optimizeToolOutput({ toolName, output: original.stdout, cwd, policy }), cwd);

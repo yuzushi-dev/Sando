@@ -20,13 +20,14 @@ const result = optimizeToolOutput({
 });
 ```
 
-`optimizeToolOutput({ toolName, output, cwd, policy })` returns `{ inline, artifact?, stats }`.
+`optimizeToolOutput({ toolName, output, cwd, policy })` returns `{ inline, artifact?, route, reason, stats }`.
 
 - `output` may be text or a JSON value; JSON is serialized deterministically.
 - Small output stays inline. Larger output gets a bounded head/tail view with middle elision and an optional complete redacted artifact.
 - `artifact.content` is returned to the caller; the core does not persist it. `artifact.ref` is content-addressed.
 - Common `Authorization`, API key, access-token, password, secret, and private-key fields are redacted by default.
 - `mode` accepts `apply`, `dry-run`, or `observe`. It is recorded in `stats`; it does not change the deterministic candidate.
+- `route` records the selected tool policy (`passthrough`, `structured`, `artifact`, or eligible `summary`). Routing metadata is not a claim that a host can intercept a built-in result.
 
 `estimateTokens(text)` returns `ceil(UTF-8 bytes / 4)`. It is a deterministic local estimate for comparisons, not provider tokenization or billable usage. `stats` reports exact byte counts and local estimates; it never infers provider savings.
 
@@ -42,6 +43,10 @@ node packages/sando/src/metrics-cli.mjs --json
 ```
 
 The JSON report is `sando-report/v1`. `estimatedTransformSavingsTokens` is based on the local byte estimate. `providerReportedSavingsTokens` is `null` unless paired provider counters are supplied.
+
+`src/provider-ledger.mjs` is separate accounting infrastructure for provider prompt/output and cache-read/cache-write counters. It does not calculate savings or parse provider-native responses.
+
+`spikes/context-lifecycle/` and `spikes/provider-routing/` are experimental, host-independent prototypes; they are not wired into Claude Code or Codex.
 
 ## Test
 

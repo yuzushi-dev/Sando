@@ -8,7 +8,7 @@ Repo-local or copied/cache Claude Code plugin bundle.
 claude --plugin-dir "$PWD/adapters/claude/sando"
 ```
 
-The `PostToolUse` hook is observational by default and records receipts and metrics. Set `SANDO_MODE=apply` to replace Claude output for string results and Bash-shaped results containing `stdout` and `stderr`. Other structured result shapes remain unchanged. `SANDO_MODE=dry-run` prepares and records a candidate without replacing the result.
+The `PostToolUse` hook is observational by default and records receipts and metrics. Set `SANDO_MODE=apply` to replace Claude output for string results and Bash-shaped objects with string `stdout` and `stderr` fields. Optional `interrupted` and `isImage` fields must be booleans; other structured result shapes remain unchanged. `SANDO_MODE=dry-run` prepares and records a candidate without replacing the result.
 
 When replacement produces an artifact reference, the adapter writes the complete redacted artifact atomically under `cwd/.sando/sando/artifacts` with private file permissions. The core itself does not write artifacts.
 
@@ -24,3 +24,11 @@ node adapters/claude/sando/metrics.mjs --json
 The report uses `sando-report/v1` and separates local transform estimates from provider-reported savings. See [`packages/sando/README.md`](../../../packages/sando/README.md) for the core API.
 
 No Claude configuration or marketplace entry is changed.
+
+Run the adapter-boundary probe with its captured PostToolUse fixture:
+
+```sh
+node adapters/claude/sando/tests/e2e-probe.mjs
+```
+
+It verifies replacement, artifact resolution, and receipt alignment without making a Claude or provider request.

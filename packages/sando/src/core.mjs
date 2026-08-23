@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
+
 const DEFAULT_POLICY = Object.freeze({
   mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 65536, headBytes: undefined, tailBytes: undefined,
   maxColumns: 768, redact: true,
@@ -115,18 +117,36 @@ export function normalizePolicy(policy = {}) {
   return result;
 }
 
-export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
+export function optimizeToolOutput({
+  toolName, output, cwd, policy, selector, raw, lineCount, fileBytes, prose, summarizeProse,
+  summarizeEnabled, grepScope, outputBytes,
+} = {}) {
   if (typeof toolName !== 'string' || !toolName.trim() || toolName.length > 128) throw new Error('toolName is invalid');
   if (typeof cwd !== 'string' || !cwd) throw new Error('cwd is invalid');
   const normalizedPolicy = normalizePolicy(policy);
   const input = textOutput(output);
+  const route = planToolRoute({
+    toolName, selector, raw, lineCount, fileBytes, prose, summarizeProse, summarizeEnabled, grepScope,
+    outputBytes: outputBytes ?? Buffer.byteLength(input),
+  });
+  const routePolicy = route.route === 'artifact' || route.route === 'structured'
+    ? {
+      ...normalizedPolicy,
+      ...(route.route === 'artifact' ? {
+        maxInlineBytes: Math.min(normalizedPolicy.maxInlineBytes, route.limits.headBytes + route.limits.tailBytes),
+        headBytes: Math.min(normalizedPolicy.headBytes, route.limits.headBytes),
+        tailBytes: Math.min(normalizedPolicy.tailBytes, route.limits.tailBytes),
+      } : {}),
+      maxColumns: Math.min(normalizedPolicy.maxColumns, route.limits.maxColumns),
+    }
+    : normalizedPolicy;
   const redacted = normalizedPolicy.redact ? redact(input) : { text: input, count: 0 };
   const sourceBytes = Buffer.byteLength(redacted.text);
   let inline = redacted.text;
   let artifact;
-  const hasLongLine = normalizedPolicy.maxColumns > 0
-    && redacted.text.split('\n').some((line) => Buffer.byteLength(line) > normalizedPolicy.maxColumns);
-  if (sourceBytes > normalizedPolicy.maxInlineBytes || hasLongLine) {
+  const hasLongLine = routePolicy.maxColumns > 0
+    && redacted.text.split('\n').some((line) => Buffer.byteLength(line) > routePolicy.maxColumns);
+  if (route.route === 'artifact' || sourceBytes > routePolicy.maxInlineBytes || hasLongLine) {
     const sourceDigest = sha256(redacted.text);
     artifact = {
       schema: 'sando-artifact/v1',
@@ -140,15 +160,15 @@ export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
       truncated: false,
     };
     const header = `artifact ${artifact.ref} ${artifact.bytes}B\n`;
-    const viewBudget = Math.max(1, normalizedPolicy.maxInlineBytes - Buffer.byteLength(header));
-    inline = `${truncateUtf8(header, normalizedPolicy.maxInlineBytes)}${inlineView(
+    const viewBudget = Math.max(1, routePolicy.maxInlineBytes - Buffer.byteLength(header));
+    inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
       redacted.text,
       viewBudget,
-      normalizedPolicy.headBytes,
-      normalizedPolicy.tailBytes,
-      normalizedPolicy.maxColumns,
+      routePolicy.headBytes,
+      routePolicy.tailBytes,
+      routePolicy.maxColumns,
     )}`;
-    inline = truncateUtf8(inline, normalizedPolicy.maxInlineBytes);
+    inline = truncateUtf8(inline, routePolicy.maxInlineBytes);
   }
   const stats = {
     mode: normalizedPolicy.mode,
@@ -161,7 +181,9 @@ export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
     redactions: redacted.count,
     artifactTruncated: artifact?.truncated ?? false,
   };
-  return artifact ? { inline, artifact, stats } : { inline, stats };
+  const result = { inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION, stats };
+  if (artifact) result.artifact = artifact;
+  return result;
 }
 
 export function normalizeEvent(input) {
@@ -189,12 +211,14 @@ export function normalizeEvent(input) {
   return event;
 }
 
-export function createReceipt({ host, event, optimization } = {}) {
+export function createReceipt({ host, event, optimization, replacement } = {}) {
   if (typeof host !== 'string' || !host || !event || !optimization?.stats) throw new Error('receipt input is invalid');
   const body = {
     schema: 'sando-receipt/v1', host, eventName: event.eventName, toolName: event.toolName,
     sessionId: event.sessionId ?? null, inputDigest: sha256(textOutput(event.output)),
-    inlineDigest: sha256(optimization.inline), artifactRef: optimization.artifact?.ref ?? null, stats: optimization.stats,
+    inlineDigest: sha256(textOutput(replacement === undefined ? optimization.inline : replacement)), artifactRef: optimization.artifact?.ref ?? null,
+    route: optimization.route ?? 'passthrough', reason: optimization.reason ?? 'spike-default',
+    policyVersion: optimization.policyVersion ?? ROUTING_POLICY_VERSION, stats: optimization.stats,
   };
   return { ...body, digest: sha256(stableJson(body)) };
 }

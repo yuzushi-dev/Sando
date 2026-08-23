@@ -7,10 +7,11 @@
     "node": ">=22.22.0 <23"
   },
   "scripts": {
-    "test": "npm run test:package && npm run test:benchmark && npm run test:spikes",
+    "test": "npm run test:package && npm run test:benchmark && npm run test:spikes && npm run test:bundles",
     "test:package": "node --test --test-concurrency=1 packages/sando/tests/*.test.mjs",
     "test:benchmark": "node --test --test-concurrency=1 benchmarks/tests/*.test.mjs",
-    "test:spikes": "node --test --test-concurrency=1 spikes/routing/tests/*.test.mjs spikes/status-bar/statusline.test.mjs",
+    "test:spikes": "node --test --test-concurrency=1 spikes/routing/tests/*.test.mjs spikes/status-bar/statusline.test.mjs spikes/context-lifecycle/tests/*.test.mjs spikes/provider-routing/tests/*.test.mjs",
+    "test:bundles": "node --test --test-concurrency=1 adapters/claude/sando/tests/*.test.mjs plugins/sando/tests/*.test.mjs",
     "benchmark:local": "node benchmarks/run-local.mjs",
     "benchmark:live": "node benchmarks/live/run-live.mjs",
     "check": "node --check packages/sando/src/core.mjs && node --check packages/sando/src/hook-cli.mjs && node --check packages/sando/src/mcp-server.mjs && node --check packages/sando/src/metrics-cli.mjs"

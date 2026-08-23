@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "event_id": "fixture-event",
+  "session_id": "fixture-session",
+  "cwd": "__PROBE_CWD__",
+  "tool_response": {
+    "stdout": "Authorization: Bearer fixture-secret\nHEAD-FACT\nnoise-1\nnoise-2\nnoise-3\nnoise-4\nnoise-5\nnoise-6\nnoise-7\nnoise-8\nnoise-9\nnoise-10\nTAIL-FACT",
+    "stderr": "ERROR: tail failure",
+    "interrupted": false,
+    "isImage": false
+  }
+}
