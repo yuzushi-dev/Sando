@@ -1,0 +1,24 @@
+{
+  "name": "sando",
+  "version": "0.1.0",
+  "description": "Deterministic local tool-output preparation for token-efficiency experiments.",
+  "author": {
+    "name": "Sando contributors"
+  },
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Sando",
+    "shortDescription": "Prepare bounded tool-output references",
+    "longDescription": "Observe tool output and prepare deterministic, redacted, bounded inline output and artifact payloads without network access or LLM compression.",
+    "developerName": "Independent",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read-only MCP tools",
+      "PostToolUse observation",
+      "Deterministic receipts"
+    ],
+    "defaultPrompt": [
+      "Prepare this tool output with Sando."
+    ]
+  }
+}

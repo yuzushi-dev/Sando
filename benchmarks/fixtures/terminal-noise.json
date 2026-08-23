@@ -1,0 +1,23 @@
+{
+  "id": "terminal-noise",
+  "description": "Large repetitive command output with a credential-shaped value.",
+  "events": [
+    {
+      "id": "shell-1",
+      "toolName": "Bash",
+      "path": "logs/build.log",
+      "requiredFacts": ["compile: module stable"],
+      "output": {
+        "repeat": "compile: module stable; warning: cache miss;\n",
+        "count": 400
+      }
+    },
+    {
+      "id": "shell-2",
+      "toolName": "Bash",
+      "path": "logs/env.log",
+      "requiredFacts": ["status=ok"],
+      "output": "status=ok\nAPI_KEY=sk-test-012345678901234567890123456789\n"
+    }
+  ]
+}

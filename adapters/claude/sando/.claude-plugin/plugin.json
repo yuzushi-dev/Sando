@@ -1,0 +1,8 @@
+{
+  "name": "sando",
+  "version": "0.1.0",
+  "description": "Observe Claude Code tool output and expose deterministic read-only output preparation over MCP.",
+  "author": {
+    "name": "Sando contributors"
+  }
+}
