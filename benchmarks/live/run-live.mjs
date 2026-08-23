@@ -142,7 +142,10 @@ async function main() {
   requireConfirmation();
   const host = option('host');
   if (!['claude', 'codex'].includes(host)) throw new Error('--host must be claude or codex');
-  if (host === 'claude' && !option('max-budget-usd')) throw new Error('Claude live benchmark requires --max-budget-usd');
+  const unlimitedBudget = process.argv.includes('--unlimited-budget');
+  if (host === 'claude' && !option('max-budget-usd') && !unlimitedBudget) {
+    throw new Error('Claude live benchmark requires --max-budget-usd or --unlimited-budget');
+  }
   const repetitions = Number(option('repetitions', '2'));
   if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 10) throw new Error('--repetitions must be 1..10');
   const scenario = await loadScenario(path.join(ROOT, 'benchmarks', 'fixtures', option('scenario', 'terminal-noise') + '.json'));
@@ -173,7 +176,7 @@ async function main() {
       }
       const prompt = promptFor(contexts.join('\n\n'));
       const args = host === 'claude'
-        ? buildClaudeArgs({ prompt, model: option('model'), maxBudgetUsd: option('max-budget-usd') })
+        ? buildClaudeArgs({ prompt, model: option('model'), maxBudgetUsd: unlimitedBudget ? undefined : option('max-budget-usd') })
         : buildCodexArgs({ prompt, model: option('model') });
       if (host === 'claude' && variant === 'optimized' && option('claude-plugin-dir')) {
         args.splice(-1, 0, '--plugin-dir', path.resolve(option('claude-plugin-dir')));

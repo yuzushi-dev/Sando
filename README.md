@@ -55,7 +55,7 @@ Live benchmarks consume quota and require explicit confirmation:
 
 ```sh
 npm run benchmark:live -- --host claude --model sonnet \
-  --max-budget-usd 0.25 \
+  --unlimited-budget \
   --claude-plugin-dir adapters/claude/sando --confirm-cost
 ```
 

@@ -1,0 +1,18 @@
+{
+  "id": "git-history",
+  "description": "Long git history and diff-stat output with a current branch marker and tail warning.",
+  "events": [
+    {
+      "id": "git-log",
+      "toolName": "Bash",
+      "command": "git log --stat --oneline",
+      "requiredFacts": ["HEAD -> main", "commit a1b2c3d", "warning: shallow clone"],
+      "output": {
+        "prefix": "commit a1b2c3d (HEAD -> main)\nAuthor: Sando Bot\n",
+        "repeat": "    update fixture coverage\n src/module.mjs | 4 ++--\n",
+        "count": 260,
+        "suffix": "warning: shallow clone; history may be incomplete\n"
+      }
+    }
+  ]
+}

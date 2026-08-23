@@ -1,0 +1,18 @@
+{
+  "id": "api-response",
+  "description": "Large JSON API response with repeated records and a compact pagination tail.",
+  "events": [
+    {
+      "id": "api-fetch",
+      "toolName": "Bash",
+      "command": "curl -s https://api.example.test/items",
+      "requiredFacts": ["\"status\": \"ok\"", "\"page\": 7", "\"next\": null"],
+      "output": {
+        "prefix": "{\"status\": \"ok\", \"items\": [\n",
+        "repeat": "  {\"id\": 42, \"name\": \"fixture-item\", \"active\": true},\n",
+        "count": 260,
+        "suffix": "], \"page\": 7, \"next\": null}\n"
+      }
+    }
+  ]
+}

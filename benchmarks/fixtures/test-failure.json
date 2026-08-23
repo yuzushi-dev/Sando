@@ -1,0 +1,18 @@
+{
+  "id": "test-failure",
+  "description": "Verbose test runner output with passing cases followed by a deterministic failure summary.",
+  "events": [
+    {
+      "id": "test-run",
+      "toolName": "Bash",
+      "command": "npm test",
+      "requiredFacts": ["Test Suites: 42 passed", "FAIL src/auth.test.mjs", "Expected: 200"],
+      "output": {
+        "prefix": "Test Suites: 42 passed\n",
+        "repeat": "  PASS src/module.test.mjs\n  ✓ handles input\n",
+        "count": 240,
+        "suffix": "FAIL src/auth.test.mjs\nExpected: 200\nReceived: 500\n"
+      }
+    }
+  ]
+}

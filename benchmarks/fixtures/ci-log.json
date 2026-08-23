@@ -1,0 +1,18 @@
+{
+  "id": "ci-log",
+  "description": "Continuous-integration log with repeated job progress and a final deployment gate result.",
+  "events": [
+    {
+      "id": "ci-job",
+      "toolName": "Bash",
+      "command": "ci run --job release",
+      "requiredFacts": ["Job release started", "coverage: 91.4%", "deployment gate: passed"],
+      "output": {
+        "prefix": "Job release started\nrunner=linux-x64\n",
+        "repeat": "[info] restoring dependency cache\n[info] running build step\n",
+        "count": 270,
+        "suffix": "coverage: 91.4%\ndeployment gate: passed\n"
+      }
+    }
+  ]
+}

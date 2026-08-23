@@ -1,0 +1,18 @@
+{
+  "id": "monorepo-search",
+  "description": "High-volume repository search results with matches across packages and a final relevant file.",
+  "events": [
+    {
+      "id": "search-symbol",
+      "toolName": "Grep",
+      "path": "packages/",
+      "requiredFacts": ["packages/core/src/index.ts:12", "packages/cli/src/main.ts:88", "packages/api/src/routes.ts:201"],
+      "output": {
+        "prefix": "packages/core/src/index.ts:12:export function optimize\n",
+        "repeat": "packages/shared/src/types.ts:4:export type Result = Output\n",
+        "count": 300,
+        "suffix": "packages/api/src/routes.ts:201:return optimize(request.body)\npackages/cli/src/main.ts:88:const result = optimize(input)\n"
+      }
+    }
+  ]
+}

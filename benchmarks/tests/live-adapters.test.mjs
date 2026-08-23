@@ -89,6 +89,23 @@ test('failure reports preserve repository Git provenance outside repository cwd'
   }
 });
 
+test('unlimited Claude budget bypasses the per-call budget requirement', () => {
+  const runner = path.join(REPOSITORY_ROOT, 'benchmarks/live/run-live.mjs');
+  let error;
+  try {
+    execFileSync(process.execPath, [
+      runner,
+      '--host', 'claude',
+      '--unlimited-budget',
+      '--confirm-cost',
+      '--repetitions', '0',
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.match(error?.stderr ?? '', /--repetitions must be 1\.\.10/);
+});
+
 test('blocks prompt-level live reports without model, artifact, and leak evidence', async () => {
   const output = await reportWithRuns([liveRun('baseline'), liveRun('optimized')]);
   assert.equal(output.status, 'blocked');

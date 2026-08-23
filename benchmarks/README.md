@@ -34,8 +34,9 @@ For Claude, effective input is normalized as
 the provider reports those counters separately. Codex's `input_tokens` is kept
 as reported and `cached_input_tokens` is recorded separately.
 
-The live command requires an explicit `--confirm-cost`. Claude can load the
-local plugin with `--claude-plugin-dir`; the current live harness remains a
+The live command requires an explicit `--confirm-cost`. Claude accepts either
+`--max-budget-usd` or explicit `--unlimited-budget`. It can load the local
+plugin with `--claude-plugin-dir`; the current live harness remains a
 `prompt-level` A/B even when that directory is supplied because it disables
 tools and does not exercise a host PostToolUse lifecycle. Codex's provider
 measurement is also prompt-level; its feedback fallback is not transparent
@@ -52,3 +53,6 @@ npm run benchmark:live -- --host claude --model sonnet --max-budget-usd 0.25 \
   --claude-plugin-dir adapters/claude/sando --confirm-cost
 npm run benchmark:live -- --host codex --scenario terminal-noise --confirm-cost
 ```
+
+For an externally stopped Claude campaign, replace `--max-budget-usd 0.25`
+with `--unlimited-budget`.
