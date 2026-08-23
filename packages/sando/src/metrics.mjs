@@ -35,8 +35,8 @@ function optionalString(value) {
   return typeof value === 'string' && value ? value : null;
 }
 
-function integer(value, name, { min = 0 } = {}) {
-  if (!Number.isInteger(value) || value < min) throw new Error(`metrics input has invalid ${name}`);
+function integer(value, name, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`metrics input has invalid ${name}`);
   return value;
 }
 
@@ -76,14 +76,19 @@ function emptyState(timezone) {
 
 function validateRecord(record) {
   if (!record || typeof record !== 'object' || typeof record.eventKey !== 'string'
-    || typeof record.receiptDigest !== 'string' || typeof record.at !== 'string'
-    || typeof record.host !== 'string') throw new Error('metrics state contains an invalid record');
+    || !record.eventKey || typeof record.receiptDigest !== 'string' || !record.receiptDigest
+    || typeof record.at !== 'string' || typeof record.host !== 'string' || !record.host) {
+    throw new Error('metrics state contains an invalid record');
+  }
   if (Number.isNaN(new Date(record.at).getTime())) throw new Error('metrics state contains an invalid timestamp');
   integer(record.estimatedInputTokens, 'estimatedInputTokens');
   integer(record.estimatedInlineTokens, 'estimatedInlineTokens');
-  if (!Number.isInteger(record.estimatedTransformSavingsTokens)) throw new Error('metrics state contains invalid savings');
+  if (!Number.isSafeInteger(record.estimatedTransformSavingsTokens)) throw new Error('metrics state contains invalid savings');
+  if (record.estimatedTransformSavingsTokens !== record.estimatedInputTokens - record.estimatedInlineTokens) {
+    throw new Error('metrics state contains invalid savings');
+  }
   if (record.providerReportedSavingsTokens !== null
-    && !Number.isInteger(record.providerReportedSavingsTokens)) throw new Error('metrics state contains invalid provider savings');
+    && !Number.isSafeInteger(record.providerReportedSavingsTokens)) throw new Error('metrics state contains invalid provider savings');
 }
 
 function validateState(value, requestedTimezone) {
@@ -92,10 +97,16 @@ function validateState(value, requestedTimezone) {
   validateTimezone(value.timezone);
   if (requestedTimezone && requestedTimezone !== value.timezone) throw new Error('metrics timezone mismatch');
   const seen = new Set();
+  const seenReceipts = new Set();
   for (const record of value.records) {
     validateRecord(record);
     if (seen.has(record.eventKey)) throw new Error('metrics state contains duplicate events');
+    const receiptKey = `${record.host}\0${record.receiptDigest}`;
+    if (!record.eventKey.startsWith('event:') && seenReceipts.has(receiptKey)) {
+      throw new Error('metrics state contains duplicate receipts');
+    }
     seen.add(record.eventKey);
+    if (!record.eventKey.startsWith('event:')) seenReceipts.add(receiptKey);
   }
   return value;
 }
@@ -141,15 +152,24 @@ function withLock(lockPath, operation) {
 function atomicWrite(filePath, value) {
   assertRegularFile(filePath);
   const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-  const handle = fs.openSync(temporary, 'wx', 0o600);
+  let handle;
+  let renamed = false;
   try {
+    handle = fs.openSync(temporary, 'wx', 0o600);
     fs.writeFileSync(handle, `${JSON.stringify(value, null, 2)}\n`);
     fs.fsyncSync(handle);
-  } finally {
     fs.closeSync(handle);
+    handle = undefined;
+    fs.chmodSync(temporary, 0o600);
+    fs.renameSync(temporary, filePath);
+    renamed = true;
+  } finally {
+    try {
+      if (handle !== undefined) fs.closeSync(handle);
+    } finally {
+      if (!renamed) fs.rmSync(temporary, { force: true });
+    }
   }
-  fs.chmodSync(temporary, 0o600);
-  fs.renameSync(temporary, filePath);
   try {
     const directoryHandle = fs.openSync(path.dirname(filePath), 'r');
     try { fs.fsyncSync(directoryHandle); } finally { fs.closeSync(directoryHandle); }
@@ -204,7 +224,7 @@ function makeRecord({ host, event, receipt, optimization, now }) {
   const eventId = optionalString(event.eventId);
   const eventKey = eventId
     ? `event:${sha256(`${host}\0${eventId}`)}`
-    : `receipt:${receipt.digest}`;
+    : `receipt:${sha256(`${host}\0${receipt.digest}`)}`;
   const timestamp = dateValue(event.timestamp, now).toISOString();
   return {
     eventKey,
@@ -230,7 +250,9 @@ export function recordMetrics({ storagePath = defaultMetricsPath(), timezone, ho
   return withLock(lockPath, () => {
     const state = readMetrics(filePath, { timezone });
     const record = makeRecord({ host, event, receipt, optimization, now });
-    if (state.records.some((candidate) => candidate.eventKey === record.eventKey)) return state;
+    if (state.records.some((candidate) => candidate.eventKey === record.eventKey
+      || (!record.eventKey.startsWith('event:')
+        && candidate.host === record.host && candidate.receiptDigest === record.receiptDigest))) return state;
     state.records.push(record);
     atomicWrite(filePath, state);
     return state;
@@ -241,8 +263,14 @@ function sessionKey(record) {
   return `${record.host}\0${record.sessionId ?? '<unknown>'}`;
 }
 
+function addSafe(left, right) {
+  const total = left + right;
+  if (!Number.isSafeInteger(total)) throw new Error('metrics aggregate overflow');
+  return total;
+}
+
 function sum(records, field) {
-  return records.reduce((total, record) => total + record[field], 0);
+  return records.reduce((total, record) => addSafe(total, record[field]), 0);
 }
 
 function providerSum(records) {
@@ -290,7 +318,7 @@ function averageBySession(records) {
     providerSessionCount: providerSessions.length,
     estimatedTransformSavingsTokens: sessions.size ? sum(records, 'estimatedTransformSavingsTokens') / sessions.size : 0,
     providerReportedSavingsTokens: providerSessions.length
-      ? providerSessions.reduce((total, group) => total + providerSum(group), 0) / providerSessions.length
+      ? providerSessions.reduce((total, group) => addSafe(total, providerSum(group)), 0) / providerSessions.length
       : null,
   };
 }

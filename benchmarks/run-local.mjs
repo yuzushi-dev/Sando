@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { auditMetadata } from './lib/audit.mjs';
+import { auditMetadata, digestPrompt } from './lib/audit.mjs';
 import { assertQualityGate, estimateTokens, evaluateFacts, summarizeRuns } from './lib/metrics.mjs';
 import { loadScenario, replayScenario } from './lib/replay.mjs';
 
@@ -44,12 +44,16 @@ async function main() {
     throw new Error('--repetitions must be an integer from 1 to 20');
   }
   const selected = option('scenario');
+  if (selected && !/^[A-Za-z0-9_-]+$/.test(selected)) throw new Error('--scenario must be a fixture id');
   const fixtureNames = selected ? [`${selected}.json`] : ['read-large.json', 'terminal-noise.json'];
   const runs = [];
   const receipts = [];
+  const scenarioDigests = new Map();
+  const generatedAt = new Date().toISOString();
 
   for (const fixtureName of fixtureNames) {
     const scenario = await loadScenario(path.join(FIXTURES, fixtureName));
+    scenarioDigests.set(scenario.id, digestPrompt(JSON.stringify(scenario)));
     for (let repetition = 0; repetition < repetitions; repetition += 1) {
       const baseline = await replayScenario(scenario, async (event) => ({
         inline: event.output,
@@ -74,6 +78,8 @@ async function main() {
             scenario: scenario.id,
             repetition,
             variant,
+            measurement: 'local-replay',
+            tokenAccounting: 'estimate',
             event: receipt.event,
             inputTokens: estimateTokens(receipt.inline),
             inlineBytes,
@@ -84,7 +90,7 @@ async function main() {
             artifactResolvable: variant === 'baseline' || !receipt.artifact || artifact.length > 0,
             secretLeak: variant === 'optimized' && secretLeak(`${receipt.inline}\n${artifact}`),
           };
-          eventRuns.push(record);
+          eventRuns.push({ ...record, inline: receipt.inline });
           receipts.push({ ...record, artifact: receipt.artifact });
         }
       }
@@ -93,12 +99,25 @@ async function main() {
         const prompt = records.map((record) => record.inline).join('\n\n');
         const audit = auditMetadata({
           host: 'local', variant, prompt, args: [], result: {}, cwd: ROOT,
+          scenarioDigest: scenarioDigests.get(scenario.id), resolvedModel: null, clientVersion: null,
+          now: generatedAt,
           measurement: { mode: 'local-replay', hookEndToEnd: false },
         });
+        audit.tokenAccounting = {
+          source: 'estimate',
+          formula: 'ceil(UTF-8 bytes / 4)',
+          providerObserved: false,
+        };
         runs.push({
+          host: 'local',
           scenario: scenario.id,
           repetition,
           variant,
+          resolvedModel: null,
+          clientVersion: null,
+          scenarioDigest: scenarioDigests.get(scenario.id),
+          measurement: 'local-replay',
+          tokenAccounting: 'estimate',
           inputTokens: records.reduce((total, record) => total + record.inputTokens, 0),
           inlineBytes: records.reduce((total, record) => total + record.inlineBytes, 0),
           artifactBytes: records.reduce((total, record) => total + record.artifactBytes, 0),
@@ -128,9 +147,21 @@ async function main() {
       schema: 'sando-audit/v1',
       timestamp: runs[0]?.audit?.timestamp ?? new Date().toISOString(),
       commit: runs[0]?.audit?.commit ?? null,
+      workingTreeDirty: runs[0]?.audit?.workingTreeDirty ?? null,
+      diffDigest: runs[0]?.audit?.diffDigest ?? null,
+      workingTreeProvenance: runs[0]?.audit?.workingTreeProvenance ?? 'unknown',
       environment: runs[0]?.audit?.environment ?? null,
       measurement: { mode: 'local-replay', hookEndToEnd: false },
+      tokenAccounting: {
+        source: 'estimate',
+        formula: 'ceil(UTF-8 bytes / 4)',
+        providerObserved: false,
+      },
       note: 'Provider-free transform estimate; no provider prompt or usage counter was observed.',
+    },
+    inputs: {
+      scenarios: [...scenarioDigests.entries()].map(([id, digest]) => ({ id, digest })),
+      repetitions,
     },
     runs, summary: summarizeRuns(runs), receipts,
   };

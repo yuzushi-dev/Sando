@@ -9,6 +9,7 @@ import test from 'node:test';
 import {
   buildMetricsReport,
   formatMetricsReport,
+  optimizeToolOutput,
   readMetrics,
   recordMetrics,
 } from '../index.mjs';
@@ -20,15 +21,15 @@ function tempMetricsPath() {
   return { directory, storagePath: path.join(directory, 'metrics.json') };
 }
 
-function input({ id, sessionId, timestamp, estimatedInputTokens = 100, estimatedInlineTokens = 60, providerUsage }) {
+function input({ id, eventId = id, sessionId, timestamp, host = 'claude', receiptDigest = `sha256:${id}`, estimatedInputTokens = 100, estimatedInlineTokens = 60, providerUsage }) {
   return {
-    host: 'claude',
+    host,
     event: {
       eventName: 'PostToolUse',
       toolName: 'Read',
       output: 'secret=secret-value',
       cwd: '/tmp',
-      eventId: id,
+      eventId,
       sessionId,
       timestamp,
       client: 'Claude Code',
@@ -36,7 +37,7 @@ function input({ id, sessionId, timestamp, estimatedInputTokens = 100, estimated
       model: 'claude-opus-5',
       ...(providerUsage ? { providerUsage } : {}),
     },
-    receipt: { digest: `sha256:${id}` },
+    receipt: { digest: receiptDigest },
     optimization: { inline: 'bounded', stats: { estimatedInputTokens, estimatedInlineTokens } },
   };
 }
@@ -106,6 +107,143 @@ test('repeated receipts are counted once and savings aggregate by session', () =
   assert.equal(report.periods.monthly.history.length, 2);
   assert.match(formatMetricsReport(report), /estimated transform savings/);
   assert.match(formatMetricsReport(report), /provider-reported savings/);
+});
+
+test('distinct event ids are recorded despite identical receipt digests', () => {
+  const { storagePath } = tempMetricsPath();
+  record(storagePath, { id: 'first', sessionId: 's', timestamp: '2026-02-01T00:00:00.000Z', receiptDigest: 'sha256:shared' });
+  record(storagePath, { id: 'retry', sessionId: 's', timestamp: '2026-02-01T00:00:01.000Z', receiptDigest: 'sha256:shared' });
+  record(storagePath, { id: 'other-host', host: 'codex', sessionId: 's', timestamp: '2026-02-01T00:00:02.000Z', receiptDigest: 'sha256:shared' });
+
+  assert.equal(readMetrics(storagePath).records.length, 3);
+});
+
+test('receipt-backed duplicates remain deduplicated', () => {
+  const { storagePath } = tempMetricsPath();
+  record(storagePath, { id: 'first', eventId: null, sessionId: 's', timestamp: '2026-02-01T00:00:00.000Z', receiptDigest: 'sha256:shared' });
+  record(storagePath, { id: 'retry', eventId: null, sessionId: 's', timestamp: '2026-02-01T00:00:01.000Z', receiptDigest: 'sha256:shared' });
+
+  assert.equal(readMetrics(storagePath).records.length, 1);
+});
+
+test('redaction expansion is recorded as signed transform savings', () => {
+  const { storagePath } = tempMetricsPath();
+  const optimization = optimizeToolOutput({
+    toolName: 'Read', output: 'secret=x', cwd: '/tmp', policy: { mode: 'apply', redact: true },
+  });
+
+  assert.equal(optimization.inline, 'secret=[REDACTED]');
+  assert.ok(optimization.stats.estimatedInlineTokens > optimization.stats.estimatedInputTokens);
+  recordMetrics({
+    storagePath,
+    timezone: 'UTC',
+    host: 'claude',
+    event: { eventName: 'PostToolUse', toolName: 'Read', output: 'secret=x', cwd: '/tmp', eventId: 'expanded-redaction', timestamp: '2026-02-01T00:00:00.000Z' },
+    receipt: { digest: 'sha256:expanded-redaction' },
+    optimization,
+  });
+
+  const state = readMetrics(storagePath);
+  assert.equal(state.records[0].estimatedTransformSavingsTokens, -3);
+  assert.equal(buildMetricsReport(state).cumulative.estimatedTransformSavingsTokens, -3);
+});
+
+test('v1 validation accepts event-backed duplicate receipts and rejects receipt-backed duplicates', () => {
+  const { storagePath } = tempMetricsPath();
+  const recordState = (eventKey) => ({
+    eventKey, receiptDigest: 'sha256:shared', at: '2026-02-01T00:00:00.000Z', host: 'claude',
+    sessionId: 's', client: null, clientVersion: null, model: null,
+    estimatedInputTokens: 10, estimatedInlineTokens: 5, estimatedTransformSavingsTokens: 5,
+    providerReportedSavingsTokens: null,
+  });
+  const state = (records) => ({ schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records });
+
+  fs.writeFileSync(storagePath, JSON.stringify(state([recordState('event:one'), recordState('event:two')])));
+  assert.equal(readMetrics(storagePath).records.length, 2);
+
+  fs.writeFileSync(storagePath, JSON.stringify(state([recordState('receipt:one'), recordState('receipt:two')])));
+  assert.throws(() => readMetrics(storagePath), /duplicate receipts/);
+});
+
+test('unsafe token counts and inconsistent savings are rejected while signed savings are accepted', () => {
+  const { storagePath } = tempMetricsPath();
+  assert.throws(() => record(storagePath, {
+    id: 'unsafe', sessionId: 's', timestamp: '2026-02-01T00:00:00.000Z',
+    estimatedInputTokens: Number.MAX_SAFE_INTEGER + 1,
+  }), /estimatedInputTokens/);
+  assert.throws(() => record(storagePath, {
+    id: 'unsafe-inline', sessionId: 's', timestamp: '2026-02-01T00:00:00.000Z',
+    estimatedInlineTokens: Number.MAX_SAFE_INTEGER + 1,
+  }), /estimatedInlineTokens/);
+
+  fs.writeFileSync(storagePath, JSON.stringify({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: [{
+      eventKey: 'event:one', receiptDigest: 'sha256:one', at: '2026-02-01T00:00:00.000Z', host: 'claude',
+      sessionId: 's', client: null, clientVersion: null, model: null,
+      estimatedInputTokens: 10, estimatedInlineTokens: 5, estimatedTransformSavingsTokens: 4,
+      providerReportedSavingsTokens: null,
+    }],
+  }));
+  assert.throws(() => readMetrics(storagePath), /invalid savings/);
+
+  fs.writeFileSync(storagePath, JSON.stringify({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: [{
+      eventKey: 'event:one', receiptDigest: 'sha256:one', at: '2026-02-01T00:00:00.000Z', host: 'claude',
+      sessionId: 's', client: null, clientVersion: null, model: null,
+      estimatedInputTokens: 5, estimatedInlineTokens: 6, estimatedTransformSavingsTokens: -1,
+      providerReportedSavingsTokens: null,
+    }],
+  }));
+  assert.equal(readMetrics(storagePath).records[0].estimatedTransformSavingsTokens, -1);
+});
+
+test('rollups reject unsafe cumulative, session, and period sums', () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  const records = ({ estimatedInputTokens = max, estimatedTransformSavingsTokens = max, providerReportedSavingsTokens = null } = {}) => [1, 2].map((id) => ({
+    eventKey: `event:${id}`,
+    receiptDigest: `sha256:${id}`,
+    at: `2026-02-01T00:00:0${id}.000Z`,
+    host: 'claude',
+    sessionId: `s${id}`,
+    client: null,
+    clientVersion: null,
+    model: null,
+    estimatedInputTokens,
+    estimatedInlineTokens: estimatedInputTokens - estimatedTransformSavingsTokens,
+    estimatedTransformSavingsTokens,
+    providerReportedSavingsTokens,
+  }));
+
+  assert.throws(() => buildMetricsReport({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: records(),
+  }), /aggregate overflow/);
+  assert.throws(() => buildMetricsReport({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: records({
+      estimatedInputTokens: 0, estimatedTransformSavingsTokens: 0, providerReportedSavingsTokens: max,
+    }),
+  }), /aggregate overflow/);
+
+  const sessionOverflow = records({
+    estimatedInputTokens: 0, estimatedTransformSavingsTokens: 0, providerReportedSavingsTokens: null,
+  });
+  sessionOverflow[0].providerReportedSavingsTokens = -max;
+  sessionOverflow[1].providerReportedSavingsTokens = max;
+  sessionOverflow.push({ ...sessionOverflow[1], eventKey: 'event:3', receiptDigest: 'sha256:3', at: '2026-02-01T00:00:03.000Z' });
+  assert.throws(() => buildMetricsReport({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: sessionOverflow,
+  }), /aggregate overflow/);
+
+  const periodOverflow = records({
+    estimatedInputTokens: 0, estimatedTransformSavingsTokens: 0, providerReportedSavingsTokens: null,
+  });
+  periodOverflow[0].at = '2026-02-01T00:00:01.000Z';
+  periodOverflow[0].providerReportedSavingsTokens = -max;
+  periodOverflow[1].at = '2026-02-02T00:00:01.000Z';
+  periodOverflow[1].providerReportedSavingsTokens = max;
+  periodOverflow.push({ ...periodOverflow[1], eventKey: 'event:3', receiptDigest: 'sha256:3', sessionId: 's3', at: '2026-02-02T00:00:03.000Z' });
+  assert.throws(() => buildMetricsReport({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: periodOverflow,
+  }), /aggregate overflow/);
 });
 
 test('daily, ISO-week, and monthly rollups use the configured timezone', () => {

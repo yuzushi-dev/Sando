@@ -1,4 +1,16 @@
-function number(value) { return Number.isFinite(value) ? value : 0; }
+function number(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
+
+function requiredNumber(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
+
+function jsonDocuments(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  try { return [JSON.parse(stdout)]; } catch {}
+  const documents = [];
+  for (const line of stdout.trim().split('\n')) {
+    try { documents.push(JSON.parse(line)); } catch { return null; }
+  }
+  return documents;
+}
 
 function findModel(value, seen = new Set()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return null;
@@ -16,21 +28,29 @@ function findModel(value, seen = new Set()) {
   return null;
 }
 
-function hasStatusOk(value, seen = new Set()) {
-  if (typeof value === 'string') {
-    try { return hasStatusOk(JSON.parse(value), seen); } catch { return false; }
-  }
-  if (!value || typeof value !== 'object' || seen.has(value)) return false;
-  if (value.status === 'ok') return true;
-  seen.add(value);
-  return Object.values(value).some((child) => hasStatusOk(child, seen));
+function exactOkResponse(response) {
+  if (typeof response !== 'string') return false;
+  try {
+    const value = JSON.parse(response);
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).length === 1 && value.status === 'ok';
+  } catch { return false; }
 }
 
-export function hasOkStatus(stdout) {
-  for (const line of stdout.trim().split('\n').filter(Boolean)) {
-    try { if (hasStatusOk(JSON.parse(line))) return true; } catch {}
+export function hasOkStatus(stdout, host) {
+  const documents = jsonDocuments(stdout);
+  if (!documents?.length) return false;
+  if (host === 'claude') {
+    const terminal = documents.at(-1);
+    return terminal?.type === 'result' && terminal?.subtype === 'success'
+      && exactOkResponse(terminal.result);
   }
-  return false;
+  if (host !== 'codex') return false;
+  const terminal = documents.at(-1);
+  if (terminal?.type !== 'turn.completed') return false;
+  const assistant = documents.slice(0, -1).reverse().find((document) =>
+    document?.type === 'item.completed' && document.item?.type === 'agent_message');
+  return exactOkResponse(assistant?.item?.text);
 }
 
 function redactDiagnostic(value) {
@@ -44,51 +64,59 @@ export function formatChildFailure(host, variant, result) {
 }
 
 export function parseClaudeUsage(stdout) {
-  const value = JSON.parse(stdout);
-  const usage = value?.usage;
-  if (!usage || !Number.isFinite(usage.input_tokens) || !Number.isFinite(usage.output_tokens)) return null;
-  const cacheCreationInputTokens = number(usage.cache_creation_input_tokens);
-  const cacheReadInputTokens = number(usage.cache_read_input_tokens);
-  const inputTokens = usage.input_tokens + cacheCreationInputTokens + cacheReadInputTokens;
-  const resolvedModel = findModel(value);
+  const documents = jsonDocuments(stdout);
+  const candidate = documents?.at(-1);
+  if (!candidate || typeof candidate !== 'object' || candidate.type !== 'result' || candidate.subtype !== 'success') return null;
+  const usage = candidate?.usage;
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  const uncachedInputTokens = requiredNumber(usage?.input_tokens);
+  const outputTokens = requiredNumber(usage?.output_tokens);
+  if (uncachedInputTokens === null || outputTokens === null) return null;
+  const cacheCreationInputTokens = usage.cache_creation_input_tokens === undefined
+    ? 0 : number(usage.cache_creation_input_tokens);
+  const cacheReadInputTokens = usage.cache_read_input_tokens === undefined
+    ? 0 : number(usage.cache_read_input_tokens);
+  if (cacheCreationInputTokens === null || cacheReadInputTokens === null) return null;
+  const inputTokens = [uncachedInputTokens, cacheCreationInputTokens, cacheReadInputTokens]
+    .reduce((total, value) => total + value, 0);
+  if (!Number.isSafeInteger(inputTokens)) return null;
+  const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : number(usage.total_tokens);
+  if (totalTokens === null || !Number.isSafeInteger(totalTokens) || totalTokens !== inputTokens + outputTokens) return null;
+  const resolvedModel = findModel(candidate);
   return {
     inputTokens,
-    uncachedInputTokens: usage.input_tokens,
+    uncachedInputTokens,
     cacheCreationInputTokens,
     cacheReadInputTokens,
-    outputTokens: usage.output_tokens,
-    totalTokens: inputTokens + usage.output_tokens,
+    outputTokens,
+    totalTokens,
     ...(resolvedModel ? { resolvedModel } : {}),
   };
 }
 
-function findCodexUsage(value, inheritedModel = null) {
-  if (!value || typeof value !== 'object') return null;
-  const model = typeof value.model === 'string' && value.model ? value.model : inheritedModel;
-  if (Number.isFinite(value.input_tokens) && Number.isFinite(value.output_tokens)) {
-    return {
-      inputTokens: value.input_tokens,
-      cacheReadInputTokens: number(value.cached_input_tokens ?? value.cache_read_input_tokens),
-      outputTokens: value.output_tokens,
-      totalTokens: number(value.total_tokens) || value.input_tokens + value.output_tokens,
-      ...(model ? { resolvedModel: model } : {}),
-    };
-  }
-  for (const child of Object.values(value)) {
-    const found = findCodexUsage(child, model);
-    if (found) return found;
-  }
-  return null;
-}
-
 export function parseCodexUsage(stdout) {
-  for (const line of stdout.trim().split('\n').filter(Boolean).reverse()) {
-    try {
-      const usage = findCodexUsage(JSON.parse(line));
-      if (usage) return usage;
-    } catch {}
-  }
-  return null;
+  const documents = jsonDocuments(stdout);
+  const terminal = documents?.at(-1);
+  if (!terminal || typeof terminal !== 'object' || Array.isArray(terminal) || terminal.type !== 'turn.completed') return null;
+  const usage = terminal.usage;
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  const inputTokens = requiredNumber(usage.input_tokens);
+  const outputTokens = requiredNumber(usage.output_tokens);
+  if (inputTokens === null || outputTokens === null) return null;
+  const cacheReadInputTokens = usage.cached_input_tokens === undefined && usage.cache_read_input_tokens === undefined
+    ? 0 : number(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
+  if (cacheReadInputTokens === null) return null;
+  const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : requiredNumber(usage.total_tokens);
+  if (!Number.isSafeInteger(inputTokens + outputTokens)
+    || totalTokens === null || totalTokens !== inputTokens + outputTokens) return null;
+  const model = typeof terminal.model === 'string' && terminal.model ? terminal.model : null;
+  return {
+    inputTokens,
+    cacheReadInputTokens,
+    outputTokens,
+    totalTokens,
+    ...(model ? { resolvedModel: model } : {}),
+  };
 }
 
 export function buildClaudeArgs({ prompt, model, maxBudgetUsd }) {
