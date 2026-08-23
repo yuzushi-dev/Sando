@@ -1,52 +1,23 @@
 # Sando benchmarks
 
-The local benchmark is provider-free and deterministic. It replays identical
-fixtures through a raw baseline and the optimizer, then reports paired inline
-token estimates, complete artifact bytes, required fact presence,
-model-visible quality, resolvability, and secret leaks. The estimate is
-`ceil(UTF-8 bytes / 4)`; it is not a provider usage counter.
+Sando has two measurement modes: a provider-free local replay and a gated live prompt A/B.
 
-Reports include prompt digests, commit/environment metadata, and an explicit
-`local-replay` measurement declaration. A fact found only in an artifact is
-recoverable but is not counted as model-visible inline context.
-Dirty runs include a `diffDigest`; non-Git or unreadable provenance is marked
-`unknown` instead of being reported as reproducible.
+## Local replay
 
-Only the `tool-suite` fixture annotates required facts with `head`, `middle`,
-and `tail` locations across Read, Grep, git, npm, and cargo-like outputs.
-`read-large` and `terminal-noise` use unlocated string facts. Reports check
-each fact value and emit `inline`, `artifact`, `modelVisible`, and `recoverable`;
-the location label is fixture input, not a report field.
-
-Run after the core scaffold exists:
+The local benchmark replays the same fixtures through a raw baseline and Sando. It reports paired inline estimates, artifact recovery, required-fact presence, model-visible quality, and secret-leak checks.
 
 ```sh
 npm run benchmark:local
-node benchmarks/run-local.mjs --scenario terminal-noise --repetitions 5
+npm run benchmark:local -- --scenario terminal-noise --repetitions 5
 ```
 
-A provider run records prompt digest, redacted args/stdout/stderr, commit,
-timestamp, environment, client version, resolved model when present, and
-reported usage. It is a separate gated operation because it can consume quota.
+The estimate is `ceil(UTF-8 bytes / 4)`. It is deterministic local accounting, not provider tokenization or billing data. The default run uses `read-large` and `terminal-noise`; `--scenario` selects a fixture from `benchmarks/fixtures/`.
 
-For Claude, effective input is normalized as
-`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, because
-the provider reports those counters separately. Codex's `input_tokens` is kept
-as reported and `cached_input_tokens` is recorded separately.
+Reports include prompt digests, commit and environment metadata, working-tree provenance, and a `local-replay` measurement declaration. A fact found only in an artifact is recoverable but is not model-visible inline context.
 
-The live command requires an explicit `--confirm-cost`. Claude accepts either
-`--max-budget-usd` or explicit `--unlimited-budget`. It can load the local
-plugin with `--claude-plugin-dir`; the current live harness remains a
-`prompt-level` A/B even when that directory is supplied because it disables
-tools and does not exercise a host PostToolUse lifecycle. Codex's provider
-measurement is also prompt-level; its feedback fallback is not transparent
-rewrite. No global installation is performed by this repository.
+## Live prompt A/B
 
-There is no no-cost end-to-end host measurement. The exact paid commands below
-are the closest probes; they remain prompt-level because the runner disables
-tools and supplies prepared context, so Claude cannot exercise `PostToolUse`.
-Codex's supported hook path is observational and its feedback fallback does not
-rewrite delivered output. Do not run without quota approval.
+Live runs require explicit quota approval:
 
 ```sh
 npm run benchmark:live -- --host claude --model sonnet --max-budget-usd 0.25 \
@@ -54,5 +25,19 @@ npm run benchmark:live -- --host claude --model sonnet --max-budget-usd 0.25 \
 npm run benchmark:live -- --host codex --scenario terminal-noise --confirm-cost
 ```
 
-For an externally stopped Claude campaign, replace `--max-budget-usd 0.25`
-with `--unlimited-budget`.
+Claude requires either `--max-budget-usd` or explicit `--unlimited-budget`. Live runs record provider usage, prompt digests, redacted diagnostics, client version, resolved model when available, and provenance. Claude input accounting combines `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`; Codex keeps `input_tokens` as reported and records cached input separately.
+
+These are prompt-level measurements. The runner disables tools and embeds baseline or prepared context in the prompt, so it does not exercise Claude or Codex `PostToolUse` end to end. Passing `--claude-plugin-dir` does not change that. Codex feedback fallback is also not a transparent rewrite.
+
+## Current live evidence
+
+Snapshot: 2026-08-23. Values below are provider-reported input counters, not local estimates.
+
+| Host | Client / model | Scenarios | Pairs | Baseline → optimized input | Saved | Actual cost |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Claude Code | `2.1.233` / `claude-sonnet-5` | 10 | 50 | 1,268,060 → 1,044,056 | 17.67% | `$7.904935` |
+| Codex CLI | `0.149.0` / `gpt-5.6-luna` | 10 | 10 | 229,836 → 200,449 | 12.79% | not recorded |
+
+The reports are blocked by missing `modelVisibleQuality`, `artifactResolvable`, and `secretLeak` evidence. That block is expected for this prompt-level harness; the runs do not establish end-to-end host rewriting, artifact resolution, or leak results.
+
+Do not run live commands without quota approval. For an externally stopped Claude campaign, replace `--max-budget-usd` with `--unlimited-budget`.

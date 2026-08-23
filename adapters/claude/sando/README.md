@@ -1,25 +1,26 @@
 # Sando for Claude Code
 
-Use this directory as a repo-local or copied/cache Claude Code plugin directory. Claude discovers `.claude-plugin/plugin.json`, `hooks/hooks.json`, and `.mcp.json`; `${CLAUDE_PLUGIN_ROOT}` resolves launchers whose runtime is bundled inside this directory.
+Repo-local or copied/cache Claude Code plugin bundle.
 
-`PostToolUse` supports replacement here. In `apply` mode the adapter emits
-`hookSpecificOutput.updatedToolOutput` for string results and oversized
-Bash-shaped `{stdout, stderr, ...}` results; other structured shapes remain
-unchanged. Oversized payloads are written atomically as complete redacted mode
-`0600` files under
-`cwd/.sando/sando/artifacts` and the replacement contains that relative
-reference. `observe` and `dry-run` return `{}`. The hook is fail-open for
-malformed events, persistence, and telemetry errors; only invalid
-`SANDO_POLICY` is fail-closed with exit `2`.
+## Install
 
 ```sh
-claude --plugin-dir "$REPO/adapters/claude/sando"
-node --test packages/sando/tests/*.test.mjs
+claude --plugin-dir "$PWD/adapters/claude/sando"
 ```
 
-No Claude configuration or marketplace is changed.
+The `PostToolUse` hook is observational by default and records receipts and metrics. Set `SANDO_MODE=apply` to replace Claude output for string results and Bash-shaped results containing `stdout` and `stderr`. Other structured result shapes remain unchanged. `SANDO_MODE=dry-run` prepares and records a candidate without replacing the result.
 
-The hook also persists numeric savings records in the default local state file
-or the absolute `SANDO_METRICS_PATH` override. Run
-`node adapters/claude/sando/metrics.mjs` for a human report or add
-`--json` for the `sando-report/v1` shape used by a later status bar.
+When replacement produces an artifact reference, the adapter writes the complete redacted artifact atomically under `cwd/.sando/sando/artifacts` with private file permissions. The core itself does not write artifacts.
+
+The bundle also exposes the read-only, network-free `prepare_tool_output` MCP tool. Malformed events, persistence failures, and telemetry failures are fail-open. Invalid `SANDO_POLICY` exits with status `2`.
+
+## Metrics
+
+```sh
+node adapters/claude/sando/metrics.mjs
+node adapters/claude/sando/metrics.mjs --json
+```
+
+The report uses `sando-report/v1` and separates local transform estimates from provider-reported savings. See [`packages/sando/README.md`](../../../packages/sando/README.md) for the core API.
+
+No Claude configuration or marketplace entry is changed.

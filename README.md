@@ -4,13 +4,13 @@
 
 # Sando
 
-Dependency-free Node 22 tooling for preparing large tool output for Claude Code and Codex.
+Dependency-free Node 22 tooling for deterministic tool-output preparation around Claude Code and Codex.
 
-Sando bounds inline output, preserves a redacted artifact, and records savings metrics. It does not claim provider-token savings without provider counters.
+Sando redacts common credential-shaped values, keeps a bounded inline view, preserves a complete redacted artifact, and records receipts and metrics. It does not call an LLM, access the network, or infer provider savings from local estimates.
 
 ## Install
 
-Requires Node `22.22.x`.
+Requires Node.js `22.22.x`.
 
 ```sh
 git clone https://github.com/yuzushi-dev/Sando.git
@@ -20,48 +20,33 @@ npm test
 
 No npm package is published yet.
 
-Claude Code:
+## Claude Code
+
+Run the repo-local plugin:
 
 ```sh
 claude --plugin-dir "$PWD/adapters/claude/sando"
 ```
 
-The plugin observes by default. Use `SANDO_MODE=apply` to enable Claude output replacement. See [`adapters/claude/sando/README.md`](adapters/claude/sando/README.md).
+The hook observes by default. Set `SANDO_MODE=apply` to enable Claude `PostToolUse` replacement for supported result shapes. The plugin also exposes the read-only `prepare_tool_output` MCP tool. See [`adapters/claude/sando/README.md`](adapters/claude/sando/README.md).
 
-Codex: load the bundle in [`plugins/sando`](plugins/sando/README.md). Its `PostToolUse` hook is observational; effective preparation is exposed through MCP.
+## Codex
 
-## Benchmark
+Load the self-contained plugin bundle in [`plugins/sando`](plugins/sando/README.md). Its `PostToolUse` hook is observational; use the bundled `prepare_tool_output` MCP tool for effective preparation. Codex does not transparently replace an already-delivered tool result.
 
-Run the deterministic, provider-free benchmark:
+## Benchmarks
+
+Run the provider-free deterministic replay:
 
 ```sh
 npm run benchmark:local -- --scenario terminal-noise --repetitions 5
 ```
 
-It compares the raw fixture with Sando using a reproducible local estimate (`ceil(UTF-8 bytes / 4)`), checks required facts, artifact recovery, quality, and secret leaks.
+Local token counts use `ceil(UTF-8 bytes / 4)`. They are estimates, not provider tokenization or billing data.
 
-Example from this checkout:
+Live A/B runs require `--confirm-cost`, consume provider quota, and measure prepared prompts rather than a host `PostToolUse` lifecycle. See [`benchmarks/README.md`](benchmarks/README.md) for commands, evidence, and limitations.
 
-```text
-baseline: 4515 tokens
-optimized: 1032 tokens
-estimated saved: 77.14%
-quality: 100%
-```
-
-These are local estimates, not billing data. Provider-reported savings are recorded only when paired baseline/optimized counters are available.
-
-Live benchmarks consume quota and require explicit confirmation:
-
-```sh
-npm run benchmark:live -- --host claude --model sonnet \
-  --unlimited-budget \
-  --claude-plugin-dir adapters/claude/sando --confirm-cost
-```
-
-Live runs are prompt-level A/B measurements; they do not exercise a transparent Codex rewrite or Claude `PostToolUse`. See [`benchmarks/README.md`](benchmarks/README.md) for report fields and host details.
-
-## Development
+## Verify
 
 ```sh
 npm test

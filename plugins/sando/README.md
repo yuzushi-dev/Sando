@@ -1,26 +1,24 @@
 # Sando Codex plugin
 
-Standalone Codex plugin. The manifest is `.codex-plugin/plugin.json`; hooks are discovered from `hooks/hooks.json`, not from a manifest `hooks` field. `.mcp.json` starts the bundled, network-free stdio server.
+Self-contained Codex plugin bundle. The manifest is `.codex-plugin/plugin.json`; hooks and the network-free MCP server are declared by companion files in this directory.
 
-The `PostToolUse` hook is observational and defaults to `SANDO_MODE=observe`. It reads one JSON event from stdin and returns `{}`. Malformed events and telemetry failures are fail-open. An invalid `SANDO_POLICY` JSON object exits `2` and is the only fail-closed path. Codex lifecycle hooks do not currently provide this scaffold a portable way to replace the host's existing tool result, so the hook does not claim token reduction.
+## Use
 
-Effective preparation is available through MCP tool `prepare_tool_output` or the [reference core API](../../packages/sando/README.md). The plugin runtime is self-contained and is tested from a copied cache directory without `packages/`.
+Load this directory as a Codex plugin. The `PostToolUse` hook defaults to observation and returns `{}`. It records receipts and metrics but does not transparently rewrite an already-delivered tool result.
 
-For an explicit, non-equivalent Codex fallback, set `SANDO_CODEX_FALLBACK=feedback` together with `SANDO_POLICY={"mode":"apply"}`. The hook returns `continue:false` feedback; it does not rewrite the tool result.
+Use the bundled read-only `prepare_tool_output` MCP tool for effective deterministic preparation. It returns bounded inline output and an optional complete redacted artifact payload without filesystem or network writes.
 
-The hook persists safe savings metrics in the default local state file or the
-absolute `SANDO_METRICS_PATH` override. View them with
-`node plugins/sando/metrics.mjs` or consume the
-`sando-report/v1` JSON with `node plugins/sando/metrics.mjs --json`.
-The report separates estimated transform savings from provider-reported
-savings and exposes current session, average session, cumulative, daily, ISO
-weekly, and monthly values.
+For an explicit, non-equivalent fallback, set `SANDO_CODEX_FALLBACK=feedback` together with `SANDO_POLICY={"mode":"apply"}`. The hook returns `continue:false` feedback and stops the turn; it does not rewrite the tool result.
 
-Local checks:
+Malformed events and telemetry failures are fail-open. Invalid `SANDO_POLICY` exits with status `2`.
+
+## Metrics
 
 ```sh
-python3 "$PLUGIN_CREATOR_ROOT/scripts/validate_plugin.py" plugins/sando
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node plugins/sando/mcp/server.mjs
+node plugins/sando/metrics.mjs
+node plugins/sando/metrics.mjs --json
 ```
+
+The JSON report is `sando-report/v1` and separates local transform estimates from provider-reported savings.
 
 No marketplace or user configuration is modified.
