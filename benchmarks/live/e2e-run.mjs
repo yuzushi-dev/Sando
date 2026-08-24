@@ -126,7 +126,7 @@ export function buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd } = 
   return [
     ...(model ? ['--model', model] : []), '--print', '--no-session-persistence', '--disable-slash-commands', '--no-chrome',
     '--tools', 'Bash', '--allowed-tools', 'Bash', '--permission-mode', 'dontAsk', '--strict-mcp-config',
-    '--output-format', 'stream-json', '--include-hook-events',
+    '--output-format', 'stream-json', '--verbose', '--include-hook-events',
     ...(pluginDir ? ['--plugin-dir', pluginDir] : []),
     ...(maxBudgetUsd ? ['--max-budget-usd', String(maxBudgetUsd)] : []), prompt,
   ];

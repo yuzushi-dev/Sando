@@ -50,6 +50,7 @@ test('Claude probe enables an executable Bash tool and captures hook events', as
   assert.equal(args[args.indexOf('--tools') + 1], 'Bash');
   assert.ok(args.includes('--allowed-tools'));
   assert.ok(args.includes('--include-hook-events'));
+  assert.ok(args.includes('--verbose'));
 });
 
 test('probe analysis requires model facts, resolves artifacts, and rejects leaked secrets', async () => {
