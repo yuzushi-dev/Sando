@@ -49,6 +49,26 @@ test('Claude defaults to apply when no mode is configured', (t) => {
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
 });
 
+test('Claude PostToolUse applies structural Read routing and respects selectors', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-read-routing-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const output = [
+    ...Array.from({ length: 70 }, (_, index) => `noise:${index}`),
+    ...Array.from({ length: 10 }, (_, index) => `export const item${index} = ${index};`),
+    ...Array.from({ length: 60 }, (_, index) => `tail:${index}`),
+  ].join('\n');
+  const summarized = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd, tool_response: output,
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 8192 });
+  assert.match(summarized.output.hookSpecificOutput.updatedToolOutput, /sando read structure/);
+
+  const selected = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
+    tool_input: { file_path: 'fixture.mjs', offset: 1, limit: 120 }, tool_response: output,
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 8192 });
+  assert.doesNotMatch(selected.output.hookSpecificOutput.updatedToolOutput, /sando read structure/);
+});
+
 test('observe-only guard never replaces Claude output', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-observe-only-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));

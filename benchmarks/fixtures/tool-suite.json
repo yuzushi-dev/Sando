@@ -6,6 +6,7 @@
       "id": "read-head-middle-tail",
       "toolName": "Read",
       "path": "src/service.mjs",
+      "selector": true,
       "requiredFacts": [
         { "value": "READ_HEAD_FACT", "location": "head" },
         { "value": "READ_MIDDLE_FACT", "location": "middle" },

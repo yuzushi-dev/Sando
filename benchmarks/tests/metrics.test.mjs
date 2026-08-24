@@ -144,6 +144,19 @@ test('paired summaries reject mixed measurement labels', () => {
   ]), /measurement|provenance/);
 });
 
+test('accepts provider-proxy measurements with provider-reported usage', () => {
+  assert.doesNotThrow(() => summarizeRuns([
+    auditedRun({
+      variant: 'baseline', measurement: 'end-to-end-proxy', tokenAccounting: 'provider-reported', inputTokens: 100,
+      providerUsage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+    }),
+    auditedRun({
+      variant: 'optimized', measurement: 'end-to-end-proxy', tokenAccounting: 'provider-reported', inputTokens: 60,
+      providerUsage: { inputTokens: 60, outputTokens: 10, totalTokens: 70 },
+    }),
+  ]));
+});
+
 function auditedRun({ variant, measurement = 'local-replay', tokenAccounting = 'estimate', inputTokens = 100, audit, providerUsage, ...rest }) {
   const promptDigest = `sha256:${'3'.repeat(64)}`;
   const scenarioDigest = `sha256:${'4'.repeat(64)}`;

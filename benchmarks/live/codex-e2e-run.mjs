@@ -51,6 +51,18 @@ export function buildCodexToolArgs({ prompt, model, optimized, serverPath, route
   return args;
 }
 
+export function buildCodexE2EEnv({ variant, route, baseEnv = process.env }) {
+  const env = { ...baseEnv };
+  if (route !== 'cli' && route !== 'all') return env;
+  env.SANDO_CLI_ROUTING = variant === 'optimized' ? 'on' : 'off';
+  if (variant === 'optimized') {
+    env.SANDO_POLICY = JSON.stringify({ mode: 'apply', maxInlineBytes: 1024, maxArtifactBytes: 65536, redact: true });
+  } else {
+    delete env.SANDO_POLICY;
+  }
+  return env;
+}
+
 function runCommand(command, args, { cwd, timeoutMs, env = process.env }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -212,13 +224,7 @@ async function runVariant({ variant, repetition, workspace, serverPath, model, t
   const prompt = promptFor({ variant, route });
   const args = buildCodexToolArgs({ prompt, model, optimized: variant === 'optimized', serverPath, route });
   const started = Date.now();
-  const env = route === 'cli' || route === 'all'
-    ? {
-      ...process.env,
-      SANDO_CLI_ROUTING: variant === 'optimized' ? 'on' : 'off',
-      ...(variant === 'optimized' ? { SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 1024, maxArtifactBytes: 65536, redact: true }) } : {}),
-    }
-    : process.env;
+  const env = buildCodexE2EEnv({ variant, route });
   const result = await runCommand('codex', args, { cwd: workspace, timeoutMs, env });
   const scenario = route === 'cli' ? 'codex-cli-noise' : route === 'all' ? 'codex-all-strategies' : 'codex-tool-noise';
   const scenarioDigest = digestPrompt(route === 'cli' ? CLI_FIXTURE_COMMAND : route === 'all' ? `${CLI_FIXTURE_COMMAND}\n${ALL_EXEC_COMMAND}` : FIXTURE_COMMAND);
@@ -246,7 +252,11 @@ export async function runCodexToolBenchmark({ outputPath, model, repetitions, ti
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-codex-e2e-'));
   if (route === 'cli' || route === 'all') {
     const fixtureFacts = route === 'all' ? ALL_CLI_FACTS : REQUIRED_FACTS;
-    const fixture = [fixtureFacts[0], ...Array.from({ length: 300 }, (_, index) => `noise:${index}`), fixtureFacts[1]].join('\n');
+    const fixture = [
+      `export const ${fixtureFacts[0]} = '${fixtureFacts[0]}';`,
+      ...Array.from({ length: 300 }, (_, index) => `noise:${index}`),
+      `export const ${fixtureFacts[1]} = '${fixtureFacts[1]}';`,
+    ].join('\n');
     await fs.writeFile(path.join(workspace, 'fixture.txt'), `${fixture}\n`);
   }
   const version = await runCommand('codex', ['--version'], { cwd: ROOT, timeoutMs: 10_000 });

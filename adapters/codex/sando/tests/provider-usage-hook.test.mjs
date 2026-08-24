@@ -13,15 +13,21 @@ test('standalone Codex Stop hook records usage', (t) => {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const transcriptPath = path.join(directory, 'transcript.jsonl');
   const storagePath = path.join(directory, 'provider-usage.json');
+  const activePath = path.join(directory, 'active-sessions.json');
   fs.writeFileSync(transcriptPath, `${JSON.stringify({
     type: 'turn.completed', turn_id: 'turn-1', timestamp: '2026-08-24T10:00:00.000Z',
     usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
   })}\n`);
   const result = spawnSync(process.execPath, [hook], {
     input: JSON.stringify({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptPath }),
-    encoding: 'utf8', env: { ...process.env, SANDO_PROVIDER_USAGE_PATH: storagePath },
+    encoding: 'utf8', env: {
+      ...process.env, SANDO_PROVIDER_USAGE_PATH: storagePath,
+      SANDO_ACTIVE_SESSION_PATH: activePath, SANDO_CODEX_PANE_PID: '123', TMUX_PANE: '%1',
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {});
   assert.equal(JSON.parse(fs.readFileSync(storagePath, 'utf8')).records.length, 1);
+  assert.equal(fs.existsSync(activePath), true);
+  assert.equal(JSON.parse(fs.readFileSync(activePath, 'utf8')).entries[0].sessionId, 's1');
 });

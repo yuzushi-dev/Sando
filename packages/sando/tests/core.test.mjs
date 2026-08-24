@@ -65,6 +65,31 @@ test('large output keeps head and tail inline, elides middle, and caps columns',
   assert.equal(result.artifact.sourceBytes, Buffer.byteLength(`HEAD-FACT\n${'middle-noise\n'.repeat(20)}TAIL-FACT\nERROR: tail failure`));
 });
 
+test('derives Read metadata on the hook path and compacts repeated Bash lines', async () => {
+  const { optimizeToolOutput } = await core();
+  const read = optimizeToolOutput({
+    toolName: 'Read',
+    output: [
+      ...Array.from({ length: 70 }, (_, index) => `noise:${index}`),
+      ...Array.from({ length: 10 }, (_, index) => `export const item${index} = ${index};`),
+      ...Array.from({ length: 60 }, (_, index) => `tail:${index}`),
+    ].join('\n'),
+    cwd: '/work',
+    policy: { maxInlineBytes: 256, maxArtifactBytes: 4096 },
+  });
+  assert.equal(read.route, 'summary');
+  assert.match(read.inline, /sando read structure/);
+
+  const bash = optimizeToolOutput({
+    toolName: 'Bash',
+    output: `${'warning: repeated\n'.repeat(80)}final fact\n`,
+    cwd: '/work',
+    policy: { maxInlineBytes: 512, maxArtifactBytes: 4096 },
+  });
+  assert.match(bash.inline, /repeated x80/);
+  assert.equal(bash.artifact.content, `${'warning: repeated\n'.repeat(80)}final fact\n`);
+});
+
 test('optimizeToolOutput preserves small output and rejects invalid policy', async () => {
   const { optimizeToolOutput } = await core();
   const result = optimizeToolOutput({ toolName: 'Read', output: { ok: true }, cwd: '/work' });

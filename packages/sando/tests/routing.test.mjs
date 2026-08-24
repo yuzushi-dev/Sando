@@ -4,24 +4,63 @@ import test from 'node:test';
 import { createReceipt, normalizeEvent, optimizeToolOutput } from '../src/core.mjs';
 import { planToolRoute } from '../src/routing.mjs';
 
-test('records the eligible structural Read route in the result', () => {
+test('structural Read replaces long code with a bounded outline and recoverable artifact', () => {
+  const output = [
+    'import fs from \'node:fs\';',
+    ...Array.from({ length: 88 }, (_, index) => `// noise ${index}`),
+    'export function alpha() {',
+    'secret=hidden',
+    ...Array.from({ length: 87 }, (_, index) => `// more noise ${index}`),
+    'class Beta {',
+    '}',
+  ].join('\n');
   const result = optimizeToolOutput({
     toolName: 'Read',
-    output: 'const value = 1;\n',
+    output,
     cwd: '/work',
-    lineCount: 180,
-    fileBytes: 180 * 1024,
+    lineCount: 180, fileBytes: Buffer.byteLength(output), prose: false,
+    policy: { maxInlineBytes: 768, maxArtifactBytes: 4096 },
   });
 
   assert.equal(result.route, 'summary');
   assert.equal(result.reason, 'sando-read-summarize');
   assert.equal(result.policyVersion, 'sando-routing/v1');
+  assert.notEqual(result.inline, output);
+  assert.match(result.inline, /1:import fs/);
+  assert.match(result.inline, /90:export function alpha/);
+  assert.match(result.inline, /179:class Beta/);
+  assert.ok(Buffer.byteLength(result.inline) <= 768);
+  assert.equal(result.artifact.content, output.replace('secret=hidden', 'secret=[REDACTED]'));
+  assert.equal(result.artifact.truncated, false);
+  assert.doesNotMatch(result.inline, /hidden/);
+});
+
+test('structural Read fails closed to passthrough when no smaller outline exists', () => {
+  const output = Array.from({ length: 120 }, (_, index) => `noise ${index}`).join('\n');
+  const result = optimizeToolOutput({
+    toolName: 'Read', output, cwd: '/work', lineCount: 120, fileBytes: Buffer.byteLength(output), prose: false,
+  });
+
+  assert.equal(result.route, 'passthrough');
+  assert.equal(result.reason, 'sando-read-bounded');
+  assert.equal(result.inline, output);
 });
 
 test('does not summarize a Read with an explicit selection', () => {
   assert.equal(planToolRoute({
     toolName: 'Read', selector: true, lineCount: 180, fileBytes: 180 * 1024,
   }).route, 'passthrough');
+});
+
+test('Read selectors, raw mode, and prose preserve model-visible content', () => {
+  const output = Array.from({ length: 120 }, (_, index) => `# paragraph ${index}`).join('\n');
+  for (const flag of [{ selector: true, prose: false }, { raw: true, prose: false }, { prose: true }]) {
+    const result = optimizeToolOutput({
+      toolName: 'Read', output, cwd: '/work', lineCount: 120, fileBytes: Buffer.byteLength(output), ...flag,
+    });
+    assert.equal(result.route, 'passthrough');
+    assert.equal(result.inline, output);
+  }
 });
 
 test('summarizes only proven large non-prose Reads', () => {

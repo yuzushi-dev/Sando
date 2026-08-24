@@ -15,6 +15,7 @@ import {
   parseCodexUsage,
 } from '../live/adapters.mjs';
 import * as liveRunner from '../live/run-live.mjs';
+import { parseModelProbeResult } from '../live/e2e-run.mjs';
 import { buildCodexToolArgs, CODEX_TOOL_MEASUREMENT } from '../live/codex-e2e-run.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -242,6 +243,22 @@ test('extracts Claude canonicalModel from modelUsage entries', () => {
     modelUsage: { 'claude-opus-5': { canonicalModel: 'claude-opus-5', inputTokens: 1 } },
     usage: { input_tokens: 10, output_tokens: 2 },
   })).resolvedModel, 'claude-opus-5');
+});
+
+test('parses Claude probe JSON after a client diagnostic prefix', () => {
+  const stdout = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    result: 'diagnostic from a plugin\n{"status":"ok","facts":["HEAD","TAIL"]}',
+    usage: { input_tokens: 10, output_tokens: 2 },
+  });
+  assert.deepEqual(parseModelProbeResult(stdout), {
+    status: 'ok', facts: ['HEAD', 'TAIL'],
+    usage: {
+      inputTokens: 10, uncachedInputTokens: 10, cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0, outputTokens: 2, totalTokens: 12,
+    },
+  });
 });
 
 test('parses Codex usage only from the final direct turn.completed record', () => {

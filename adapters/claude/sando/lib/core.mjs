@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
+
 const DEFAULT_POLICY = Object.freeze({
   mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 65536, headBytes: undefined, tailBytes: undefined,
   maxColumns: 768, redact: true,
@@ -80,6 +82,39 @@ function inlineView(text, maxBytes, headBytes, tailBytes, maxColumns) {
   return middleView(capColumns(text, maxColumns), maxBytes, headBytes, tailBytes);
 }
 
+function structuralRead(text) {
+  const lines = text.split('\n');
+  const declaration = /^\s*(?:import\b|export\b|(?:async\s+)?function\b|class\b|interface\b|type\s+[A-Za-z_$][\w$]*\s*=|enum\b|namespace\b|module\b|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=|(?:(?:public|private|protected|static|abstract|async|get|set)\s+)+[A-Za-z_$][\w$]*\s*\()/;
+  const selected = lines.flatMap((line, index) => declaration.test(line) ? [`${index + 1}:${line}`] : []);
+  if (!selected.length) return null;
+  const outline = `[sando read structure: ${selected.length}/${lines.length} lines]\n${selected.join('\n')}`;
+  return Buffer.byteLength(outline) + 64 < Buffer.byteLength(text) ? outline : null;
+}
+
+function collapseRepeatedLines(text) {
+  const lines = text.split('\n');
+  const compacted = [];
+  for (let index = 0; index < lines.length;) {
+    let end = index + 1;
+    while (end < lines.length && lines[end] === lines[index]) end += 1;
+    const count = end - index;
+    if (count >= 3 && lines[index] !== '') {
+      compacted.push(lines[index], `[sando repeated x${count}]`);
+    } else {
+      compacted.push(...lines.slice(index, end));
+    }
+    index = end;
+  }
+  const result = compacted.join('\n');
+  return Buffer.byteLength(result) + 32 < Buffer.byteLength(text) ? result : text;
+}
+
+function readSelector(toolInput) {
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
+  return ['offset', 'limit', 'line_start', 'line_end', 'start_line', 'end_line']
+    .some((key) => Object.hasOwn(toolInput, key));
+}
+
 function redact(text) {
   let count = 0;
   const replace = (pattern, replacement) => {
@@ -115,18 +150,48 @@ export function normalizePolicy(policy = {}) {
   return result;
 }
 
-export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
+export function optimizeToolOutput({
+  toolName, output, cwd, policy, selector, raw, lineCount, fileBytes, prose, summarizeProse,
+  summarizeEnabled, grepScope, outputBytes, toolInput,
+} = {}) {
   if (typeof toolName !== 'string' || !toolName.trim() || toolName.length > 128) throw new Error('toolName is invalid');
   if (typeof cwd !== 'string' || !cwd) throw new Error('cwd is invalid');
   const normalizedPolicy = normalizePolicy(policy);
   const input = textOutput(output);
+  const name = toolName.toLowerCase();
+  const derivedLineCount = lineCount ?? (name === 'read' ? input.split(/\r?\n/).length : lineCount);
+  const derivedFileBytes = fileBytes ?? (name === 'read' ? Buffer.byteLength(input) : fileBytes);
+  let route = planToolRoute({
+    toolName, selector: selector ?? readSelector(toolInput), raw: raw ?? toolInput?.raw === true,
+    lineCount: derivedLineCount, fileBytes: derivedFileBytes, prose, summarizeProse, summarizeEnabled, grepScope,
+    outputBytes: outputBytes ?? Buffer.byteLength(input),
+  });
   const redacted = normalizedPolicy.redact ? redact(input) : { text: input, count: 0 };
+  let modelText = name === 'bash' && normalizedPolicy.maxColumns >= 32
+    ? collapseRepeatedLines(redacted.text)
+    : redacted.text;
+  if (route.route === 'summary') {
+    const outline = structuralRead(redacted.text);
+    if (outline) modelText = outline;
+    else route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'sando-read-bounded' };
+  }
+  const routePolicy = route.route === 'artifact' || route.route === 'structured'
+    ? {
+      ...normalizedPolicy,
+      ...(route.route === 'artifact' ? {
+        maxInlineBytes: Math.min(normalizedPolicy.maxInlineBytes, route.limits.headBytes + route.limits.tailBytes),
+        headBytes: Math.min(normalizedPolicy.headBytes, route.limits.headBytes),
+        tailBytes: Math.min(normalizedPolicy.tailBytes, route.limits.tailBytes),
+      } : {}),
+      maxColumns: Math.min(normalizedPolicy.maxColumns, route.limits.maxColumns),
+    }
+    : normalizedPolicy;
   const sourceBytes = Buffer.byteLength(redacted.text);
-  let inline = redacted.text;
+  let inline = modelText;
   let artifact;
-  const hasLongLine = normalizedPolicy.maxColumns > 0
-    && redacted.text.split('\n').some((line) => Buffer.byteLength(line) > normalizedPolicy.maxColumns);
-  if (sourceBytes > normalizedPolicy.maxInlineBytes || hasLongLine) {
+  const hasLongLine = routePolicy.maxColumns > 0
+    && modelText.split('\n').some((line) => Buffer.byteLength(line) > routePolicy.maxColumns);
+  if (route.route === 'summary' || route.route === 'artifact' || sourceBytes > routePolicy.maxInlineBytes || hasLongLine) {
     const sourceDigest = sha256(redacted.text);
     artifact = {
       schema: 'sando-artifact/v1',
@@ -140,15 +205,15 @@ export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
       truncated: false,
     };
     const header = `artifact ${artifact.ref} ${artifact.bytes}B\n`;
-    const viewBudget = Math.max(1, normalizedPolicy.maxInlineBytes - Buffer.byteLength(header));
-    inline = `${truncateUtf8(header, normalizedPolicy.maxInlineBytes)}${inlineView(
-      redacted.text,
+    const viewBudget = Math.max(1, routePolicy.maxInlineBytes - Buffer.byteLength(header));
+    inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
+      modelText,
       viewBudget,
-      normalizedPolicy.headBytes,
-      normalizedPolicy.tailBytes,
-      normalizedPolicy.maxColumns,
+      routePolicy.headBytes,
+      routePolicy.tailBytes,
+      routePolicy.maxColumns,
     )}`;
-    inline = truncateUtf8(inline, normalizedPolicy.maxInlineBytes);
+    inline = truncateUtf8(inline, routePolicy.maxInlineBytes);
   }
   const stats = {
     mode: normalizedPolicy.mode,
@@ -161,7 +226,9 @@ export function optimizeToolOutput({ toolName, output, cwd, policy } = {}) {
     redactions: redacted.count,
     artifactTruncated: artifact?.truncated ?? false,
   };
-  return artifact ? { inline, artifact, stats } : { inline, stats };
+  const result = { inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION, stats };
+  if (artifact) result.artifact = artifact;
+  return result;
 }
 
 export function normalizeEvent(input) {
@@ -169,6 +236,7 @@ export function normalizeEvent(input) {
   const event = {
     eventName: input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName,
     toolName: input.tool_name ?? input.toolName,
+    toolInput: input.tool_input ?? input.toolInput,
     output: input.tool_response ?? input.toolResponse ?? input.tool_output ?? input.toolOutput ?? input.output,
     cwd: input.cwd,
     sessionId: input.session_id ?? input.sessionId ?? input.thread_id ?? input.threadId
@@ -183,7 +251,7 @@ export function normalizeEvent(input) {
   };
   if (typeof event.eventName !== 'string' || typeof event.toolName !== 'string'
     || event.output === undefined || typeof event.cwd !== 'string' || !event.cwd) throw new Error('event is incomplete');
-  for (const field of ['sessionId', 'eventId', 'client', 'clientVersion', 'model', 'timestamp', 'providerUsage']) {
+  for (const field of ['toolInput', 'sessionId', 'eventId', 'client', 'clientVersion', 'model', 'timestamp', 'providerUsage']) {
     if (event[field] === undefined) delete event[field];
   }
   return event;
@@ -194,8 +262,9 @@ export function createReceipt({ host, event, optimization, replacement } = {}) {
   const body = {
     schema: 'sando-receipt/v1', host, eventName: event.eventName, toolName: event.toolName,
     sessionId: event.sessionId ?? null, inputDigest: sha256(textOutput(event.output)),
-    inlineDigest: sha256(textOutput(replacement === undefined ? optimization.inline : replacement)),
-    artifactRef: optimization.artifact?.ref ?? null, stats: optimization.stats,
+    inlineDigest: sha256(textOutput(replacement === undefined ? optimization.inline : replacement)), artifactRef: optimization.artifact?.ref ?? null,
+    route: optimization.route ?? 'passthrough', reason: optimization.reason ?? 'spike-default',
+    policyVersion: optimization.policyVersion ?? ROUTING_POLICY_VERSION, stats: optimization.stats,
   };
   return { ...body, digest: sha256(stableJson(body)) };
 }

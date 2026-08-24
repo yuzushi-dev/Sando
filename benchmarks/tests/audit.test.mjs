@@ -97,6 +97,13 @@ test('accepts end-to-end-tools provenance for MCP-mediated runs', () => {
   }));
 });
 
+test('accepts provider-proxy provenance without claiming a hook lifecycle', () => {
+  assert.doesNotThrow(() => auditMetadata({
+    host: 'claude', variant: 'optimized', prompt: 'prompt',
+    measurement: { mode: 'end-to-end-proxy', hookEndToEnd: false, providerProxy: true },
+  }));
+});
+
 test('dirty provenance hashes a dangling symlink target, not its resolved bytes', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-audit-'));
   const git = (...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });

@@ -156,6 +156,17 @@ export function buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd, set
   ];
 }
 
+export function buildClaudeE2EEnv({ variant, workspace, baseEnv = process.env }) {
+  const env = {
+    ...baseEnv,
+    SANDO_MODE: variant === 'optimized' ? 'apply' : 'observe',
+    SANDO_METRICS_PATH: path.join(workspace, 'metrics.json'),
+  };
+  if (variant === 'optimized') env.SANDO_POLICY = JSON.stringify(POLICY);
+  else delete env.SANDO_POLICY;
+  return env;
+}
+
 function runCommand(command, args, { cwd, env = process.env, input, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -179,8 +190,8 @@ function runCommand(command, args, { cwd, env = process.env, input, timeoutMs = 
 
 function fixturePayload({ includeSecret = true } = {}) {
   return [
-    REQUIRED_FACTS[0], ...Array.from({ length: 320 }, (_, index) => `noise:${index}`), ARTIFACT_FACTS[0],
-    ...Array.from({ length: 320 }, (_, index) => `noise:${index}`), REQUIRED_FACTS[1],
+    REQUIRED_FACTS[0], ...Array.from({ length: 320 }, () => 'noise:repeated'), ARTIFACT_FACTS[0],
+    ...Array.from({ length: 320 }, () => 'noise:repeated'), REQUIRED_FACTS[1],
     ...(includeSecret ? [`API_KEY=${SECRET}`] : []),
   ].join('\n') + '\n';
 }
@@ -263,14 +274,23 @@ export async function runDeterministicProbe({ outputPath = path.join(EVIDENCE_RO
   }
 }
 
-function parseModelProbeResult(stdout) {
+export function parseModelProbeResult(stdout) {
   const documents = jsonDocuments(stdout);
   const terminal = documents.slice().reverse().find((document) => document?.type === 'result');
   if (!terminal || terminal.type !== 'result' || terminal.subtype !== 'success') throw new Error('Claude probe returned no successful result');
   let value = terminal.structured_output ?? terminal.result;
   if (typeof value === 'string') {
-    const fenced = value.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    try { value = JSON.parse(fenced ? fenced[1] : value); } catch { throw new Error('Claude probe returned invalid JSON'); }
+    const text = value.trim();
+    const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    const candidates = [fenced ? fenced[1] : text];
+    const statusStart = text.lastIndexOf('{"status"');
+    if (statusStart >= 0) candidates.push(text.slice(statusStart));
+    let parsed = null;
+    for (const candidate of candidates) {
+      try { parsed = JSON.parse(candidate); break; } catch {}
+    }
+    if (parsed === null) throw new Error('Claude probe returned invalid JSON');
+    value = parsed;
   }
   if (!value || typeof value !== 'object' || value.status !== 'ok' || !Array.isArray(value.facts)) throw new Error('Claude probe returned invalid fact result');
   const usage = parseClaudeUsage(stdout, { tolerateMalformed: true });
@@ -289,7 +309,7 @@ async function createCapturePlugin(pluginDir, capturePath) {
 async function runVariant({ variant, workspace, script, pluginDir, capturePath, model, maxBudgetUsd, timeoutMs, clientVersion }) {
   const prompt = `Use Bash exactly once to run: node ${script}\nReturn exactly JSON with status "ok" and facts exactly ${JSON.stringify(REQUIRED_FACTS)} in that order. Use no descriptions, extra facts, or Markdown fences. Do not repeat tool output.`;
   const args = buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd });
-  const result = await runCommand('claude', args, { cwd: workspace, timeoutMs, env: { ...process.env, SANDO_MODE: variant === 'optimized' ? 'apply' : 'observe', SANDO_METRICS_PATH: path.join(workspace, 'metrics.json') } });
+  const result = await runCommand('claude', args, { cwd: workspace, timeoutMs, env: buildClaudeE2EEnv({ variant, workspace }) });
   const audit = auditMetadata({ host: 'claude', variant, prompt, args, result, cwd: ROOT, clientVersion, scenarioDigest: SCENARIO_DIGEST, resolvedModel: null, measurement: { mode: 'end-to-end', hookEndToEnd: true } });
   if (result.code !== 0) return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: `Claude ${variant} failed` };
   let probe;

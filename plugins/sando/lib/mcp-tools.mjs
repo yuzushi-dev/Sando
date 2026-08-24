@@ -8,9 +8,9 @@ import { recordCoverage } from './coverage.mjs';
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PATTERN_LENGTH = 512;
-const MAX_GREP_FILES = 200;
+const MAX_GREP_FILES = 20;
 const MAX_GREP_MATCHES = 200;
-const MAX_GREP_FILE_BYTES = 1_048_576;
+const MAX_GREP_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_GREP_LINE_BYTES = 512;
 const MAX_GREP_OUTPUT_BYTES = 65_536;
 const CODEX_SANDBOX_META = 'codex/sandbox-state-meta';
@@ -117,9 +117,9 @@ function truncateUtf8(text, maxBytes) {
   return output;
 }
 
-function prepare(toolName, output, cwd, policy) {
+function prepare(toolName, output, cwd, policy, hints = {}) {
   const normalized = normalizePolicy(policy);
-  return optimizeToolOutput({ toolName, output, cwd: workspaceRoot(cwd), policy: normalized });
+  return optimizeToolOutput({ toolName, output, cwd: workspaceRoot(cwd), policy: normalized, ...hints });
 }
 
 function readTool(args = {}) {
@@ -127,7 +127,10 @@ function readTool(args = {}) {
   if (!stat.isFile()) invalid('path must be a regular file');
   const policy = normalizePolicy(args.policy);
   const source = readPrefix(target, policy.maxArtifactBytes);
-  const result = prepare('Read', source.text, root, policy);
+  const result = prepare('Read', source.text, root, policy, {
+    lineCount: source.text.split(/\r?\n/).length,
+    fileBytes: stat.size,
+  });
   return { ...result, source: { path: path.relative(root, target).split(path.sep).join('/'), truncated: source.truncated } };
 }
 
@@ -162,12 +165,14 @@ function capLine(line) {
 
 function grepTool(args = {}) {
   if (typeof args.pattern !== 'string' || !args.pattern || args.pattern.length > MAX_PATTERN_LENGTH || args.pattern.includes('\0')) invalid('pattern is invalid');
-  const { root, target } = workspacePath(args.cwd, args.path);
+  const { root, target, stat: targetStat } = workspacePath(args.cwd, args.path);
   const policy = normalizePolicy(args.policy);
   const caseSensitive = args.caseSensitive !== false;
   const needle = caseSensitive ? args.pattern : args.pattern.toLocaleLowerCase();
   const maxMatches = args.maxMatches === undefined ? MAX_GREP_MATCHES : args.maxMatches;
   if (!Number.isSafeInteger(maxMatches) || maxMatches < 1 || maxMatches > MAX_GREP_MATCHES) invalid('maxMatches is invalid');
+  const singleFile = targetStat.isFile();
+  const matchesPerFile = singleFile ? maxMatches : Math.min(maxMatches, 20);
   const walked = walkFiles(root, target);
   const matches = [];
   let skippedBinary = 0;
@@ -179,12 +184,14 @@ function grepTool(args = {}) {
     const text = source.text;
     if (text.includes('\0')) { skippedBinary += 1; continue; }
     const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length && matches.length < maxMatches; index += 1) {
+    let fileMatches = 0;
+    for (let index = 0; index < lines.length && fileMatches < matchesPerFile; index += 1) {
       const haystack = caseSensitive ? lines[index] : lines[index].toLocaleLowerCase();
       if (!haystack.includes(needle)) continue;
       matches.push(`${path.relative(root, file).split(path.sep).join('/')}:${index + 1}:${capLine(lines[index])}`);
+      fileMatches += 1;
     }
-    if (matches.length >= maxMatches) { truncated = true; break; }
+    if (fileMatches >= matchesPerFile && lines.length > fileMatches) truncated = true;
   }
   let output = matches.join('\n');
   if (!output) output = '(no matches)';
@@ -194,7 +201,7 @@ function grepTool(args = {}) {
     truncated = true;
   }
   output += summary;
-  const result = prepare('Grep', output, root, policy);
+  const result = prepare('Grep', output, root, policy, { grepScope: singleFile ? 'single-file' : 'multi' });
   return { ...result, source: { path: path.relative(root, target).split(path.sep).join('/'), matches: matches.length, truncated } };
 }
 

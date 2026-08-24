@@ -5,6 +5,15 @@ export {
   normalizePolicy,
   optimizeToolOutput,
 } from './src/core.mjs';
+export { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './src/context-transform.mjs';
+export {
+  buildSemanticPrompt,
+  createSemanticCompactor,
+  SEMANTIC_SUMMARY_SCHEMA,
+  validateSemanticSummary,
+} from './src/semantic-compactor.mjs';
+export { createProviderProxy } from './src/proxy.mjs';
+export { shakeHistoricalResult } from './src/history-shake.mjs';
 export {
   buildMetricsReport,
   defaultMetricsPath,
@@ -31,3 +40,10 @@ export {
 } from './src/provider-usage.mjs';
 export { planToolRoute, ROUTING_POLICY_VERSION } from './src/routing.mjs';
 export { readStatusSnapshot, renderStatusLine, STATUSLINE_MAX_AGE_MS } from './src/statusline.mjs';
+export {
+  activeSessionForPane,
+  currentTmuxPanePid,
+  defaultActiveSessionPath,
+  readActiveSessions,
+  recordActiveSession,
+} from './src/active-session.mjs';

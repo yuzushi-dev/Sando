@@ -187,9 +187,11 @@ export function auditMetadata({
     ...measurement,
   };
   const endToEnd = ['end-to-end', 'end-to-end-tools'].includes(normalizedMeasurement.mode);
-  if (!['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools'].includes(normalizedMeasurement.mode)
+  const providerEndToEnd = normalizedMeasurement.mode === 'end-to-end-proxy';
+  if (!['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools', 'end-to-end-proxy'].includes(normalizedMeasurement.mode)
     || typeof normalizedMeasurement.hookEndToEnd !== 'boolean'
-    || endToEnd !== normalizedMeasurement.hookEndToEnd) {
+    || endToEnd !== normalizedMeasurement.hookEndToEnd
+    || providerEndToEnd && normalizedMeasurement.hookEndToEnd) {
     throw new TypeError('invalid measurement metadata');
   }
   return {

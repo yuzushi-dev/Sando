@@ -53,7 +53,7 @@ export function runHookCli({ host, env = process.env } = {}) {
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
-      const optimization = optimizeToolOutput({ toolName: event.toolName, output: event.output, cwd: event.cwd, policy });
+      const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy });
       const receipt = createReceipt({ host, event, optimization });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
@@ -65,6 +65,7 @@ export function runHookCli({ host, env = process.env } = {}) {
           original: event.output,
           optimization,
           toolName: event.toolName,
+          toolInput: event.toolInput,
           cwd: event.cwd,
           policy,
         });
@@ -94,16 +95,16 @@ export function buildCodexFallback({ optimization, cwd }) {
   };
 }
 
-function shapeForClaude({ original, optimization, toolName, cwd, policy }) {
+function shapeForClaude({ original, optimization, toolName, toolInput, cwd, policy }) {
   if (typeof original === 'string') return materialize(optimization, cwd);
   if (!original || typeof original !== 'object' || Array.isArray(original)
     || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')) return undefined;
   const result = { ...original };
   if (typeof original.stdout === 'string') {
-    result.stdout = materialize(optimizeToolOutput({ toolName, output: original.stdout, cwd, policy }), cwd);
+    result.stdout = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy }), cwd);
   }
   if (typeof original.stderr === 'string') {
-    result.stderr = materialize(optimizeToolOutput({ toolName, output: original.stderr, cwd, policy }), cwd);
+    result.stderr = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy }), cwd);
   }
   return result;
 }

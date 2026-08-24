@@ -54,6 +54,26 @@ test('Claude probe enables an executable Bash tool and captures hook events', as
   assert.equal(args[args.indexOf('--setting-sources') + 1], '');
 });
 
+test('Claude optimized lane passes the declared 768-byte Sando policy', async () => {
+  const { buildClaudeE2EEnv } = await import('../live/e2e-run.mjs');
+  const baseEnv = { SANDO_POLICY: '{"mode":"apply","maxInlineBytes":9999}' };
+  const env = buildClaudeE2EEnv({ variant: 'optimized', workspace: '/tmp/probe', baseEnv });
+
+  assert.deepEqual(JSON.parse(env.SANDO_POLICY), {
+    mode: 'apply', maxInlineBytes: 768, maxArtifactBytes: 4096, maxColumns: 768, redact: true,
+  });
+  assert.equal(Object.hasOwn(buildClaudeE2EEnv({ variant: 'baseline', workspace: '/tmp/probe', baseEnv }), 'SANDO_POLICY'), false);
+});
+
+test('Codex baseline lane cannot inherit the optimized Sando policy', async () => {
+  const { buildCodexE2EEnv } = await import('../live/codex-e2e-run.mjs');
+  const baseEnv = { SANDO_POLICY: '{"mode":"apply","maxInlineBytes":9999}' };
+  const optimized = buildCodexE2EEnv({ variant: 'optimized', route: 'cli', baseEnv });
+  const baseline = buildCodexE2EEnv({ variant: 'baseline', route: 'cli', baseEnv });
+  assert.equal(JSON.parse(optimized.SANDO_POLICY).maxInlineBytes, 1024);
+  assert.equal(Object.hasOwn(baseline, 'SANDO_POLICY'), false);
+});
+
 test('probe analysis requires model facts, resolves artifacts, and rejects leaked secrets', async () => {
   const { analyzeProbeEvidence } = await import('../live/e2e-run.mjs');
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sando-e2e-artifact-'));

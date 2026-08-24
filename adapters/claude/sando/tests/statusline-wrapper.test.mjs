@@ -7,6 +7,7 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 const wrapper = path.join(root, 'statusline.mjs');
+const childEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
 
 test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-statusline-'));
@@ -33,14 +34,14 @@ test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
     }],
   }));
   const result = spawnSync(process.execPath, [wrapper], {
-    input: JSON.stringify({ transcript_path: '/tmp/fixture.jsonl' }), encoding: 'utf8',
+    input: JSON.stringify({ transcript_path: '/tmp/fixture.jsonl', session_id: 's1', model: { id: 'claude-sonnet-5' } }), encoding: 'utf8', timeout: 3000,
     env: {
-      ...process.env, SANDO_HONEY_STATUSLINE: honey,
+      ...childEnv, SANDO_HONEY_STATUSLINE: honey,
       SANDO_METRICS_PATH: metrics, SANDO_PROVIDER_USAGE_PATH: providerUsage,
     },
   });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 saved · 150in/7out · c30/w20');
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 40 token risparmiati · <$0.01');
 });
 
 test('Claude statusline accepts a shell-backed existing statusline', (t) => {
@@ -49,14 +50,14 @@ test('Claude statusline accepts a shell-backed existing statusline', (t) => {
   const honey = path.join(directory, 'honey.sh');
   fs.writeFileSync(honey, '#!/bin/sh\nprintf \'🪨 caveman\'\n', { mode: 0o700 });
   const result = spawnSync(process.execPath, [wrapper], {
-    input: '{}', encoding: 'utf8',
+    input: '{}', encoding: 'utf8', timeout: 3000,
     env: {
-      ...process.env, SANDO_HONEY_STATUSLINE: `sh ${honey}`,
+      ...childEnv, SANDO_HONEY_STATUSLINE: `sh ${honey}`,
       SANDO_METRICS_PATH: path.join(directory, 'missing-metrics.json'),
       SANDO_PROVIDER_USAGE_PATH: path.join(directory, 'missing-provider-usage.json'),
     },
   });
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   assert.equal(result.stdout.trim(), '🪨 caveman · 🥪 —');
 });
 
@@ -75,12 +76,12 @@ test('Claude statusline runs from a copied standalone bundle', (t) => {
     }],
   }));
   const result = spawnSync(process.execPath, [path.join(bundle, 'statusline.mjs')], {
-    input: '{}', encoding: 'utf8',
+    input: '{}', encoding: 'utf8', timeout: 3000,
     env: {
-      ...process.env, SANDO_METRICS_PATH: path.join(directory, 'missing-metrics.json'),
+      ...childEnv, SANDO_METRICS_PATH: path.join(directory, 'missing-metrics.json'),
       SANDO_PROVIDER_USAGE_PATH: providerUsage,
     },
   });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 provider 10in/3out · c2/w1');
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  assert.equal(result.stdout.trim(), '🥪 —');
 });

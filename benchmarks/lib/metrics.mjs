@@ -9,7 +9,7 @@ function keyOf(run) {
   return `${run.scenario}\u0000${run.repetition}`;
 }
 
-const MEASUREMENTS = ['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools'];
+const MEASUREMENTS = ['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools', 'end-to-end-proxy'];
 const TOKEN_ACCOUNTING = ['estimate', 'provider-reported'];
 
 function record(value) {

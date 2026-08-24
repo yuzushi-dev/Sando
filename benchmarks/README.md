@@ -15,6 +15,10 @@ The estimate is `ceil(UTF-8 bytes / 4)`. It is deterministic local accounting, n
 
 Reports include prompt digests, commit and environment metadata, working-tree provenance, and a `local-replay` measurement declaration. A fact found only in an artifact is recoverable but is not model-visible inline context.
 
+The provider-free local runner now includes `read-structural` so the structural-Read path is measured alongside the existing generic-read and terminal-output cases. Its result is an estimate, not a Claude/Codex provider counter.
+
+The provider-free context-proxy tests cover deterministic repeated-Read pruning, exact historical result deduplication, repeated-line compaction, extractive history shake, and 80%-budget gating across Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses shapes, plus a loopback upstream with streaming response passthrough. They do not consume provider quota. A proxy live A/B still requires explicit quota approval and paired provider counters.
+
 ## Live prompt A/B
 
 Live runs require explicit quota approval:
@@ -63,3 +67,62 @@ The CLI route removes the MCP schema/call overhead for classified literal reads 
 Single-cycle Codex aggregate estimate on a clean worktree: built-in shell twice → Sando CLI plus bounded `sando_exec`, 64,771 → 63,066 input tokens, saved 1,705 (2.63%); all quality gates passed. This is an estimate, not a stable total: use a multi-cycle campaign for a representative percentage.
 
 Fresh five-pair plugin comparison reports: `live-sando-claude-5.json` and `live-sando-codex-5-retry.json`. Both passed all quality gates. Claude saved 5,473 provider input tokens (4.00%); Codex saved 3,424 (1.65%). Output tokens are reported separately because Sando primarily reduces input context.
+
+Current five-pair run after the extractive-history work (2026-08-24), using the real host tool paths: Claude Code `2.1.233` / `claude-opus-5` saved 22,016 input tokens (145,788 → 123,772; 15.10%; median 15.24%), with 5/5 quality gates; Codex CLI `0.149.1` / default model saved 3,773 input tokens (207,956 → 204,183; 1.81%; median 1.84%), with 5/5 quality gates. Reports: `live-sando-claude-5-current.json` and `live-sando-codex-5-current-retry.json` in ignored `benchmarks/results/`. These validate live tool-output reduction; the provider-request history-shake proxy is not exercised by the host hooks yet.
+
+## Live provider-proxy A/B
+
+The provider proxy is now measured separately from the host-hook campaigns. It sends the same real tool conversation through the provider endpoint, with the optimized lane using the loopback proxy and `SANDO_CONTEXT_POLICY`; it does not edit persistent Claude or Codex configuration and makes no LLM calls.
+
+```sh
+node benchmarks/live/proxy-e2e-run.mjs --host claude --model claude-opus-5 \
+  --max-budget-usd 0.25 --repetitions 5 --confirm-cost \
+  --out benchmarks/results/live-proxy-claude-5-current.json
+node benchmarks/live/proxy-e2e-run.mjs --host codex --model gpt-5.6-luna \
+  --repetitions 5 --confirm-cost \
+  --out benchmarks/results/live-proxy-codex-5-current.json
+```
+
+Snapshot: 2026-08-24. Both campaigns completed 5/5 quality gates with provider-reported counters:
+
+| Host | Provider boundary | Baseline → optimized input | Saved | Median saved |
+| --- | --- | ---: | ---: | ---: |
+| Claude Code `2.1.233` / `claude-opus-5` | Anthropic Messages via loopback proxy | 139,730 → 74,233 | 65,497 (46.87%) | 46.91% |
+| Codex CLI `0.149.1` / `gpt-5.6-luna` | Responses `custom_tool_call*` via loopback proxy | 309,567 → 265,209 | 44,358 (14.33%) | 13.92% |
+
+The exact aggregate in each report is authoritative; cache fields and output tokens remain reported separately. The Codex proxy uses the ChatGPT OAuth backend by default; an API-key run can pass `--upstream https://api.openai.com/v1`.
+
+## Semantic shadow spike
+
+The semantic adapter is not enabled in the provider proxy and makes no live model calls by default. The local runner uses a fixture oracle to test accounting, fact recall, timeout/fallback behavior, and cache reuse:
+
+```sh
+npm run benchmark:semantic-shadow -- --repetitions 10
+npm run benchmark:semantic-shadow -- --repetitions 10 --min-input-tokens 1000
+```
+
+The default `8000`-token trigger produced no candidates on the current fixtures; lowering it to `1000` produced a provider-free oracle result of 59.72% net savings, 90% cache hits, and 100% fact recall over 100 events (124,952 net estimated tokens; p95 0 ms). This is a harness result, not an LLM quality or provider-cost claim.
+
+### Real CLI semantic shadow
+
+The live adapter sends only the redacted semantic prompt through an isolated CLI child, with a strict JSON schema, no tools, no Sando proxy routing, timeout kill, grounding checks, and fail-open fallback. It never applies the summary:
+
+```sh
+npm run benchmark:semantic-shadow-live -- --provider auto \
+  --min-input-tokens 1000 --confirm-cost \
+  --out benchmarks/results/semantic-shadow-auto-10.json
+npm run benchmark:semantic-shadow-live -- --provider claude \
+  --model claude-haiku-4-5 --min-input-tokens 1000 --confirm-cost \
+  --out benchmarks/results/semantic-shadow-claude-10.json
+```
+
+`auto` chooses Codex `gpt-5.6-luna`; if its binary is absent, it chooses Claude `claude-haiku-4-5`. It does not switch provider after a runtime failure, so reports remain comparable and attributable.
+
+Snapshot 2026-08-24, 10 fixture conversations / 12 events, trigger 1,000 estimated tokens:
+
+| Provider | Candidates | Fact recall | Compactor input + output | Net result | P95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Codex `gpt-5.6-luna` | 6/12 | 100% | 138,473 + 886 | −116,501 (−381.96%) | 8.55 s |
+| Claude `claude-haiku-4-5` | 4/12 | 100% | 24,781 + 2,290 | −11,290 (−37.02%) | 14.59 s |
+
+The current fixture set is below break-even for an LLM compactor: roughly 30k input tokens/event for Codex and 9k for Claude under these CLI overheads, before cache reuse. The 8k production trigger remains conservative; the live result does not authorize apply.

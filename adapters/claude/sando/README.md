@@ -10,6 +10,8 @@ claude --plugin-dir "$PWD/adapters/claude/sando"
 
 The `PostToolUse` hook applies preparation by default for string results and Bash-shaped objects with string `stdout` and `stderr` fields. Set `SANDO_MODE=observe` to record receipts and metrics without replacing the result. Optional `interrupted` and `isImage` fields must be booleans; other structured result shapes remain unchanged. `SANDO_MODE=dry-run` prepares and records a candidate without replacing the result.
 
+The applied path now performs the OMP-compatible reductions that are safe at Claude's `PostToolUse` boundary: structural summaries for large unselected `Read` results, bounded `Grep` output, repeated-line collapse for Bash output, redaction, and artifact-backed recovery. Explicit read selectors and raw reads remain unchanged.
+
 For real-session observation, force the safety boundary even if another environment variable or policy requests `apply`:
 
 ```sh
@@ -22,7 +24,7 @@ When replacement produces an artifact reference, the adapter writes the complete
 
 The bundle also exposes the read-only, network-free `prepare_tool_output` MCP tool. Malformed events, persistence failures, and telemetry failures are fail-open. Invalid `SANDO_POLICY` exits with status `2`.
 
-The `Stop` hook reads `transcript_path`, keeps only numeric `message.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The workspace statusline wrapper at [`statusline.mjs`](statusline.mjs) preserves Honey's output and appends Sando's estimate plus provider usage.
+The `Stop` hook reads `transcript_path`, keeps only numeric `message.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The workspace statusline wrapper at [`statusline.mjs`](statusline.mjs) preserves Honey's output and appends the current Claude session's compact Sando savings plus an input-cost estimate when the selected model is recognized; provider usage counters remain in the ledger.
 
 ## Metrics
 
@@ -42,3 +44,14 @@ node adapters/claude/sando/tests/e2e-probe.mjs
 ```
 
 It verifies replacement, artifact resolution, and receipt alignment without making a Claude or provider request.
+
+## Optional provider proxy
+
+For history-level pruning, run Sando as a loopback provider gateway. This is separate from the `PostToolUse` hook:
+
+```sh
+SANDO_UPSTREAM_URL=https://api.anthropic.com SANDO_PROXY_PORT=8787 npm run proxy
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude --plugin-dir "$PWD/adapters/claude/sando"
+```
+
+The proxy applies deterministic repeated-Read pruning, exact historical result deduplication, repeated-line compaction for Bash/log output, and extractive shaking of large historical Bash/Grep/log results before the Anthropic Messages request. Set `SANDO_CONTEXT_POLICY='{"maxHistoryTokens":120000}'` to gate the additional reductions at 80% of the request budget. Shake preserves head/tail/high-signal lines rather than generating a semantic summary. It passes streaming responses through unchanged, makes no LLM calls, and does not log credentials. This reduces model input context; it does not remove raw content already rendered by the host transcript.

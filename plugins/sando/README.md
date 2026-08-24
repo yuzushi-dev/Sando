@@ -28,7 +28,9 @@ The `PreToolUse` gate rewrites proven literal `cat -- FILE` and `rg/grep -F -- P
 
 The `PreToolUse` gate provides automatic CLI routing only for classified literal read/search commands. Ambiguous shell commands remain allowed and are recorded as bypasses; use `sando_exec` explicitly for terminal coverage.
 
-The `Stop` hook reads `transcript_path`, keeps numeric `token_count.last_token_usage` or `turn.completed.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The active workspace uses [`scripts/sando-statusline.mjs`](../../scripts/sando-statusline.mjs) in tmux because Codex's native TUI has no verified custom status item.
+The routed CLI and MCP tools share the OMP-compatible output policy: structural summaries for eligible unselected reads, 20-file/20-match multi-file grep bounds (200 for one file), repeated-line collapse for terminal output, redaction, and artifact-backed recovery.
+
+The `PreToolUse`/`Stop` hooks associate the Codex `session_id` with the current tmux pane in `~/.local/state/sando/active-sessions.json`. The `Stop` hook also reads `transcript_path`, keeps numeric `token_count.last_token_usage` or `turn.completed.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. The active workspace uses [`scripts/sando-statusline.mjs`](../../scripts/sando-statusline.mjs) in tmux because Codex's native TUI has no verified custom status item. Configure it with `--pane '#{pane_id}'`; a missing or replaced pane process renders `🥪 —` instead of historical totals.
 
 ## Codex capability boundary
 

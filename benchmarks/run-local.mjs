@@ -45,7 +45,7 @@ async function main() {
   }
   const selected = option('scenario');
   if (selected && !/^[A-Za-z0-9_-]+$/.test(selected)) throw new Error('--scenario must be a fixture id');
-  const fixtureNames = selected ? [`${selected}.json`] : ['read-large.json', 'terminal-noise.json'];
+  const fixtureNames = selected ? [`${selected}.json`] : ['read-large.json', 'read-structural.json', 'terminal-noise.json'];
   const runs = [];
   const receipts = [];
   const scenarioDigests = new Map();
@@ -63,6 +63,9 @@ async function main() {
         toolName: event.toolName,
         output: event.output,
         cwd: ROOT,
+        selector: event.selector,
+        raw: event.raw,
+        prose: event.prose,
         runId: `${scenario.id}-${repetition}`,
         policy: { mode: 'apply' },
       }));
