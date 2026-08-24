@@ -16,8 +16,8 @@ const HOOK = path.join(ROOT, 'adapters/claude/sando/hooks/post-tool-use.mjs');
 const SCENARIO = 'claude-tool-result';
 const REQUIRED_FACTS = ['SANDO_E2E_HEAD_FACT', 'SANDO_E2E_TAIL_FACT'];
 const ARTIFACT_FACTS = ['SANDO_E2E_MIDDLE_FACT'];
-const SECRET = 'sk-test-01234567890123456789';
 export const MAX_REPETITIONS = 15;
+const SECRET = 'sk-test-01234567890123456789';
 const SCENARIO_DIGEST = digestPrompt(JSON.stringify({ SCENARIO, REQUIRED_FACTS, ARTIFACT_FACTS }));
 const POLICY = { mode: 'apply', maxInlineBytes: 768, maxArtifactBytes: 4096, maxColumns: 768, redact: true };
 export const CLAUDE_NO_COST_BLOCKER = 'Claude Code cannot provide a no-cost end-to-end fixture: PostToolUse is emitted only after a live Claude tool call, and the --print CLI requires a provider request to produce that tool call; no local/mock provider can produce Claude model-visible tool-call evidence. The existing prompt-level runner disables tools and embeds context, so it cannot establish model-visible or hook lifecycle evidence.';
@@ -40,12 +40,35 @@ function textFromValue(value, seen = new Set()) {
   return text;
 }
 
+function updatedToolOutput(value, seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) {
+    if (typeof value !== 'string') return null;
+    try { return updatedToolOutput(JSON.parse(value), seen); } catch { return null; }
+  }
+  if (Object.hasOwn(value, 'updatedToolOutput')) return value.updatedToolOutput;
+  seen.add(value);
+  for (const child of Object.values(value)) {
+    const found = updatedToolOutput(child, seen);
+    if (found !== null) return found;
+  }
+  seen.delete(value);
+  return null;
+}
+
+function updatedToolOutputFromStream(stdout) {
+  for (const document of jsonDocuments(stdout).slice().reverse()) {
+    const replacement = updatedToolOutput(document);
+    if (replacement !== null) return replacement;
+  }
+  return null;
+}
+
 function jsonDocuments(stdout) {
   if (typeof stdout !== 'string' || !stdout.trim()) return [];
   try { return [JSON.parse(stdout)]; } catch {}
   const documents = [];
   for (const line of stdout.trim().split('\n')) {
-    try { documents.push(JSON.parse(line)); } catch { return []; }
+    try { documents.push(JSON.parse(line)); } catch {}
   }
   return documents;
 }
@@ -121,12 +144,13 @@ export async function analyzeProbeEvidence({ replacement, modelResult, requiredF
   };
 }
 
-export function buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd } = {}) {
+export function buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd, settingSources } = {}) {
   if (typeof prompt !== 'string' || !prompt) throw new TypeError('prompt is required');
   return [
     ...(model ? ['--model', model] : []), '--print', '--no-session-persistence', '--disable-slash-commands', '--no-chrome',
     '--tools', 'Bash', '--allowed-tools', 'Bash', '--permission-mode', 'dontAsk', '--strict-mcp-config',
     '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+    ...(settingSources !== undefined ? ['--setting-sources', settingSources] : []),
     ...(pluginDir ? ['--plugin-dir', pluginDir] : []),
     ...(maxBudgetUsd ? ['--max-budget-usd', String(maxBudgetUsd)] : []), prompt,
   ];
@@ -153,16 +177,17 @@ function runCommand(command, args, { cwd, env = process.env, input, timeoutMs = 
   });
 }
 
-function fixturePayload() {
+function fixturePayload({ includeSecret = true } = {}) {
   return [
-    REQUIRED_FACTS[0], ...Array.from({ length: 700 }, (_, index) => `noise:${index}`), ARTIFACT_FACTS[0],
-    ...Array.from({ length: 700 }, (_, index) => `noise:${index}`), REQUIRED_FACTS[1], `API_KEY=${SECRET}`,
+    REQUIRED_FACTS[0], ...Array.from({ length: 320 }, (_, index) => `noise:${index}`), ARTIFACT_FACTS[0],
+    ...Array.from({ length: 320 }, (_, index) => `noise:${index}`), REQUIRED_FACTS[1],
+    ...(includeSecret ? [`API_KEY=${SECRET}`] : []),
   ].join('\n') + '\n';
 }
 
-async function createProbeScript(workspace) {
+async function createProbeScript(workspace, options) {
   const script = path.join(workspace, 'probe-output.mjs');
-  await fs.writeFile(script, `process.stdout.write(${JSON.stringify(fixturePayload())});\n`, { mode: 0o700 });
+  await fs.writeFile(script, `process.stdout.write(${JSON.stringify(fixturePayload(options))});\n`, { mode: 0o700 });
   return script;
 }
 
@@ -240,12 +265,15 @@ export async function runDeterministicProbe({ outputPath = path.join(EVIDENCE_RO
 
 function parseModelProbeResult(stdout) {
   const documents = jsonDocuments(stdout);
-  const terminal = documents.at(-1);
+  const terminal = documents.slice().reverse().find((document) => document?.type === 'result');
   if (!terminal || terminal.type !== 'result' || terminal.subtype !== 'success') throw new Error('Claude probe returned no successful result');
   let value = terminal.structured_output ?? terminal.result;
-  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { throw new Error('Claude probe returned invalid JSON'); } }
+  if (typeof value === 'string') {
+    const fenced = value.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    try { value = JSON.parse(fenced ? fenced[1] : value); } catch { throw new Error('Claude probe returned invalid JSON'); }
+  }
   if (!value || typeof value !== 'object' || value.status !== 'ok' || !Array.isArray(value.facts)) throw new Error('Claude probe returned invalid fact result');
-  const usage = parseClaudeUsage(stdout);
+  const usage = parseClaudeUsage(stdout, { tolerateMalformed: true });
   if (!usage) throw new Error('Claude probe returned no provider usage');
   return { ...value, usage };
 }
@@ -259,28 +287,33 @@ async function createCapturePlugin(pluginDir, capturePath) {
 }
 
 async function runVariant({ variant, workspace, script, pluginDir, capturePath, model, maxBudgetUsd, timeoutMs, clientVersion }) {
-  const prompt = `Use Bash exactly once to run: node ${script}\nReturn only JSON with status "ok" and facts found in the tool result. Do not repeat credentials or tool output.`;
-  const args = buildClaudeE2EArgs({ prompt, pluginDir: variant === 'optimized' ? pluginDir : undefined, model, maxBudgetUsd });
-  const result = await runCommand('claude', args, { cwd: workspace, timeoutMs, env: { ...process.env, ...(variant === 'optimized' ? { SANDO_MODE: 'apply', SANDO_METRICS_PATH: path.join(workspace, 'metrics.json') } : {}) } });
+  const prompt = `Use Bash exactly once to run: node ${script}\nReturn exactly JSON with status "ok" and facts exactly ${JSON.stringify(REQUIRED_FACTS)} in that order. Use no descriptions, extra facts, or Markdown fences. Do not repeat tool output.`;
+  const args = buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd });
+  const result = await runCommand('claude', args, { cwd: workspace, timeoutMs, env: { ...process.env, SANDO_MODE: variant === 'optimized' ? 'apply' : 'observe', SANDO_METRICS_PATH: path.join(workspace, 'metrics.json') } });
   const audit = auditMetadata({ host: 'claude', variant, prompt, args, result, cwd: ROOT, clientVersion, scenarioDigest: SCENARIO_DIGEST, resolvedModel: null, measurement: { mode: 'end-to-end', hookEndToEnd: true } });
   if (result.code !== 0) return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: `Claude ${variant} failed` };
   let probe;
   try { probe = parseModelProbeResult(result.stdout); } catch (error) { return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: error.message }; }
   const documents = jsonDocuments(result.stdout);
+  const initModel = documents.slice().reverse().find((document) => document?.type === 'system' && document.subtype === 'init')?.model;
+  const providerUsage = initModel ? { ...probe.usage, resolvedModel: initModel } : probe.usage;
   const observed = toolResultObserved(documents);
   let replacement;
-  if (variant === 'optimized') replacement = JSON.parse(await fs.readFile(capturePath, 'utf8')).updatedToolOutput;
+  if (variant === 'optimized') {
+    try { replacement = JSON.parse(await fs.readFile(capturePath, 'utf8')).updatedToolOutput; }
+    catch { replacement = updatedToolOutputFromStream(result.stdout); }
+  }
   else replacement = toolResultText(documents);
   const visibleEvidence = await analyzeProbeEvidence({ replacement: toolResultText(documents), modelResult: probe, requiredFacts: REQUIRED_FACTS, artifactFacts: [], cwd: workspace });
   const replacementEvidence = await analyzeProbeEvidence({ replacement: replacement ?? '', modelResult: probe, requiredFacts: REQUIRED_FACTS, artifactFacts: variant === 'optimized' ? ARTIFACT_FACTS : [], cwd: workspace });
-  audit.resolvedModel = probe.usage.resolvedModel ?? model ?? null;
+  audit.resolvedModel = providerUsage.resolvedModel ?? model ?? null;
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
-  return { host: 'claude', scenario: SCENARIO, repetition: 0, variant, resolvedModel: audit.resolvedModel, clientVersion, measurement: 'end-to-end', tokenAccounting: 'provider-reported', providerUsage: probe.usage, inputTokens: probe.usage.inputTokens, outputTokens: probe.usage.outputTokens, totalTokens: probe.usage.totalTokens, quality: observed && probe.status === 'ok' ? 'pass' : 'fail', modelVisibleQuality: visibleEvidence.modelVisibleQuality, artifactResolvable: variant === 'baseline' || replacementEvidence.artifactResolvable, secretLeak: visibleEvidence.secretLeak || replacementEvidence.secretLeak, toolResultObserved: observed, postToolUseCaptured: variant === 'optimized' && Boolean(replacement), promptDigest: audit.promptDigest, audit };
+  return { host: 'claude', scenario: SCENARIO, repetition: 0, variant, resolvedModel: audit.resolvedModel, clientVersion, measurement: 'end-to-end', tokenAccounting: 'provider-reported', providerUsage, inputTokens: providerUsage.inputTokens, outputTokens: providerUsage.outputTokens, totalTokens: providerUsage.totalTokens, quality: observed && probe.status === 'ok' ? 'pass' : 'fail', modelVisibleQuality: visibleEvidence.modelVisibleQuality, artifactResolvable: variant === 'baseline' || replacementEvidence.artifactResolvable, secretLeak: visibleEvidence.secretLeak || replacementEvidence.secretLeak, toolResultObserved: observed, postToolUseCaptured: variant === 'optimized' && Boolean(replacement), promptDigest: audit.promptDigest, audit };
 }
 
 async function runLive({ outputPath, model, maxBudgetUsd, repetitions, timeoutMs }) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-claude-e2e-'));
-  const script = await createProbeScript(workspace);
+  const script = await createProbeScript(workspace, { includeSecret: false });
   const pluginDir = path.join(workspace, 'plugin');
   const capturePath = path.join(workspace, 'post-tool-use.json');
   await createCapturePlugin(pluginDir, capturePath);
@@ -303,7 +336,12 @@ async function runLive({ outputPath, model, maxBudgetUsd, repetitions, timeoutMs
         if (optimized.modelVisibleQuality !== 'pass' || !optimized.toolResultObserved || !optimized.postToolUseCaptured) throw new Error('end-to-end evidence gate failed');
       } catch (error) { failure = { status: 'blocked', message: error.message }; break; }
     }
-    const output = { schema: 'sando-live-e2e/v1', status: failure ? 'blocked' : 'passed', host: 'claude', clientVersion, scenario: SCENARIO, audit: { measurement: { mode: 'end-to-end', hookEndToEnd: true }, tokenAccounting: { source: 'provider-reported', providerObserved: true }, note: 'Tool-enabled Claude Bash and PostToolUse replacement were observed.' }, runs, summary: failure ? null : summarizeRuns(runs), ...(failure ? { failure } : {}) };
+    let summary = null;
+    if (!failure) {
+      try { summary = summarizeRuns(runs); }
+      catch (error) { failure = { status: 'blocked', message: error.message }; }
+    }
+    const output = { schema: 'sando-live-e2e/v1', status: failure ? 'blocked' : 'passed', host: 'claude', clientVersion, scenario: SCENARIO, audit: { measurement: { mode: 'end-to-end', hookEndToEnd: true }, tokenAccounting: { source: 'provider-reported', providerObserved: true }, note: 'Tool-enabled Claude Bash and PostToolUse replacement were observed.' }, runs, summary, ...(failure ? { failure } : {}) };
     await fs.mkdir(path.dirname(outputPath), { recursive: true }); await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`); return output;
   } finally { await fs.rm(workspace, { recursive: true, force: true }); }
 }

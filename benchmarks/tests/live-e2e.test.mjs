@@ -44,13 +44,14 @@ test('deterministic probe records paired hook evidence and fail-closed live stat
 
 test('Claude probe enables an executable Bash tool and captures hook events', async () => {
   const { buildClaudeE2EArgs } = await import('../live/e2e-run.mjs');
-  const args = buildClaudeE2EArgs({ prompt: 'probe', pluginDir: '/tmp/plugin', maxBudgetUsd: '0.01' });
+  const args = buildClaudeE2EArgs({ prompt: 'probe', pluginDir: '/tmp/plugin', settingSources: '', maxBudgetUsd: '0.01' });
 
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.equal(args[args.indexOf('--tools') + 1], 'Bash');
   assert.ok(args.includes('--allowed-tools'));
   assert.ok(args.includes('--include-hook-events'));
   assert.ok(args.includes('--verbose'));
+  assert.equal(args[args.indexOf('--setting-sources') + 1], '');
 });
 
 test('probe analysis requires model facts, resolves artifacts, and rejects leaked secrets', async () => {

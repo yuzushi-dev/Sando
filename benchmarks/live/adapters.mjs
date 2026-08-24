@@ -2,14 +2,14 @@ function number(value) { return Number.isSafeInteger(value) && value >= 0 ? valu
 
 function requiredNumber(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 
-function jsonDocuments(stdout) {
+function jsonDocuments(stdout, { tolerateMalformed = false } = {}) {
   if (typeof stdout !== 'string' || !stdout.trim()) return null;
   try { return [JSON.parse(stdout)]; } catch {}
   const documents = [];
   for (const line of stdout.trim().split('\n')) {
-    try { documents.push(JSON.parse(line)); } catch { return null; }
+    try { documents.push(JSON.parse(line)); } catch { if (!tolerateMalformed) return null; }
   }
-  return documents;
+  return documents.length ? documents : null;
 }
 
 function findModel(value, seen = new Set()) {
@@ -63,9 +63,11 @@ export function formatChildFailure(host, variant, result) {
   return `${host} ${variant} failed (${result?.code ?? result?.signal}): ${details.slice(-1000)}`;
 }
 
-export function parseClaudeUsage(stdout) {
-  const documents = jsonDocuments(stdout);
-  const candidate = documents?.at(-1);
+export function parseClaudeUsage(stdout, options) {
+  const documents = jsonDocuments(stdout, options);
+  const candidate = options?.tolerateMalformed
+    ? documents?.slice().reverse().find((document) => document?.type === 'result')
+    : documents?.at(-1);
   if (!candidate || typeof candidate !== 'object' || candidate.type !== 'result' || candidate.subtype !== 'success') return null;
   const usage = candidate?.usage;
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;

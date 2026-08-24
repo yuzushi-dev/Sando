@@ -226,6 +226,15 @@ test('parses Claude usage from JSONL provider output', () => {
   });
 });
 
+test('keeps valid Claude usage when a verbose diagnostic line is malformed', () => {
+  const output = [
+    JSON.stringify({ type: 'assistant', message: { content: [] } }),
+    '{verbose diagnostic}',
+    JSON.stringify({ type: 'result', subtype: 'success', usage: { input_tokens: 42, output_tokens: 7 } }),
+  ].join('\n');
+  assert.equal(parseClaudeUsage(output, { tolerateMalformed: true })?.totalTokens, 49);
+});
+
 test('extracts Claude canonicalModel from modelUsage entries', () => {
   assert.equal(parseClaudeUsage(JSON.stringify({
     type: 'result',
