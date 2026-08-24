@@ -6,8 +6,11 @@ import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } fr
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 
 function hookPolicy(env) {
-  if (env.SANDO_POLICY) return normalizePolicy(JSON.parse(env.SANDO_POLICY));
-  return normalizePolicy({ mode: env.SANDO_MODE || 'observe' });
+  const policy = env.SANDO_POLICY
+    ? JSON.parse(env.SANDO_POLICY)
+    : { mode: env.SANDO_MODE || 'apply' };
+  if (/^(1|true|yes)$/i.test(env.SANDO_OBSERVE_ONLY || '')) policy.mode = 'observe';
+  return normalizePolicy(policy);
 }
 
 function artifactPath(cwd, artifact) {

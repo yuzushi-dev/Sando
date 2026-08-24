@@ -12,6 +12,7 @@ import { buildClaudeArgs, buildCodexArgs, formatChildFailure, hasOkStatus, parse
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const LIVE_QUALITY_BLOCKED_NOTE = 'Prompt-level live data cannot establish modelVisibleQuality, artifactResolvable, or secretLeak evidence; the live quality gate blocks this report.';
+export const MAX_REPETITIONS = 15;
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -20,6 +21,14 @@ function option(name, fallback) {
 
 function requireConfirmation() {
   if (!process.argv.includes('--confirm-cost')) throw new Error('live benchmark requires --confirm-cost');
+}
+
+export function validateRepetitions(value) {
+  const repetitions = Number(value);
+  if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > MAX_REPETITIONS) {
+    throw new Error(`--repetitions must be 1..${MAX_REPETITIONS}`);
+  }
+  return repetitions;
 }
 
 function runCommand(command, args, timeoutMs) {
@@ -108,7 +117,7 @@ async function writeReport({ destination, host, clientVersion, scenario, runs, f
         : 'This run measures provider usage for a prepared prompt. It does not prove transparent hook rewriting.',
     },
     runs,
-    summary: reportFailure ? null : summarizeRuns(runs),
+    summary: runs.length ? summarizeRuns(runs) : null,
     ...(reportFailure ? { failure: reportFailure } : {}),
   };
   await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -146,8 +155,7 @@ async function main() {
   if (host === 'claude' && !option('max-budget-usd') && !unlimitedBudget) {
     throw new Error('Claude live benchmark requires --max-budget-usd or --unlimited-budget');
   }
-  const repetitions = Number(option('repetitions', '2'));
-  if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 10) throw new Error('--repetitions must be 1..10');
+  const repetitions = validateRepetitions(option('repetitions', '2'));
   const scenario = await loadScenario(path.join(ROOT, 'benchmarks', 'fixtures', option('scenario', 'terminal-noise') + '.json'));
   const scenarioDigest = digestPrompt(JSON.stringify(scenario));
   const destination = path.resolve(option('out', path.join(ROOT, 'benchmarks', 'results', `live-${host}.json`)));

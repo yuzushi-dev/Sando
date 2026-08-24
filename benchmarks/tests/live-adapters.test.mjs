@@ -18,6 +18,12 @@ import * as liveRunner from '../live/run-live.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+test('live runner permits the requested fifteen paired cycles', () => {
+  assert.equal(liveRunner.MAX_REPETITIONS, 15);
+  assert.equal(liveRunner.validateRepetitions('15'), 15);
+  assert.throws(() => liveRunner.validateRepetitions('16'), /1\.\.15/);
+});
+
 function liveRun(variant, evidence = {}) {
   return {
     host: 'claude',
@@ -103,13 +109,15 @@ test('unlimited Claude budget bypasses the per-call budget requirement', () => {
   } catch (caught) {
     error = caught;
   }
-  assert.match(error?.stderr ?? '', /--repetitions must be 1\.\.10/);
+  assert.match(error?.stderr ?? '', /--repetitions must be 1\.\.15/);
 });
 
 test('blocks prompt-level live reports without model, artifact, and leak evidence', async () => {
   const output = await reportWithRuns([liveRun('baseline'), liveRun('optimized')]);
   assert.equal(output.status, 'blocked');
   assert.equal(output.failure.status, 'blocked');
+  assert.equal(output.summary.pairedRuns, 1);
+  assert.equal(output.summary.scenarios[0].medianSavedInputTokens, 40);
   assert.match(output.audit.note, /Prompt-level live data cannot establish modelVisibleQuality, artifactResolvable, or secretLeak evidence/);
 });
 

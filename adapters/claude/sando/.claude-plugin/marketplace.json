@@ -1,0 +1,13 @@
+{
+  "name": "sando-local",
+  "owner": { "name": "Sando contributors" },
+  "metadata": { "description": "Sando local Claude Code plugin" },
+  "plugins": [
+    {
+      "name": "sando",
+      "version": "0.1.0",
+      "source": "./",
+      "description": "Observe tool output and record bounded local savings estimates."
+    }
+  ]
+}

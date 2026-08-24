@@ -1,5 +1,18 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|exec_command|shell_command)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/pre-tool-use.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking Sando coverage"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": ".*",
@@ -9,6 +22,19 @@
             "command": "node \"${PLUGIN_ROOT}/hooks/post-tool-use.mjs\"",
             "timeout": 5,
             "statusMessage": "Observing tool output"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/provider-usage.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Recording provider usage"
           }
         ]
       }

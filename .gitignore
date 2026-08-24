@@ -15,6 +15,7 @@ spikes/**/README.md
 coverage/
 dist/
 build/
+__pycache__/
 
 # Local environment and secrets
 .env

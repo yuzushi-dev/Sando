@@ -31,6 +31,8 @@ const result = optimizeToolOutput({
 
 `estimateTokens(text)` returns `ceil(UTF-8 bytes / 4)`. It is a deterministic local estimate for comparisons, not provider tokenization or billable usage. `stats` reports exact byte counts and local estimates; it never infers provider savings.
 
+Hook sessions can set `SANDO_OBSERVE_ONLY=1` (also `true` or `yes`) to force observation even when `SANDO_MODE` or `SANDO_POLICY.mode` says `apply`. The hook then records the candidate estimate without replacing the host tool result.
+
 Additional exports are `normalizeEvent`, `normalizePolicy`, and `createReceipt`. Receipts contain digests and deterministic stats, not raw output.
 
 ## Metrics
@@ -45,6 +47,10 @@ node packages/sando/src/metrics-cli.mjs --json
 The JSON report is `sando-report/v1`. `estimatedTransformSavingsTokens` is based on the local byte estimate. `providerReportedSavingsTokens` is `null` unless paired provider counters are supplied.
 
 `src/provider-ledger.mjs` is separate accounting infrastructure for provider prompt/output and cache-read/cache-write counters. It does not calculate savings or parse provider-native responses.
+
+`src/provider-usage.mjs` is the persisted provider transcript ledger (`sando-provider-usage/v1`). It stores numeric Claude/Codex usage only, deduplicates repeated Stop hooks, and keeps provider input/output/cache counters separate from local transform estimates. The default file is `~/.local/state/sando/provider-usage.json`; override it with the absolute `SANDO_PROVIDER_USAGE_PATH`.
+
+`src/statusline.mjs` renders `~estimated saved` separately from provider-reported `input/output/cache` counters. It returns a safe empty or stale state when the ledgers are missing or old.
 
 `spikes/context-lifecycle/` and `spikes/provider-routing/` are experimental, host-independent prototypes; they are not wired into Claude Code or Codex.
 

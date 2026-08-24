@@ -5,9 +5,12 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 
-function hookPolicy(env) {
-  if (env.SANDO_POLICY) return normalizePolicy(JSON.parse(env.SANDO_POLICY));
-  return normalizePolicy({ mode: env.SANDO_MODE || 'observe' });
+function hookPolicy(env, host) {
+  const policy = env.SANDO_POLICY
+    ? JSON.parse(env.SANDO_POLICY)
+    : { mode: env.SANDO_MODE || (host === 'claude' ? 'apply' : 'observe') };
+  if (/^(1|true|yes)$/i.test(env.SANDO_OBSERVE_ONLY || '')) policy.mode = 'observe';
+  return normalizePolicy(policy);
 }
 
 function artifactPath(cwd, artifact) {
@@ -39,7 +42,7 @@ function artifactPath(cwd, artifact) {
 export function runHookCli({ host, env = process.env } = {}) {
   let policy;
   try {
-    policy = hookPolicy(env);
+    policy = hookPolicy(env, host);
   } catch (error) {
     process.stderr.write(`sando invalid policy: ${error instanceof Error ? error.message : 'invalid input'}\n`);
     process.exitCode = 2;

@@ -21,15 +21,45 @@ function digest(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-function runHook(input, cwd, policy) {
+function runHook(input, cwd, policy, extraEnv = {}) {
   const metricsPath = path.join(cwd, 'metrics.json');
+  const env = {
+    ...process.env,
+    SANDO_METRICS_PATH: metricsPath,
+    ...extraEnv,
+  };
+  if (policy) env.SANDO_POLICY = JSON.stringify(policy);
   const result = spawnSync(process.execPath, [hook], {
     input: JSON.stringify(input), encoding: 'utf8',
-    env: { ...process.env, SANDO_POLICY: JSON.stringify(policy), SANDO_METRICS_PATH: metricsPath },
+    env,
   });
   assert.equal(result.status, 0, result.stderr);
   return { output: JSON.parse(result.stdout), metrics: JSON.parse(fs.readFileSync(metricsPath, 'utf8')) };
 }
+
+test('Claude defaults to apply when no mode is configured', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-default-apply-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { output, metrics } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
+    tool_response: `Authorization: Bearer fixture-secret\n${'x'.repeat(6000)}`,
+  }, cwd);
+
+  assert.equal(typeof output.hookSpecificOutput?.updatedToolOutput, 'string');
+  assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
+});
+
+test('observe-only guard never replaces Claude output', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-observe-only-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { output, metrics } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
+    tool_response: `secret=hidden\n${'x'.repeat(600)}`,
+  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true }, { SANDO_OBSERVE_ONLY: '1' });
+
+  assert.deepEqual(output, {});
+  assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
+});
 
 test('Claude apply stays fail-open for structured output with non-text stdout', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-shape-'));

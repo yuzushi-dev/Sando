@@ -21,8 +21,9 @@ Live runs require explicit quota approval:
 
 ```sh
 npm run benchmark:live -- --host claude --model sonnet --max-budget-usd 0.25 \
-  --claude-plugin-dir adapters/claude/sando --confirm-cost
-npm run benchmark:live -- --host codex --scenario terminal-noise --confirm-cost
+  --claude-plugin-dir adapters/claude/sando --repetitions 15 --confirm-cost
+npm run benchmark:live -- --host codex --scenario terminal-noise \
+  --repetitions 15 --confirm-cost
 ```
 
 Claude requires either `--max-budget-usd` or explicit `--unlimited-budget`. Live runs record provider usage, prompt digests, redacted diagnostics, client version, resolved model when available, and provenance. Claude input accounting combines `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`; Codex keeps `input_tokens` as reported and records cached input separately.

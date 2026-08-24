@@ -1,0 +1,18 @@
+{
+  "name": "sando-local",
+  "interface": { "displayName": "Sando" },
+  "metadata": {
+    "description": "Deterministic observational token-savings instrumentation.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "sando",
+      "description": "Observe tool output and record bounded local savings estimates.",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Developer Tools",
+      "license": "MIT"
+    }
+  ]
+}

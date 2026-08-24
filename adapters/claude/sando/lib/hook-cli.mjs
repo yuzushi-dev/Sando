@@ -8,7 +8,7 @@ import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } fr
 
 function hookPolicy(env) {
   if (env.SANDO_POLICY) return normalizePolicy(JSON.parse(env.SANDO_POLICY));
-  return normalizePolicy({ mode: env.SANDO_MODE || 'observe' });
+  return normalizePolicy({ mode: env.SANDO_MODE || 'apply' });
 }
 
 function artifactPath(cwd, artifact) {

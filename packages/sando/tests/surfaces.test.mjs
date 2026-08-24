@@ -93,6 +93,14 @@ test('Codex and Claude manifests keep hooks in companion files', () => {
   ]) assert.ok(json(file).hooks.PostToolUse.length > 0);
 });
 
+test('Codex MCP config resolves its server from the installed plugin root', () => {
+  const config = json('plugins/sando/.mcp.json');
+  const server = config.mcpServers.sando;
+  assert.deepEqual(server.args, ['mcp/server.mjs']);
+  assert.equal(server.cwd, '.');
+  assert.ok(fs.existsSync(path.resolve(root, 'plugins/sando', server.cwd, server.args[0])));
+});
+
 test('public adapter and plugin text uses neutral branding', () => {
   for (const file of [
     'plugins/sando/.codex-plugin/plugin.json',
@@ -192,7 +200,7 @@ test('Codex fallback emits feedback and continue false, never a transparent rewr
   assert.equal(Object.hasOwn(output, 'updatedToolOutput'), false);
 });
 
-test('MCP server initializes and exposes one read-only preparation tool', async (t) => {
+test('MCP server exposes bounded read, grep, and sandboxed exec tools', async (t) => {
   const server = spawn(process.execPath, [path.join(root, 'plugins/sando/mcp/server.mjs')], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -212,12 +220,18 @@ test('MCP server initializes and exposes one read-only preparation tool', async 
   request({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
   request({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   request({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'prepare_tool_output', arguments: { toolName: 'Read', output: 'ok', cwd: root } } });
+  request({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'sando_read', arguments: { path: 'packages/sando/package.json', cwd: root } } });
+  request({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'sando_grep', arguments: { pattern: 'sando', path: 'packages/sando/package.json', cwd: root } } });
 
   const deadline = Date.now() + 2_000;
-  while (messages.length < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(messages.length, 3);
+  while (messages.length < 5 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(messages.length, 5);
   assert.equal(messages[0].result.serverInfo.name, 'sando');
-  assert.equal(messages[1].result.tools.length, 1);
-  assert.equal(messages[1].result.tools[0].annotations.readOnlyHint, true);
+  assert.deepEqual(messages[1].result.tools.map((tool) => tool.name), ['prepare_tool_output', 'sando_read', 'sando_grep', 'sando_exec']);
+  assert.ok(messages[1].result.tools.slice(0, 3).every((tool) => tool.annotations.readOnlyHint));
+  assert.equal(messages[1].result.tools[3].name, 'sando_exec');
+  assert.equal(messages[1].result.tools[3].annotations.readOnlyHint, false);
   assert.equal(messages[2].result.structuredContent.inline, 'ok');
+  assert.match(messages[3].result.structuredContent.inline, /\"name\"/);
+  assert.match(messages[4].result.structuredContent.inline, /package\.json:/);
 });
