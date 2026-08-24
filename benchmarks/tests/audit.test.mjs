@@ -90,6 +90,13 @@ test('measurement metadata cannot claim end-to-end without a hook lifecycle', ()
   }));
 });
 
+test('accepts end-to-end-tools provenance for MCP-mediated runs', () => {
+  assert.doesNotThrow(() => auditMetadata({
+    host: 'codex', variant: 'optimized', prompt: 'prompt',
+    measurement: { mode: 'end-to-end-tools', hookEndToEnd: true },
+  }));
+});
+
 test('dirty provenance hashes a dangling symlink target, not its resolved bytes', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-audit-'));
   const git = (...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });

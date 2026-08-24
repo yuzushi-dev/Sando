@@ -15,6 +15,7 @@ import {
   parseCodexUsage,
 } from '../live/adapters.mjs';
 import * as liveRunner from '../live/run-live.mjs';
+import { buildCodexToolArgs, CODEX_TOOL_MEASUREMENT } from '../live/codex-e2e-run.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -320,4 +321,15 @@ test('supports an explicit Codex model argument without implying output rewrite'
   assert.deepEqual(codex.slice(0, 2), ['exec', '--model']);
   assert.ok(codex.includes('--model'));
   assert.equal(codex.at(-1), 'a prompt');
+});
+
+test('builds paired Codex tool commands with MCP only in the optimized arm', () => {
+  const baseline = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: false, serverPath: '/tmp/sando/mcp/server.mjs' });
+  const optimized = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: true, serverPath: '/tmp/sando/mcp/server.mjs' });
+  assert.equal(baseline.includes('mcp_servers.sando.command="node"'), false);
+  assert.ok(baseline.includes('--approve-for-me'));
+  assert.ok(optimized.includes('mcp_servers.sando.command="node"'));
+  assert.ok(optimized.includes('mcp_servers.sando.args=["/tmp/sando/mcp/server.mjs"]'));
+  assert.equal(optimized.at(-1), 'run it');
+  assert.equal(CODEX_TOOL_MEASUREMENT, 'end-to-end-tools');
 });

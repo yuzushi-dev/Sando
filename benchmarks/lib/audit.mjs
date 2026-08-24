@@ -186,9 +186,10 @@ export function auditMetadata({
     hookEndToEnd: measurement.hookEndToEnd ?? false,
     ...measurement,
   };
-  if (!['local-replay', 'prompt-level', 'end-to-end'].includes(normalizedMeasurement.mode)
+  const endToEnd = ['end-to-end', 'end-to-end-tools'].includes(normalizedMeasurement.mode);
+  if (!['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools'].includes(normalizedMeasurement.mode)
     || typeof normalizedMeasurement.hookEndToEnd !== 'boolean'
-    || (normalizedMeasurement.mode === 'end-to-end') !== normalizedMeasurement.hookEndToEnd) {
+    || endToEnd !== normalizedMeasurement.hookEndToEnd) {
     throw new TypeError('invalid measurement metadata');
   }
   return {

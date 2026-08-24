@@ -9,7 +9,7 @@ function keyOf(run) {
   return `${run.scenario}\u0000${run.repetition}`;
 }
 
-const MEASUREMENTS = ['local-replay', 'prompt-level', 'end-to-end'];
+const MEASUREMENTS = ['local-replay', 'prompt-level', 'end-to-end', 'end-to-end-tools'];
 const TOKEN_ACCOUNTING = ['estimate', 'provider-reported'];
 
 function record(value) {
@@ -53,7 +53,7 @@ function validateAudit(run) {
   if (!Object.hasOwn(measurement, 'mode') || !Object.hasOwn(measurement, 'hookEndToEnd')
     || measurement.mode !== run.measurement
     || typeof measurement.hookEndToEnd !== 'boolean'
-    || (measurement.mode === 'end-to-end') !== measurement.hookEndToEnd) {
+    || (['end-to-end', 'end-to-end-tools'].includes(measurement.mode)) !== measurement.hookEndToEnd) {
     throw new TypeError('benchmark audit contradicts measurement provenance');
   }
   const accounting = audit.tokenAccounting;

@@ -17,6 +17,7 @@ const SCENARIO = 'claude-tool-result';
 const REQUIRED_FACTS = ['SANDO_E2E_HEAD_FACT', 'SANDO_E2E_TAIL_FACT'];
 const ARTIFACT_FACTS = ['SANDO_E2E_MIDDLE_FACT'];
 const SECRET = 'sk-test-01234567890123456789';
+export const MAX_REPETITIONS = 15;
 const SCENARIO_DIGEST = digestPrompt(JSON.stringify({ SCENARIO, REQUIRED_FACTS, ARTIFACT_FACTS }));
 const POLICY = { mode: 'apply', maxInlineBytes: 768, maxArtifactBytes: 4096, maxColumns: 768, redact: true };
 export const CLAUDE_NO_COST_BLOCKER = 'Claude Code cannot provide a no-cost end-to-end fixture: PostToolUse is emitted only after a live Claude tool call, and the --print CLI requires a provider request to produce that tool call; no local/mock provider can produce Claude model-visible tool-call evidence. The existing prompt-level runner disables tools and embeds context, so it cannot establish model-visible or hook lifecycle evidence.';
@@ -317,7 +318,7 @@ async function main() {
   const maxBudgetUsd = option('max-budget-usd');
   if (!maxBudgetUsd && !process.argv.includes('--unlimited-budget')) throw new Error('Claude live E2E benchmark requires --max-budget-usd or --unlimited-budget');
   const repetitions = Number(option('repetitions', '1'));
-  if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 10) throw new Error('--repetitions must be 1..10');
+  if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > MAX_REPETITIONS) throw new Error(`--repetitions must be 1..${MAX_REPETITIONS}`);
   const output = await runLive({ outputPath: path.resolve(option('out', path.join(EVIDENCE_ROOT, 'live-e2e.json'))), model: option('model'), maxBudgetUsd, repetitions, timeoutMs: Number(option('timeout-ms', '120000')) });
   process.stdout.write(`${JSON.stringify({ status: output.status }, null, 2)}\n`); if (output.status !== 'passed') process.exitCode = 1;
 }
