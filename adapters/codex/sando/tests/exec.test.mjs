@@ -9,9 +9,18 @@ import test from 'node:test';
 import { callMcpTool, callMcpToolAsync, MCP_TOOLS } from '../lib/mcp-tools.mjs';
 import { readCoverage } from '../lib/coverage.mjs';
 
+// `codex` dispatches to its Linux sandbox helper surface when invoked via a
+// symlink named `codex-linux-sandbox` (argv0-based dispatch) — there is no
+// separately installed binary to `which`, so we make our own shim.
+function codexLinuxSandboxShim(cwd) {
+  const codex = spawnSync('which', ['codex'], { encoding: 'utf8' });
+  assert.equal(codex.status, 0, codex.stderr);
+  const shimPath = path.join(cwd, 'codex-linux-sandbox');
+  fs.symlinkSync(codex.stdout.trim(), shimPath);
+  return shimPath;
+}
+
 function sandboxMeta(cwd) {
-  const helper = spawnSync('which', ['codex-linux-sandbox'], { encoding: 'utf8' });
-  assert.equal(helper.status, 0, helper.stderr);
   return {
     'codex/sandbox-state-meta': {
       permissionProfile: {
@@ -22,7 +31,7 @@ function sandboxMeta(cwd) {
         ] },
         network: 'restricted',
       },
-      codexLinuxSandboxExe: helper.stdout.trim(),
+      codexLinuxSandboxExe: codexLinuxSandboxShim(cwd),
       sandboxCwd: pathToFileURL(cwd).href,
       useLegacyLandlock: false,
     },
