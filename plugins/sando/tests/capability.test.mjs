@@ -17,9 +17,11 @@ test('Codex probe marks tool-output replacement as unavailable', () => {
   assert.equal(result.mcp.available, true);
   assert.equal(result.mcp.displacesBuiltIns, false);
   assert.deepEqual(result.preToolUse, { available: true, canRewriteInput: true, canRewriteToolOutput: false });
+  assert.deepEqual(result.cliRouting, { available: true, routes: ['literal-read', 'literal-grep'], transparent: true });
   assert.deepEqual(result.postToolUse, { available: true, observational: true, feedbackFallback: true, canRewriteToolOutput: false });
   assert.equal(result.preModelToolOutputReplacement, false);
   assert.equal(result.providerSavings, false);
+  assert.equal(result.status, 'partial');
   assert.deepEqual(result.wrapperMcpTools, { Read: 'impossible', Grep: 'impossible', Bash: 'impossible' });
 });
 
@@ -30,6 +32,8 @@ test('bundled capability probes report the same truthful boundary', () => {
     const probe = JSON.parse(result.stdout);
     assert.equal(probe.preModelToolOutputReplacement, false);
     assert.equal(probe.providerSavings, false);
+    assert.equal(probe.status, 'partial');
+    assert.deepEqual(probe.cliRouting, { available: true, routes: ['literal-read', 'literal-grep'], transparent: true });
     assert.deepEqual(probe.wrapperMcpTools, { Read: 'impossible', Grep: 'impossible', Bash: 'impossible' });
   }
 });

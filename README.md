@@ -34,9 +34,16 @@ At `Stop`, the Claude adapter parses numeric usage from the transcript and appen
 
 ## Codex
 
-Load the self-contained plugin bundle in [`plugins/sando`](plugins/sando/README.md). Its `PostToolUse` hook is observational; use the explicit read-only `sando_read` and `sando_grep` MCP tools (or `prepare_tool_output`) for effective preparation. Codex does not transparently replace an already-delivered built-in tool result.
+Load the self-contained plugin bundle in [`plugins/sando`](plugins/sando/README.md). Its `PostToolUse` hook is observational. For proven literal reads/searches, `PreToolUse` rewrites the pending shell command to the bundled CLI, so no MCP round-trip is needed:
 
-For classified literal file reads/searches, the Codex `PreToolUse` gate blocks the built-in command and directs the model to `sando_read` or `sando_grep`. Ambiguous shell commands remain allowed and are counted as bypasses. Explicit terminal coverage is available through `sando_exec` when Codex supplies managed restricted sandbox metadata; it fails closed otherwise.
+```sh
+node plugins/sando/cli.mjs read -- path/to/file
+node plugins/sando/cli.mjs grep -F -- pattern path/to/file
+```
+
+The hook resolves the installed bundle path automatically; the CLI keeps the Codex shell sandbox inherited by the calling tool. Codex does not transparently replace an already-delivered arbitrary built-in tool result.
+
+For classified literal file reads/searches, the Codex `PreToolUse` gate performs that rewrite automatically. Pipelines, shell syntax, unsafe paths, and ambiguous commands remain allowed and are counted as bypasses. Explicit terminal coverage is available through `sando_exec` when Codex supplies managed restricted sandbox metadata; it fails closed otherwise.
 
 At `Stop`, the plugin parses Codex transcript usage into the same provider ledger. Codex's installed TUI has no verified custom status item, so this workspace exposes the Sando line through tmux `status-right` (`scripts/sando-statusline.mjs`).
 

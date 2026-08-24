@@ -26,7 +26,7 @@ They return bounded, redacted inline output and an optional artifact payload. Th
 
 For terminal work, `sando_exec` executes one non-interactive command through `codex sandbox`, using Codex's `codex/sandbox-state-meta`. It fails closed without managed restricted sandbox metadata, bounds and redacts stdout/stderr, reports exit status, timeout, cancellation, and binary output, and rejects TTY/interactive calls. It is an explicit MCP tool; it does not transparently replace built-in Bash execution.
 
-The `PreToolUse` gate blocks only proven literal `cat -- FILE` and `rg/grep -F -- PATTERN PATH` commands and directs Codex to the corresponding MCP tool. Pipelines, shell syntax, unsafe paths, and ambiguous commands remain allowed and are recorded as bypasses. Inspect coverage with `node adapters/codex/sando/coverage.mjs`.
+The `PreToolUse` gate rewrites only proven literal `cat -- FILE` and `rg/grep -F -- PATTERN PATH` commands to the bundled `bin/sando` CLI before execution. This avoids an MCP round-trip while preserving the calling Codex shell sandbox. Pipelines, shell syntax, unsafe paths, and ambiguous commands remain allowed and are recorded as bypasses. Inspect coverage with `node adapters/codex/sando/coverage.mjs`.
 
 The `Stop` hook reads `transcript_path`, keeps numeric `token_count.last_token_usage` or `turn.completed.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. For the active workspace statusline, use:
 
@@ -49,7 +49,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 node adapters/codex/sando/capability-probe.mjs
 ```
 
-On the installed Codex CLI `0.149.0`, MCP is additive, `PreToolUse` can rewrite inputs but not prepared outputs, and `PostToolUse` cannot rewrite a completed result before model context construction. Transparent Read/Grep/Bash replacements remain unavailable; provider savings are not claimed for built-in tools.
+On the installed Codex CLI `0.149.0`, MCP is additive, `PreToolUse` can rewrite inputs but not prepared outputs, and `PostToolUse` cannot rewrite a completed result before model context construction. The adapter provides partial transparent coverage for classified literal reads/searches through its CLI; arbitrary built-in output replacement remains unavailable, and provider savings are not claimed without paired counters.
 
 Malformed events and telemetry failures are fail-open. Invalid `SANDO_POLICY` exits with status `2`.
 

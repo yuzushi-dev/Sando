@@ -39,7 +39,7 @@ test('leaves shell syntax and unsafe targets as measured bypasses', (t) => {
   }
 });
 
-test('PreToolUse denies an eligible built-in before execution', (t) => {
+test('PreToolUse transparently rewrites an eligible built-in to the local CLI', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-block-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
@@ -56,10 +56,16 @@ test('PreToolUse denies an eligible built-in before execution', (t) => {
 
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(output.hookSpecificOutput.permissionDecisionReason, /sando_read/);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'allow');
+  assert.match(output.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
+  assert.doesNotMatch(output.hookSpecificOutput.updatedInput.command, /MCP/);
+  const routed = spawnSync('/bin/sh', ['-c', output.hookSpecificOutput.updatedInput.command], {
+    cwd, encoding: 'utf8', env: { ...process.env, SANDO_MODE: 'apply' },
+  });
+  assert.equal(routed.status, 0, routed.stderr);
+  assert.match(routed.stdout, /needle/);
   const coverage = JSON.parse(fs.readFileSync(coveragePath, 'utf8'));
-  assert.deepEqual(coverage.counts, { eligible: 1, routed: 1, transformed: 0, blocked: 1, bypassed: 0 });
+  assert.deepEqual(coverage.counts, { eligible: 1, routed: 1, transformed: 1, blocked: 0, bypassed: 0 });
 });
 
 test('PreToolUse records an ambiguous shell command as bypass', (t) => {

@@ -8,6 +8,9 @@ const MAX_COMMAND_LENGTH = 8192;
 const MAX_PATH_LENGTH = 4096;
 const MAX_PATTERN_LENGTH = 512;
 const SHELL_META = new Set([';', '|', '&', '<', '>', '$', '`', '(', ')', '{', '}', '*', '?', '[', ']', '!', '~', '#']);
+const CLI_PATH = path.resolve(import.meta.dirname, '..', 'bin', 'sando');
+
+function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 
 function bypass(reason) { return { status: 'bypassed', reason }; }
 
@@ -102,7 +105,7 @@ function metric(result, toolName, env) {
   try {
     if (result.status === 'eligible') {
       recordCoverage({
-        buckets: ['eligible', 'routed', 'blocked'], reason: result.route === 'sando_read' ? 'covered-read' : 'covered-grep',
+        buckets: ['eligible', 'routed', 'transformed'], reason: result.route === 'sando_read' ? 'covered-read' : 'covered-grep',
         route: result.route, toolName: SHELL_TOOLS.has(toolName) ? 'Bash' : 'unknown', env,
       });
     } else {
@@ -112,16 +115,19 @@ function metric(result, toolName, env) {
 }
 
 export function runPreToolUse(input, env = process.env) {
+  if (/^(0|false|off|no)$/i.test(env.SANDO_CLI_ROUTING || '')) return {};
   const toolName = input?.tool_name ?? input?.toolName;
   const result = classifyShellCommand({ toolName, toolInput: input?.tool_input ?? input?.toolInput, cwd: input?.cwd });
   metric(result, toolName, env);
   if (result.status !== 'eligible') return {};
-  const tool = result.route === 'sando_read' ? 'sando_read' : 'sando_grep';
+  const cliCommand = result.route === 'sando_read'
+    ? `${shellQuote(CLI_PATH)} read -- ${shellQuote(result.path)}`
+    : `${shellQuote(CLI_PATH)} grep -F -- ${shellQuote(result.pattern)} ${shellQuote(result.path)}`;
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: `Sando routed this covered command to ${tool}. Use the ${tool} MCP tool; ambiguous commands remain allowed and are counted as bypasses.`,
+      permissionDecision: 'allow',
+      updatedInput: { ...(input.tool_input ?? input.toolInput), command: cliCommand },
     },
   };
 }

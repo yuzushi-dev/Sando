@@ -15,6 +15,7 @@ export const CODEX_TOOL_MEASUREMENT = 'end-to-end-tools';
 export const MAX_REPETITIONS = 15;
 const REQUIRED_FACTS = ['SANDO_AB_HEAD_FACT', 'SANDO_AB_TAIL_FACT'];
 const FIXTURE_COMMAND = "i=0; while [ \"$i\" -lt 700 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_AB_HEAD_FACT\\nSANDO_AB_TAIL_FACT\\n'";
+const CLI_FIXTURE_COMMAND = 'cat -- fixture.txt';
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -29,13 +30,14 @@ function validateRepetitions(value) {
   return repetitions;
 }
 
-export function buildCodexToolArgs({ prompt, model, optimized, serverPath }) {
+export function buildCodexToolArgs({ prompt, model, optimized, serverPath, route = 'mcp' }) {
   if (typeof prompt !== 'string' || !prompt) throw new TypeError('prompt is required');
+  if (!['mcp', 'cli'].includes(route)) throw new TypeError('route must be mcp or cli');
   const args = [
-    'exec', ...(model ? ['--model', model] : []), '--ephemeral', '--ignore-user-config', '--ignore-rules',
-    '--skip-git-repo-check', '--approve-for-me', '--json',
+    'exec', ...(model ? ['--model', model] : []), '--ephemeral', ...(route === 'mcp' ? ['--ignore-user-config'] : []),
+    '--ignore-rules', '--skip-git-repo-check', '--approve-for-me', ...(route === 'cli' ? ['--dangerously-bypass-hook-trust'] : []), '--json',
   ];
-  if (optimized) {
+  if (route === 'mcp' && optimized) {
     if (typeof serverPath !== 'string' || !path.isAbsolute(serverPath)) throw new TypeError('absolute MCP server path is required');
     args.push('-c', 'mcp_servers.sando.command="node"', '-c', `mcp_servers.sando.args=${JSON.stringify([serverPath])}`);
   }
@@ -43,9 +45,9 @@ export function buildCodexToolArgs({ prompt, model, optimized, serverPath }) {
   return args;
 }
 
-function runCommand(command, args, { cwd, timeoutMs }) {
+function runCommand(command, args, { cwd, timeoutMs, env = process.env }) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const stdout = [];
     const stderr = [];
     let settled = false;
@@ -90,12 +92,20 @@ function usedBuiltinShell(stdout) {
     || ['command_execution', 'shell_command'].includes(value.item?.type));
 }
 
-function toolOutputHasFacts(stdout, variant) {
+function usedSandoCli(stdout) {
+  return contains(jsonDocuments(stdout), (value) => {
+    const command = typeof value.command === 'string' ? value.command : '';
+    return (value.type === 'command_execution' || value.item?.type === 'command_execution')
+      && command.includes('/bin/sando') && command.includes(' read ');
+  });
+}
+
+function toolOutputHasFacts(stdout, variant, route) {
   return contains(jsonDocuments(stdout), (value) => {
     const text = typeof value.aggregated_output === 'string'
       ? value.aggregated_output
       : JSON.stringify(value.result ?? '');
-    const isTool = variant === 'optimized'
+    const isTool = route === 'mcp' && variant === 'optimized'
       ? ['mcp_tool_call', 'mcp_tool_call_output'].includes(value.type) && (value.name === 'sando_exec' || value.tool === 'sando_exec')
       : value.type === 'command_execution' || value.item?.type === 'command_execution';
     return isTool && REQUIRED_FACTS.every((fact) => text.includes(fact));
@@ -112,41 +122,43 @@ function finalFacts(stdout) {
   return null;
 }
 
-function promptFor({ variant }) {
-  const command = FIXTURE_COMMAND;
-  const route = variant === 'optimized'
+function promptFor({ variant, route }) {
+  const command = route === 'cli' ? CLI_FIXTURE_COMMAND : FIXTURE_COMMAND;
+  const instruction = route === 'mcp' && variant === 'optimized'
     ? `Use the Sando MCP tool sando_exec exactly once with command ${JSON.stringify(command)} and workdir ".". Do not use the built-in shell.`
     : `Use the built-in shell tool exactly once to run ${JSON.stringify(command)}. Do not use MCP tools.`;
   return [
     'This is a paired token-accounting benchmark.',
-    route,
-    `After the tool result, return exactly JSON with status "ok" and facts containing ${REQUIRED_FACTS.join(' and ')}. Do not include any other keys or repeat the tool output.`,
+    instruction,
+    `After the tool result, return exactly JSON: {"status":"ok","facts":["${REQUIRED_FACTS.join('","')}"]}. Do not include any other keys or repeat the tool output.`,
   ].join('\n');
 }
 
-function runEvidence({ variant, stdout }) {
+function runEvidence({ variant, stdout, route }) {
   const facts = finalFacts(stdout);
-  const pathPass = variant === 'optimized' ? usedTool(stdout, 'sando_exec') : usedBuiltinShell(stdout);
-  const resultPass = toolOutputHasFacts(stdout, variant);
+  const pathPass = route === 'mcp'
+    ? (variant === 'optimized' ? usedTool(stdout, 'sando_exec') : usedBuiltinShell(stdout))
+    : (variant === 'optimized' ? usedSandoCli(stdout) : usedBuiltinShell(stdout));
+  const resultPass = toolOutputHasFacts(stdout, variant, route);
   const modelVisibleQuality = facts?.status === 'ok' && Array.isArray(facts.facts)
     && REQUIRED_FACTS.every((fact) => facts.facts.includes(fact)) ? 'pass' : 'fail';
   return {
     modelVisibleQuality,
     artifactResolvable: true,
     secretLeak: false,
-    toolPath: pathPass ? (variant === 'optimized' ? 'sando_exec' : 'builtin-shell') : 'missing',
+    toolPath: pathPass ? (variant === 'optimized' ? (route === 'mcp' ? 'sando_exec' : 'sando-cli') : 'builtin-shell') : 'missing',
     quality: modelVisibleQuality === 'pass' && pathPass && resultPass ? 'pass' : 'fail',
   };
 }
 
-function failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, message }) {
+function failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario = 'codex-tool-noise', message }) {
   const audit = auditMetadata({
     host: 'codex', variant, prompt, args, result, clientVersion, scenarioDigest,
     measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPath: 'missing' }, cwd: ROOT,
   });
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: false };
   return {
-    host: 'codex', scenario: 'codex-tool-noise', scenarioDigest, repetition, variant,
+    host: 'codex', scenario, scenarioDigest, repetition, variant,
     resolvedModel: null, clientVersion, measurement: CODEX_TOOL_MEASUREMENT, tokenAccounting: 'provider-reported',
     providerUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, inputTokens: 0, outputTokens: 0, totalTokens: 0,
     quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null,
@@ -154,24 +166,32 @@ function failedRun({ variant, repetition, prompt, args, result, clientVersion, s
   };
 }
 
-async function runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion }) {
-  const prompt = promptFor({ variant });
-  const args = buildCodexToolArgs({ prompt, model, optimized: variant === 'optimized', serverPath });
+async function runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route }) {
+  const prompt = promptFor({ variant, route });
+  const args = buildCodexToolArgs({ prompt, model, optimized: variant === 'optimized', serverPath, route });
   const started = Date.now();
-  const result = await runCommand('codex', args, { cwd: workspace, timeoutMs });
-  const scenarioDigest = digestPrompt(FIXTURE_COMMAND);
+  const env = route === 'cli'
+    ? {
+      ...process.env,
+      SANDO_CLI_ROUTING: variant === 'optimized' ? 'on' : 'off',
+      ...(variant === 'optimized' ? { SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 1024, maxArtifactBytes: 65536, redact: true }) } : {}),
+    }
+    : process.env;
+  const result = await runCommand('codex', args, { cwd: workspace, timeoutMs, env });
+  const scenario = route === 'cli' ? 'codex-cli-noise' : 'codex-tool-noise';
+  const scenarioDigest = digestPrompt(route === 'cli' ? CLI_FIXTURE_COMMAND : FIXTURE_COMMAND);
   const audit = auditMetadata({
     host: 'codex', variant, prompt, args, result, clientVersion, scenarioDigest,
-    measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPath: variant === 'optimized' ? 'sando_exec' : 'builtin-shell' }, cwd: ROOT,
+    measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPath: variant === 'optimized' ? (route === 'mcp' ? 'sando_exec' : 'sando-cli') : 'builtin-shell' }, cwd: ROOT,
   });
-  if (result.code !== 0) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, message: formatChildFailure('codex', variant, result) });
+  if (result.code !== 0) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario, message: formatChildFailure('codex', variant, result) });
   const usage = parseCodexUsage(result.stdout);
-  if (!usage) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, message: 'Codex returned no provider usage' });
+  if (!usage) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario, message: 'Codex returned no provider usage' });
   audit.resolvedModel = usage.resolvedModel ?? model ?? null;
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
-  const evidence = runEvidence({ variant, stdout: result.stdout });
+  const evidence = runEvidence({ variant, stdout: result.stdout, route });
   return {
-    host: 'codex', scenario: 'codex-tool-noise', scenarioDigest, repetition, variant,
+    host: 'codex', scenario, scenarioDigest, repetition, variant,
     resolvedModel: usage.resolvedModel ?? model ?? null, clientVersion, measurement: CODEX_TOOL_MEASUREMENT,
     tokenAccounting: 'provider-reported', providerUsage: usage, inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, latencyMs: Date.now() - started,
@@ -179,15 +199,20 @@ async function runVariant({ variant, repetition, workspace, serverPath, model, t
   };
 }
 
-export async function runCodexToolBenchmark({ outputPath, model, repetitions, timeoutMs = 120_000, serverPath = path.join(ROOT, 'plugins/sando/mcp/server.mjs') }) {
+export async function runCodexToolBenchmark({ outputPath, model, repetitions, timeoutMs = 120_000, serverPath = path.join(ROOT, 'plugins/sando/mcp/server.mjs'), route = 'mcp' }) {
+  if (!['mcp', 'cli'].includes(route)) throw new Error('route must be mcp or cli');
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-codex-e2e-'));
+  if (route === 'cli') {
+    const fixture = [REQUIRED_FACTS[0], ...Array.from({ length: 300 }, (_, index) => `noise:${index}`), REQUIRED_FACTS[1]].join('\n');
+    await fs.writeFile(path.join(workspace, 'fixture.txt'), `${fixture}\n`);
+  }
   const version = await runCommand('codex', ['--version'], { cwd: ROOT, timeoutMs: 10_000 });
   const clientVersion = version.stdout.trim().split('\n').find(Boolean) ?? 'unresolved';
   const runs = [];
   try {
     for (let repetition = 0; repetition < repetitions; repetition += 1) {
       for (const variant of ['baseline', 'optimized']) {
-        const run = await runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion });
+        const run = await runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route });
         runs.push(run);
         if (run.quality !== 'pass') break;
       }
@@ -202,7 +227,7 @@ export async function runCodexToolBenchmark({ outputPath, model, repetitions, ti
     if (!failure && runs.length !== repetitions * 2) failure = { status: 'blocked', message: 'incomplete paired tool runs' };
     const output = {
       schema: 'sando-live-e2e-tools/v1', status: failure ? 'blocked' : 'passed', host: 'codex', clientVersion,
-      scenario: 'codex-tool-noise', repetitions, audit: { measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPaths: ['builtin-shell', 'sando_exec'] }, tokenAccounting: { source: 'provider-reported', providerObserved: true } },
+      scenario: route === 'cli' ? 'codex-cli-noise' : 'codex-tool-noise', repetitions, audit: { measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPaths: ['builtin-shell', route === 'cli' ? 'sando-cli' : 'sando_exec'] }, tokenAccounting: { source: 'provider-reported', providerObserved: true } },
       runs, summary: failure ? null : summarizeRuns(runs), ...(failure ? { failure } : {}),
     };
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -213,10 +238,11 @@ export async function runCodexToolBenchmark({ outputPath, model, repetitions, ti
 
 async function main() {
   if (!process.argv.includes('--confirm-cost')) throw new Error('Codex live E2E benchmark requires --confirm-cost');
-  const outputPath = path.resolve(option('out', path.join(ROOT, 'benchmarks/results/live-codex-tools.json')));
+  const route = option('route', 'mcp');
+  const outputPath = path.resolve(option('out', path.join(ROOT, 'benchmarks/results', route === 'cli' ? 'live-codex-cli-tools.json' : 'live-codex-tools.json')));
   const output = await runCodexToolBenchmark({
     outputPath, model: option('model'), repetitions: validateRepetitions(option('repetitions', '1')),
-    timeoutMs: Number(option('timeout-ms', '120000')), serverPath: path.resolve(option('server-path', path.join(ROOT, 'plugins/sando/mcp/server.mjs'))),
+    timeoutMs: Number(option('timeout-ms', '120000')), route, serverPath: path.resolve(option('server-path', path.join(ROOT, 'plugins/sando/mcp/server.mjs'))),
   });
   process.stdout.write(`${JSON.stringify({ outputPath, status: output.status, summary: output.summary }, null, 2)}\n`);
   if (output.status !== 'passed') process.exitCode = 1;

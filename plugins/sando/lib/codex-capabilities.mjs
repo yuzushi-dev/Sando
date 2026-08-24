@@ -26,11 +26,14 @@ export function probeCodexCapabilities(observed = detectCodexHost()) {
     version: observed.version || null,
     mcp: { available: mcpAvailable, additiveOnly: true, displacesBuiltIns: false },
     preToolUse: { available: hooksAvailable, canRewriteInput: hooksAvailable, canRewriteToolOutput: false },
+    cliRouting: { available: hooksAvailable, routes: ['literal-read', 'literal-grep'], transparent: hooksAvailable },
     postToolUse: { available: hooksAvailable, observational: true, feedbackFallback: hooksAvailable, canRewriteToolOutput: false },
     preModelToolOutputReplacement: false,
     wrapperMcpTools: { Read: 'impossible', Grep: 'impossible', Bash: 'impossible' },
     providerSavings: false,
-    status: 'impossible',
-    reason: 'Codex exposes MCP as additional model-callable tools and has no supported path that displaces a built-in result before model context construction.',
+    status: hooksAvailable ? 'partial' : 'unavailable',
+    reason: hooksAvailable
+      ? 'Codex can route classified literal shell reads and searches through Sando CLI by rewriting tool input; arbitrary built-in output replacement remains unavailable and provider savings require paired counters.'
+      : 'Codex hooks are unavailable; MCP remains additive and cannot displace built-in results before model context construction.',
   };
 }

@@ -342,3 +342,12 @@ test('builds paired Codex tool commands with MCP only in the optimized arm', () 
   assert.equal(optimized.at(-1), 'run it');
   assert.equal(CODEX_TOOL_MEASUREMENT, 'end-to-end-tools');
 });
+
+test('builds paired Codex CLI commands with hooks enabled and no MCP server', () => {
+  const baseline = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: false, route: 'cli' });
+  const optimized = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: true, route: 'cli' });
+  assert.equal(baseline.includes('--ignore-user-config'), false);
+  assert.ok(baseline.includes('--dangerously-bypass-hook-trust'));
+  assert.deepEqual(optimized, baseline);
+  assert.equal(optimized.some((arg) => arg.includes('mcp_servers')), false);
+});

@@ -24,9 +24,9 @@ All three return bounded, redacted inline output and an optional artifact payloa
 
 `sando_exec` is the explicit terminal tool. It runs one non-interactive command through `codex sandbox` with Codex's `codex/sandbox-state-meta`; it fails closed without managed restricted sandbox metadata, bounds and redacts stdout/stderr, reports exit status, timeout, cancellation, and binary output, and rejects TTY/interactive calls. It does not transparently replace built-in Bash execution.
 
-The `PreToolUse` gate blocks proven literal `cat -- FILE` and `rg/grep -F -- PATTERN PATH` commands before they run and directs Codex to `sando_read` or `sando_grep`. Pipelines, shell syntax, unsafe paths, and ambiguous commands remain allowed and are recorded as bypasses. Inspect the evidence with `node plugins/sando/coverage.mjs`.
+The `PreToolUse` gate rewrites proven literal `cat -- FILE` and `rg/grep -F -- PATTERN PATH` commands to the bundled `bin/sando` CLI before execution. This avoids an MCP round-trip while preserving the calling Codex shell sandbox. Pipelines, shell syntax, unsafe paths, and ambiguous commands remain allowed and are recorded as bypasses. Inspect the evidence with `node plugins/sando/coverage.mjs`.
 
-The `PreToolUse` gate provides automatic routing only for classified literal read/search commands. Ambiguous shell commands remain allowed and are recorded as bypasses; use `sando_exec` explicitly for terminal coverage.
+The `PreToolUse` gate provides automatic CLI routing only for classified literal read/search commands. Ambiguous shell commands remain allowed and are recorded as bypasses; use `sando_exec` explicitly for terminal coverage.
 
 The `Stop` hook reads `transcript_path`, keeps numeric `token_count.last_token_usage` or `turn.completed.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The active workspace uses [`scripts/sando-statusline.mjs`](../../scripts/sando-statusline.mjs) in tmux because Codex's native TUI has no verified custom status item.
 
@@ -36,7 +36,7 @@ The `Stop` hook reads `transcript_path`, keeps numeric `token_count.last_token_u
 node plugins/sando/capability-probe.mjs
 ```
 
-The probe records the installed host contract. On Codex CLI `0.149.0`, MCP tools are additive, `PreToolUse` can rewrite tool inputs but not prepared outputs, and `PostToolUse` cannot rewrite a completed tool result (Sando's feedback fallback remains explicit and non-transparent). Transparent replacements for built-in Read/Grep/Bash remain unavailable; Sando's explicit read/grep tools are not replacements. The report never claims provider savings when built-ins cannot be displaced.
+The probe records the installed host contract. On Codex CLI `0.149.0`, MCP tools are additive, `PreToolUse` can rewrite tool inputs but not prepared outputs, and `PostToolUse` cannot rewrite a completed tool result. Sando therefore reports partial coverage: classified literal shell reads/searches route transparently through the CLI, while arbitrary built-in output replacement remains unavailable. The report never claims provider savings without paired provider counters.
 
 For an explicit, non-equivalent fallback, set `SANDO_CODEX_FALLBACK=feedback` together with `SANDO_POLICY={"mode":"apply"}`. The hook returns `continue:false` feedback and stops the turn; it does not rewrite the tool result.
 
