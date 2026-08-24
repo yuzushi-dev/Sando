@@ -14,7 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 export const CODEX_TOOL_MEASUREMENT = 'end-to-end-tools';
 export const MAX_REPETITIONS = 15;
 const REQUIRED_FACTS = ['SANDO_AB_HEAD_FACT', 'SANDO_AB_TAIL_FACT'];
-const FIXTURE_COMMAND = "printf 'SANDO_AB_HEAD_FACT\\n'; i=0; while [ \"$i\" -lt 2600 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_AB_TAIL_FACT\\n'";
+const FIXTURE_COMMAND = "printf 'SANDO_AB_HEAD_FACT\\n'; i=0; while [ \"$i\" -lt 1100 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_AB_TAIL_FACT\\n'";
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -110,14 +110,6 @@ function finalFacts(stdout) {
     try { return JSON.parse(item.text); } catch { return null; }
   }
   return null;
-}
-
-function fixtureText() {
-  return [
-    REQUIRED_FACTS[0],
-    ...Array.from({ length: 2600 }, (_, index) => `noise:${index}`),
-    REQUIRED_FACTS[1],
-  ].join('\n') + '\n';
 }
 
 function promptFor({ variant }) {
