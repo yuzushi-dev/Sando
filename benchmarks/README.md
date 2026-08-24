@@ -42,3 +42,14 @@ Snapshot: 2026-08-23. Values below are provider-reported input counters, not loc
 The reports are blocked by missing `modelVisibleQuality`, `artifactResolvable`, and `secretLeak` evidence. That block is expected for this prompt-level harness; the runs do not establish end-to-end host rewriting, artifact resolution, or leak results.
 
 Do not run live commands without quota approval. For an externally stopped Claude campaign, replace `--max-budget-usd` with `--unlimited-budget`.
+
+## Real tool A/B evidence
+
+Snapshot: 2026-08-24. These campaigns used live provider counters and executed the real tool path. Each row contains 15 paired baseline/optimized cycles; all 30 runs per host passed the correctness, model-visible, artifact, and leak gates.
+
+| Host | Client / model | Tool path | Baseline → optimized input | Saved | Median saved |
+| --- | --- | --- | ---: | ---: | ---: |
+| Claude Code | `2.1.233` / `claude-sonnet-5` | Bash + PostToolUse `observe` → `apply` | 668,667 → 652,123 | 16,544 (2.47%) | 1,091 (2.45%) |
+| Codex CLI | `0.149.1` / default (not exposed in JSON) | built-in shell → MCP `sando_exec` | 694,062 → 753,333 | −59,271 (−8.54%) | −3,711 (−8.02%) |
+
+The result is not the same target in this campaign. Claude reaches a small positive saving. Codex has functional end-to-end coverage, but MCP schema and call overhead exceed the bounded-output saving for this fixture. Reports: `live-claude-e2e.json` and `live-codex-tools.json` in the ignored `benchmarks/results/` directory; audited commits were `fd94667` and `9aca836` respectively.
