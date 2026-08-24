@@ -79,8 +79,60 @@ function windowText(events) {
   return events.map((event) => event.output).join('\n---\n');
 }
 
+// ponytail: collapse-only, no semantic understanding. Cuts terminal-noise/boilerplate
+// tokens paid to the compactor for free (no LLM call) before the LLM ever sees them —
+// upgrade to a smarter dedup (e.g. near-duplicate, not just exact-line) if this proves
+// too coarse on real logs.
+export function pruneRepeatedLines(text, { keepFirstN = 2 } = {}) {
+  const lines = text.split('\n');
+  const seenCount = new Map();
+  const out = [];
+  for (const line of lines) {
+    const key = line.trim();
+    if (key.length === 0) {
+      out.push(line);
+      continue;
+    }
+    const count = (seenCount.get(key) ?? 0) + 1;
+    seenCount.set(key, count);
+    if (count <= keepFirstN) out.push(line);
+    else if (count === keepFirstN + 1) out.push('[... repeated line collapsed ...]');
+  }
+  return out.join('\n');
+}
+
+const LEDGER_PATH_RE = /(?:^|[\s"'`(])((?:[~.]{0,2}\/|[\w-]+\/)[\w./-]{2,}\.[A-Za-z0-9]{1,8})\b/g;
+const LEDGER_SHA_RE = /\b[0-9a-f]{7,40}\b/gi;
+const LEDGER_ISSUE_RE = /\b(?:PR|pull request|issue)\s*#?\d+\b/gi;
+const LEDGER_ERROR_LINE_RE = /^.*\b(?:error|exception|failed|failure|traceback)\b.*$/gim;
+const LEDGER_NEGATION_LINE_RE = /^.*\b(?:not|never|isn't|doesn't|cannot|no longer)\b.*$/gim;
+
+// Mechanical, regex-only extraction — deliberately NOT the same patterns pickFact()
+// uses to pick the grounding-probe fact. This ledger is what actually ships in the
+// final output (see main()); pickFact stays evaluation-only. Keeping the two
+// independent avoids the probe passing by construction.
+export function extractFactLedger(events) {
+  const ledger = new Set();
+  for (const event of events) {
+    const text = event.output ?? '';
+    for (const re of [LEDGER_PATH_RE, LEDGER_SHA_RE, LEDGER_ISSUE_RE]) {
+      for (const match of text.matchAll(re)) {
+        const value = (match[1] ?? match[0]).trim();
+        if (value.length >= 4) ledger.add(value);
+      }
+    }
+    for (const re of [LEDGER_ERROR_LINE_RE, LEDGER_NEGATION_LINE_RE]) {
+      for (const match of text.matchAll(re)) {
+        const line = match[0].trim();
+        if (line.length >= 8) ledger.add(line.slice(0, 200));
+      }
+    }
+  }
+  return [...ledger];
+}
+
 function buildPrompt({ windowEvents, carriedSummary, carriedFacts }) {
-  const excerpt = windowText(windowEvents);
+  const excerpt = pruneRepeatedLines(windowText(windowEvents));
   if (carriedSummary === null) {
     return `${SEMANTIC_SYSTEM_PROMPT}\n\nSummarize the following conversation excerpt. Preserve exact paths, identifiers, errors, numbers, and negations. Return JSON {schema:"sando-semantic-summary/v1", summary: string, preservedFacts: string[]}.\n\n${excerpt}`;
   }
@@ -99,6 +151,7 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
   let carriedFacts = [];
   let totalCompactorInputTokens = 0;
   let totalCompactorOutputTokens = 0;
+  let totalPromptTokensEstimate = 0;
   let totalLatencyMs = 0;
   const perWindow = [];
   let failedAtWindow = null;
@@ -107,6 +160,8 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
     const windowEvents = windows[index];
     const tokensEstimate = estimate(windowText(windowEvents));
     const prompt = buildPrompt({ windowEvents, carriedSummary, carriedFacts });
+    const promptTokensEstimate = estimate(prompt);
+    totalPromptTokensEstimate += promptTokensEstimate;
     const startedAt = Date.now();
     try {
       const response = await complete({ prompt });
@@ -120,6 +175,7 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
         index,
         events: windowEvents.length,
         tokensEstimate,
+        promptTokensEstimate,
         compactorInputTokens: response.usage.inputTokens,
         compactorOutputTokens: response.usage.outputTokens,
         latencyMs,
@@ -148,10 +204,42 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
     carriedFacts,
     totalCompactorInputTokens,
     totalCompactorOutputTokens,
+    totalPromptTokensEstimate,
     totalLatencyMs,
     perWindow,
     failedAtWindow,
   };
+}
+
+// The local heuristic estimator (character/4-ish) systematically undercounts against
+// real provider tokenizers. Rather than trust it for the headline savings number, derive
+// a per-run calibration ratio from data this run already has for free: the same prompts
+// were both estimated locally (promptTokensEstimate) and billed for real
+// (compactorInputTokens) by the compactor call itself. Falls back to 1 (no correction)
+// when nothing was sent to a compactor — nothing to calibrate against.
+export function computeCalibrationRatio(totalCompactorInputTokens, totalPromptTokensEstimate) {
+  if (!Number.isFinite(totalPromptTokensEstimate) || totalPromptTokensEstimate <= 0) return 1;
+  return totalCompactorInputTokens / totalPromptTokensEstimate;
+}
+
+// All four inputs must share one unit system before subtracting them. compactorInput/
+// OutputTokens are always real (provider-billed); the two Estimate args are the local
+// heuristic and get scaled by calibrationRatio into the same real-token-equivalent basis
+// before the subtraction — mixing raw local estimates with real provider counts here was
+// the bug (see handoff 2026-08-24, item 3c).
+export function computeNetSavings({
+  originalTokensEstimate,
+  finalResultTokensEstimate,
+  compactorInputTokens,
+  compactorOutputTokens,
+  calibrationRatio,
+}) {
+  const originalTokens = originalTokensEstimate * calibrationRatio;
+  const finalResultTokens = finalResultTokensEstimate * calibrationRatio;
+  const grossSavedTokens = originalTokens - finalResultTokens;
+  const netSavedTokens = grossSavedTokens - compactorInputTokens - compactorOutputTokens;
+  const netSavedPercent = originalTokens > 0 ? (netSavedTokens / originalTokens) * 100 : 0;
+  return { originalTokens, finalResultTokens, grossSavedTokens, netSavedTokens, netSavedPercent };
 }
 
 const TRIVIAL_VALUE_RE = /:\s*(\[\]|\{\}|null|none|undefined|n\/a)\s*$/i;
@@ -193,13 +281,13 @@ function lastNonEmptyFact(text) {
   return idx === -1 ? undefined : pickFact(lines, idx, -1);
 }
 
-export function groundingCheck({ summarizedEvents, carriedSummary, carriedFacts }) {
+export function groundingCheck({ summarizedEvents, carriedSummary, carriedFacts, factLedger }) {
   if (!Array.isArray(summarizedEvents)) throw new TypeError('summarizedEvents are required');
   const firstEventText = summarizedEvents[0]?.output ?? '';
   const lastEventText = summarizedEvents[summarizedEvents.length - 1]?.output ?? '';
   const firstFact = firstNonEmptyFact(firstEventText);
   const lastFact = lastNonEmptyFact(lastEventText);
-  const haystack = `${carriedSummary ?? ''}\n${(carriedFacts ?? []).join('\n')}`;
+  const haystack = `${carriedSummary ?? ''}\n${(carriedFacts ?? []).join('\n')}\n${(factLedger ?? []).join('\n')}`;
   return {
     firstFact,
     lastFact,
@@ -242,27 +330,42 @@ async function main() {
       carriedFacts: [],
       totalCompactorInputTokens: 0,
       totalCompactorOutputTokens: 0,
+      totalPromptTokensEstimate: 0,
       totalLatencyMs: 0,
       perWindow: [],
       failedAtWindow: null,
     };
 
+  const factLedger = summarizedEvents.length > 0 ? extractFactLedger(summarizedEvents) : [];
+
   const originalText = windowText(events);
-  const originalTokens = estimateTokens(originalText);
+  const originalTokensEstimate = estimateTokens(originalText);
   const summaryText = foldResult.carriedSummary ?? '';
+  const ledgerText = factLedger.join('\n');
   const rawRecentText = windowText(retainedEvents);
-  const finalText = [summaryText, rawRecentText].filter(Boolean).join('\n---\n');
+  const finalText = [summaryText, ledgerText, rawRecentText].filter(Boolean).join('\n---\n');
   const finalSummaryTokens = estimateTokens(summaryText);
+  const factLedgerTokens = estimateTokens(ledgerText);
   const rawRecentTokens = estimateTokens(rawRecentText);
-  const finalResultTokens = estimateTokens(finalText);
-  const grossSavedTokens = originalTokens - finalResultTokens;
-  const netSavedTokens = grossSavedTokens - foldResult.totalCompactorInputTokens - foldResult.totalCompactorOutputTokens;
-  const netSavedPercent = originalTokens > 0 ? (netSavedTokens / originalTokens) * 100 : 0;
+  const finalResultTokensEstimate = estimateTokens(finalText);
+
+  const estimatorCalibrationRatio = computeCalibrationRatio(
+    foldResult.totalCompactorInputTokens,
+    foldResult.totalPromptTokensEstimate,
+  );
+  const netSavings = computeNetSavings({
+    originalTokensEstimate,
+    finalResultTokensEstimate,
+    compactorInputTokens: foldResult.totalCompactorInputTokens,
+    compactorOutputTokens: foldResult.totalCompactorOutputTokens,
+    calibrationRatio: estimatorCalibrationRatio,
+  });
 
   const grounding = groundingCheck({
     summarizedEvents,
     carriedSummary: foldResult.carriedSummary,
     carriedFacts: foldResult.carriedFacts,
+    factLedger,
   });
 
   const report = {
@@ -276,14 +379,19 @@ async function main() {
     events: events.length,
     summarizedEvents: summarizedEvents.length,
     retainedEvents: retainedEvents.length,
-    originalTokens,
+    originalTokensEstimateLocal: originalTokensEstimate,
+    finalResultTokensEstimateLocal: finalResultTokensEstimate,
+    estimatorCalibrationRatio,
     compactorInputTokens: foldResult.totalCompactorInputTokens,
     compactorOutputTokens: foldResult.totalCompactorOutputTokens,
     finalSummaryTokens,
+    factLedgerCount: factLedger.length,
+    factLedgerTokens,
     rawRecentTokens,
-    finalResultTokens,
-    netSavedTokens,
-    netSavedPercent,
+    originalTokens: netSavings.originalTokens,
+    finalResultTokens: netSavings.finalResultTokens,
+    netSavedTokens: netSavings.netSavedTokens,
+    netSavedPercent: netSavings.netSavedPercent,
     firstFactSurvived: grounding.firstFactSurvived,
     lastFactSurvived: grounding.lastFactSurvived,
     firstFact: grounding.firstFact,
@@ -307,14 +415,16 @@ async function main() {
     events: report.events,
     summarizedEvents: report.summarizedEvents,
     retainedEvents: report.retainedEvents,
-    originalTokens,
+    originalTokens: report.originalTokens,
+    estimatorCalibrationRatio: report.estimatorCalibrationRatio,
     compactorInputTokens: report.compactorInputTokens,
     compactorOutputTokens: report.compactorOutputTokens,
-    finalSummaryTokens,
-    rawRecentTokens,
-    finalResultTokens,
-    netSavedTokens,
-    netSavedPercent,
+    finalSummaryTokens: report.finalSummaryTokens,
+    factLedgerCount: report.factLedgerCount,
+    rawRecentTokens: report.rawRecentTokens,
+    finalResultTokens: report.finalResultTokens,
+    netSavedTokens: report.netSavedTokens,
+    netSavedPercent: report.netSavedPercent,
     firstFactSurvived: report.firstFactSurvived,
     lastFactSurvived: report.lastFactSurvived,
     totalLatencyMs: report.totalLatencyMs,

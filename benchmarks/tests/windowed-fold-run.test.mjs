@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { findCutPoint, planWindows, foldWindows, groundingCheck } from '../live/windowed-fold-run.mjs';
+import {
+  findCutPoint,
+  planWindows,
+  foldWindows,
+  groundingCheck,
+  pruneRepeatedLines,
+  extractFactLedger,
+  computeCalibrationRatio,
+  computeNetSavings,
+} from '../live/windowed-fold-run.mjs';
 
 function ev(id, output) {
   return { id, toolName: 'test', output, isError: false };
@@ -75,17 +84,88 @@ test('foldWindows stops after a failing window and does not call later windows',
   assert.equal(result.perWindow[1].error, 'boom');
 });
 
-test('net savings computed correctly from known numbers', () => {
-  const originalTokens = 1000;
-  const finalSummaryTokens = 100;
-  const compactorInputTokens = 200;
-  const compactorOutputTokens = 50;
-  const grossSavedTokens = originalTokens - finalSummaryTokens;
-  const netSavedTokens = grossSavedTokens - compactorInputTokens - compactorOutputTokens;
-  const netSavedPercent = (netSavedTokens / originalTokens) * 100;
-  assert.equal(grossSavedTokens, 900);
-  assert.equal(netSavedTokens, 650);
-  assert.equal(netSavedPercent, 65);
+test('computeNetSavings with calibrationRatio 1 matches the plain-arithmetic case', () => {
+  const result = computeNetSavings({
+    originalTokensEstimate: 1000,
+    finalResultTokensEstimate: 100,
+    compactorInputTokens: 200,
+    compactorOutputTokens: 50,
+    calibrationRatio: 1,
+  });
+  assert.equal(result.grossSavedTokens, 900);
+  assert.equal(result.netSavedTokens, 650);
+  assert.equal(result.netSavedPercent, 65);
+});
+
+test('computeNetSavings scales estimator-basis tokens by calibrationRatio before subtracting real provider tokens', () => {
+  // Local estimator says 1000/100; the run's own calibration shows it undercounts by 1.4x
+  // against what the provider actually billed for the compactor call.
+  const result = computeNetSavings({
+    originalTokensEstimate: 1000,
+    finalResultTokensEstimate: 100,
+    compactorInputTokens: 1300,
+    compactorOutputTokens: 50,
+    calibrationRatio: 1.4,
+  });
+  assert.equal(result.originalTokens, 1400);
+  assert.equal(result.finalResultTokens, 140);
+  assert.equal(result.grossSavedTokens, 1260);
+  assert.equal(result.netSavedTokens, -90);
+});
+
+test('computeCalibrationRatio derives the run-specific undercount from real vs. estimated compactor input', () => {
+  assert.equal(computeCalibrationRatio(140, 100), 1.4);
+});
+
+test('computeCalibrationRatio falls back to 1 (no correction) when nothing was estimated', () => {
+  assert.equal(computeCalibrationRatio(0, 0), 1);
+});
+
+test('pruneRepeatedLines keeps the first N repeats and collapses the rest', () => {
+  const text = ['same', 'same', 'same', 'same', 'other'].join('\n');
+  const pruned = pruneRepeatedLines(text, { keepFirstN: 2 });
+  assert.equal(pruned, ['same', 'same', '[... repeated line collapsed ...]', 'other'].join('\n'));
+});
+
+test('pruneRepeatedLines leaves non-repeated content untouched', () => {
+  const text = 'line one\nline two\nline three';
+  assert.equal(pruneRepeatedLines(text), text);
+});
+
+test('extractFactLedger pulls file paths, SHAs, issue refs, error and negation lines mechanically', () => {
+  const events = [
+    ev('a', 'changed src/core/index.mjs at commit 4a9f8c2e1'),
+    ev('b', 'fixes issue #421, closes PR 88'),
+    ev('c', 'Error: cannot read property of undefined'),
+    ev('d', 'the migration does not touch the users table'),
+  ];
+  const ledger = extractFactLedger(events);
+  assert.ok(ledger.some((f) => f.includes('src/core/index.mjs')));
+  assert.ok(ledger.some((f) => f.includes('4a9f8c2e1')));
+  assert.ok(ledger.some((f) => /issue\s*#?421/i.test(f) || /PR\s*88/i.test(f)));
+  assert.ok(ledger.some((f) => f.includes('cannot read property of undefined')));
+  assert.ok(ledger.some((f) => f.includes('does not touch')));
+});
+
+test('groundingCheck survives via the mechanical ledger even when the LLM summary drops the fact', () => {
+  // pickFact() selects the whole trimmed line, so the ledger must carry that same whole
+  // line verbatim for the survival check to pass — LEDGER_ERROR_LINE_RE does exactly
+  // that (unlike the path/SHA patterns, which only capture the matched substring).
+  const summarizedEvents = [ev('e', 'Error: cannot read property of undefined')];
+  const droppedByLlm = groundingCheck({
+    summarizedEvents,
+    carriedSummary: 'a summary that lost the specific path',
+    carriedFacts: [],
+  });
+  assert.equal(droppedByLlm.firstFactSurvived, false);
+
+  const withLedger = groundingCheck({
+    summarizedEvents,
+    carriedSummary: 'a summary that lost the specific path',
+    carriedFacts: [],
+    factLedger: extractFactLedger(summarizedEvents),
+  });
+  assert.equal(withLedger.firstFactSurvived, true);
 });
 
 test('groundingCheck detects survived and lost facts', () => {
