@@ -351,3 +351,13 @@ test('builds paired Codex CLI commands with hooks enabled and no MCP server', ()
   assert.deepEqual(optimized, baseline);
   assert.equal(optimized.some((arg) => arg.includes('mcp_servers')), false);
 });
+
+test('builds paired Codex all-strategy commands with hooks and MCP only in optimized arm', () => {
+  const baseline = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: false, route: 'all', serverPath: '/tmp/sando/mcp/server.mjs' });
+  const optimized = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: true, route: 'all', serverPath: '/tmp/sando/mcp/server.mjs' });
+  assert.equal(baseline.includes('--ignore-user-config'), false);
+  assert.ok(baseline.includes('--dangerously-bypass-hook-trust'));
+  assert.equal(baseline.some((arg) => arg.includes('mcp_servers')), false);
+  assert.ok(optimized.includes('mcp_servers.sando.command="node"'));
+  assert.ok(optimized.includes('mcp_servers.sando.args=["/tmp/sando/mcp/server.mjs"]'));
+});
