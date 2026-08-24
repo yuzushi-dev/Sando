@@ -139,33 +139,62 @@ test('extractFactLedger pulls file paths, SHAs, issue refs, error and negation l
     ev('c', 'Error: cannot read property of undefined'),
     ev('d', 'the migration does not touch the users table'),
   ];
-  const ledger = extractFactLedger(events);
+  const { ledger, droppedCount } = extractFactLedger(events);
   assert.ok(ledger.some((f) => f.includes('src/core/index.mjs')));
   assert.ok(ledger.some((f) => f.includes('4a9f8c2e1')));
   assert.ok(ledger.some((f) => /issue\s*#?421/i.test(f) || /PR\s*88/i.test(f)));
   assert.ok(ledger.some((f) => f.includes('cannot read property of undefined')));
   assert.ok(ledger.some((f) => f.includes('does not touch')));
+  assert.equal(droppedCount, 0);
 });
 
-test('groundingCheck survives via the mechanical ledger even when the LLM summary drops the fact', () => {
-  // pickFact() selects the whole trimmed line, so the ledger must carry that same whole
-  // line verbatim for the survival check to pass — LEDGER_ERROR_LINE_RE does exactly
-  // that (unlike the path/SHA patterns, which only capture the matched substring).
+test('extractFactLedger caps total tokens and reports how many entries were dropped, never silently', () => {
+  const events = Array.from({ length: 50 }, (_, i) => ev(`e${i}`, `this does not touch item ${i} at all`));
+  const { ledger, droppedCount, usedTokens } = extractFactLedger(events, { maxTokens: 50, estimate: (t) => t.length });
+  assert.ok(usedTokens <= 50);
+  assert.ok(ledger.length < events.length);
+  assert.equal(droppedCount, events.length - ledger.length);
+});
+
+test('groundingCheck survives via the mechanical ledger even when the LLM summary drops the fact (whole-line capture)', () => {
   const summarizedEvents = [ev('e', 'Error: cannot read property of undefined')];
   const droppedByLlm = groundingCheck({
     summarizedEvents,
-    carriedSummary: 'a summary that lost the specific path',
+    carriedSummary: 'a summary that lost the specific fact',
     carriedFacts: [],
   });
   assert.equal(droppedByLlm.firstFactSurvived, false);
 
   const withLedger = groundingCheck({
     summarizedEvents,
-    carriedSummary: 'a summary that lost the specific path',
+    carriedSummary: 'a summary that lost the specific fact',
     carriedFacts: [],
-    factLedger: extractFactLedger(summarizedEvents),
+    factLedger: extractFactLedger(summarizedEvents).ledger,
   });
   assert.equal(withLedger.firstFactSurvived, true);
+});
+
+test('groundingCheck counts a fact as survived when the ledger preserves a meaningful substring, not just a whole-line match', () => {
+  // pickFact() selects the whole line "changed path /tmp/sando/core.mjs at commit
+  // 4a9f8c2e1"; the path/SHA ledger patterns capture only the matched substrings, not
+  // the surrounding prose. That's the ledger doing its job (Hermes-style anchor
+  // preservation), not the fact getting lost — groundingCheck must count it as survived.
+  const summarizedEvents = [ev('e', 'changed path /tmp/sando/core.mjs at commit 4a9f8c2e1')];
+  const { ledger } = extractFactLedger(summarizedEvents);
+  const withLedgerOnly = groundingCheck({
+    summarizedEvents,
+    carriedSummary: 'an unrelated paraphrased summary',
+    carriedFacts: [],
+    factLedger: ledger,
+  });
+  assert.equal(withLedgerOnly.firstFactSurvived, true);
+
+  const withoutLedger = groundingCheck({
+    summarizedEvents,
+    carriedSummary: 'an unrelated paraphrased summary',
+    carriedFacts: [],
+  });
+  assert.equal(withoutLedger.firstFactSurvived, false);
 });
 
 test('groundingCheck detects survived and lost facts', () => {

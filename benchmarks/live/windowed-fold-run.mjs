@@ -111,28 +111,45 @@ const LEDGER_NEGATION_LINE_RE = /^.*\b(?:not|never|isn't|doesn't|cannot|no longe
 // uses to pick the grounding-probe fact. This ledger is what actually ships in the
 // final output (see main()); pickFact stays evaluation-only. Keeping the two
 // independent avoids the probe passing by construction.
-export function extractFactLedger(events) {
-  const ledger = new Set();
+//
+// Bounded like Hermes bounds its summary (~5% of context): on a large torso, a broad
+// pattern like "contains not/never/cannot" can match a large fraction of lines and
+// itself become the thing that blows the token budget. maxTokens caps that — entries
+// are kept in first-seen order until the budget is spent; the rest are reported as
+// droppedCount, never silently discarded.
+export function extractFactLedger(events, { maxTokens = 2000, estimate = estimateTokens } = {}) {
+  const candidates = new Set();
   for (const event of events) {
     const text = event.output ?? '';
     for (const re of [LEDGER_PATH_RE, LEDGER_SHA_RE, LEDGER_ISSUE_RE]) {
       for (const match of text.matchAll(re)) {
         const value = (match[1] ?? match[0]).trim();
-        if (value.length >= 4) ledger.add(value);
+        if (value.length >= 4) candidates.add(value);
       }
     }
     for (const re of [LEDGER_ERROR_LINE_RE, LEDGER_NEGATION_LINE_RE]) {
       for (const match of text.matchAll(re)) {
         const line = match[0].trim();
-        if (line.length >= 8) ledger.add(line.slice(0, 200));
+        if (line.length >= 8) candidates.add(line.slice(0, 200));
       }
     }
   }
-  return [...ledger];
+  const ledger = [];
+  let usedTokens = 0;
+  let droppedCount = 0;
+  for (const candidate of candidates) {
+    const candidateTokens = estimate(candidate);
+    if (usedTokens + candidateTokens > maxTokens) {
+      droppedCount += 1;
+      continue;
+    }
+    ledger.push(candidate);
+    usedTokens += candidateTokens;
+  }
+  return { ledger, droppedCount, usedTokens };
 }
 
-function buildPrompt({ windowEvents, carriedSummary, carriedFacts }) {
-  const excerpt = pruneRepeatedLines(windowText(windowEvents));
+function buildPrompt({ excerpt, carriedSummary, carriedFacts }) {
   if (carriedSummary === null) {
     return `${SEMANTIC_SYSTEM_PROMPT}\n\nSummarize the following conversation excerpt. Preserve exact paths, identifiers, errors, numbers, and negations. Return JSON {schema:"sando-semantic-summary/v1", summary: string, preservedFacts: string[]}.\n\n${excerpt}`;
   }
@@ -152,14 +169,20 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
   let totalCompactorInputTokens = 0;
   let totalCompactorOutputTokens = 0;
   let totalPromptTokensEstimate = 0;
+  let totalPrunedTokensSaved = 0;
   let totalLatencyMs = 0;
   const perWindow = [];
   let failedAtWindow = null;
 
   for (let index = 0; index < windows.length; index += 1) {
     const windowEvents = windows[index];
-    const tokensEstimate = estimate(windowText(windowEvents));
-    const prompt = buildPrompt({ windowEvents, carriedSummary, carriedFacts });
+    const rawWindowText = windowText(windowEvents);
+    const tokensEstimate = estimate(rawWindowText);
+    const excerpt = pruneRepeatedLines(rawWindowText);
+    const prunedTokensEstimate = estimate(excerpt);
+    const prunedTokensSaved = tokensEstimate - prunedTokensEstimate;
+    totalPrunedTokensSaved += prunedTokensSaved;
+    const prompt = buildPrompt({ excerpt, carriedSummary, carriedFacts });
     const promptTokensEstimate = estimate(prompt);
     totalPromptTokensEstimate += promptTokensEstimate;
     const startedAt = Date.now();
@@ -175,6 +198,8 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
         index,
         events: windowEvents.length,
         tokensEstimate,
+        prunedTokensEstimate,
+        prunedTokensSaved,
         promptTokensEstimate,
         compactorInputTokens: response.usage.inputTokens,
         compactorOutputTokens: response.usage.outputTokens,
@@ -188,6 +213,8 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
         index,
         events: windowEvents.length,
         tokensEstimate,
+        prunedTokensEstimate,
+        prunedTokensSaved,
         compactorInputTokens: 0,
         compactorOutputTokens: 0,
         latencyMs,
@@ -205,6 +232,7 @@ export async function foldWindows(windows, complete, { estimate = estimateTokens
     totalCompactorInputTokens,
     totalCompactorOutputTokens,
     totalPromptTokensEstimate,
+    totalPrunedTokensSaved,
     totalLatencyMs,
     perWindow,
     failedAtWindow,
@@ -281,18 +309,32 @@ function lastNonEmptyFact(text) {
   return idx === -1 ? undefined : pickFact(lines, idx, -1);
 }
 
+// pickFact() selects a whole line; the ledger's path/SHA/issue patterns capture only
+// the matched substring, not the surrounding line (its error/negation patterns do
+// capture whole lines). A verbatim haystack.includes(fact) check alone would therefore
+// call the fact "lost" whenever the ledger preserved the meaningful token but not the
+// prose around it — that's the ledger doing its job, not losing the fact. Count it as
+// survived either way: exact line match, or the fact-line containing a ledger entry
+// that itself made it into the haystack.
+function survived(fact, haystack, ledgerEntries) {
+  if (fact === undefined) return false;
+  if (haystack.includes(fact)) return true;
+  return (ledgerEntries ?? []).some((entry) => entry.length >= 8 && fact.includes(entry));
+}
+
 export function groundingCheck({ summarizedEvents, carriedSummary, carriedFacts, factLedger }) {
   if (!Array.isArray(summarizedEvents)) throw new TypeError('summarizedEvents are required');
   const firstEventText = summarizedEvents[0]?.output ?? '';
   const lastEventText = summarizedEvents[summarizedEvents.length - 1]?.output ?? '';
   const firstFact = firstNonEmptyFact(firstEventText);
   const lastFact = lastNonEmptyFact(lastEventText);
-  const haystack = `${carriedSummary ?? ''}\n${(carriedFacts ?? []).join('\n')}\n${(factLedger ?? []).join('\n')}`;
+  const ledgerEntries = factLedger ?? [];
+  const haystack = `${carriedSummary ?? ''}\n${(carriedFacts ?? []).join('\n')}\n${ledgerEntries.join('\n')}`;
   return {
     firstFact,
     lastFact,
-    firstFactSurvived: firstFact !== undefined && haystack.includes(firstFact),
-    lastFactSurvived: lastFact !== undefined && haystack.includes(lastFact),
+    firstFactSurvived: survived(firstFact, haystack, ledgerEntries),
+    lastFactSurvived: survived(lastFact, haystack, ledgerEntries),
   };
 }
 
@@ -331,12 +373,15 @@ async function main() {
       totalCompactorInputTokens: 0,
       totalCompactorOutputTokens: 0,
       totalPromptTokensEstimate: 0,
+      totalPrunedTokensSaved: 0,
       totalLatencyMs: 0,
       perWindow: [],
       failedAtWindow: null,
     };
 
-  const factLedger = summarizedEvents.length > 0 ? extractFactLedger(summarizedEvents) : [];
+  const { ledger: factLedger, droppedCount: factLedgerDroppedCount } = summarizedEvents.length > 0
+    ? extractFactLedger(summarizedEvents)
+    : { ledger: [], droppedCount: 0 };
 
   const originalText = windowText(events);
   const originalTokensEstimate = estimateTokens(originalText);
@@ -386,8 +431,10 @@ async function main() {
     compactorOutputTokens: foldResult.totalCompactorOutputTokens,
     finalSummaryTokens,
     factLedgerCount: factLedger.length,
+    factLedgerDroppedCount,
     factLedgerTokens,
     rawRecentTokens,
+    totalPrunedTokensSaved: foldResult.totalPrunedTokensSaved,
     originalTokens: netSavings.originalTokens,
     finalResultTokens: netSavings.finalResultTokens,
     netSavedTokens: netSavings.netSavedTokens,
@@ -421,6 +468,8 @@ async function main() {
     compactorOutputTokens: report.compactorOutputTokens,
     finalSummaryTokens: report.finalSummaryTokens,
     factLedgerCount: report.factLedgerCount,
+    factLedgerDroppedCount: report.factLedgerDroppedCount,
+    totalPrunedTokensSaved: report.totalPrunedTokensSaved,
     rawRecentTokens: report.rawRecentTokens,
     finalResultTokens: report.finalResultTokens,
     netSavedTokens: report.netSavedTokens,
