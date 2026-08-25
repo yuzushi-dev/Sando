@@ -1,3 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { atomicWrite, ensureDirectory, withLock } from './provider-usage.mjs';
+
 const SCHEMA_VERSION = 1;
 const MAX_STRING_LENGTH = 32;
 const MAX_EVENT_BYTES = 2048;
@@ -72,4 +78,97 @@ export function serializeEvent(payload) {
   const serialized = JSON.stringify(payload);
   if (Buffer.byteLength(serialized) > MAX_EVENT_BYTES) throw new Error('event exceeds serialized size limit');
   return serialized;
+}
+
+export const TELEMETRY_CONFIG_VERSION = 1;
+const CONSENT_VERSION = 1;
+export const TELEMETRY_ENDPOINT = 'https://telemetry.yuzushi.example/v1/logs';
+
+export const TELEMETRY_DISCLOSURE = [
+  'Sando can send anonymous daily aggregate counts to a shared telemetry backend:',
+  '  - hook: tool-call, redaction, capped-output counts, and bytes saved, per host/mode',
+  '  - proxy: rewrite-applied/skipped counts, estimated input tokens saved, prompt-cache hit',
+  'All values are bucketed (e.g. "2_to_5", "16_to_64k") — never a raw count, byte value, path,',
+  'transcript, tool output, session ID, or any other identifier.',
+  `Endpoint: ${TELEMETRY_ENDPOINT}`,
+  'Retention: 13 months, aggregate rows only.',
+  'This is an opt-in sample, not a population measurement — enabled users may not be representative.',
+].join('\n');
+
+function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+
+function emptyTelemetryConfig() {
+  return { schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: 0 };
+}
+
+function validateTelemetryConfig(value) {
+  if (!record(value) || value.schema_version !== TELEMETRY_CONFIG_VERSION || typeof value.enabled !== 'boolean'
+    || !Number.isInteger(value.prompted_consent_version) || value.prompted_consent_version < 0) {
+    throw new Error('telemetry config is invalid');
+  }
+  if (value.enabled) {
+    if (!Number.isInteger(value.consent_version) || value.consent_version < 1
+      || typeof value.consented_at !== 'string' || Number.isNaN(Date.parse(value.consented_at))
+      || typeof value.endpoint !== 'string' || !value.endpoint) throw new Error('telemetry config is invalid');
+  }
+  return value;
+}
+
+export function defaultTelemetryConfigPath(env = process.env) {
+  const configHome = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  if (!path.isAbsolute(configHome)) throw new Error('config directory must be absolute');
+  return path.join(configHome, 'sando', 'telemetry.json');
+}
+
+export function defaultTelemetryStatePaths(env = process.env) {
+  const stateHome = env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+  if (!path.isAbsolute(stateHome)) throw new Error('state directory must be absolute');
+  const directory = path.join(stateHome, 'sando');
+  return { counters: path.join(directory, 'telemetry-counters.json'), queue: path.join(directory, 'telemetry-queue.jsonl') };
+}
+
+export function readTelemetryConfig(configPath = defaultTelemetryConfigPath()) {
+  if (!fs.existsSync(configPath)) return emptyTelemetryConfig();
+  return validateTelemetryConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
+}
+
+function writeTelemetryConfig(configPath, config) {
+  validateTelemetryConfig(config);
+  ensureDirectory(path.dirname(configPath));
+  withLock(`${configPath}.lock`, () => atomicWrite(configPath, config));
+  return config;
+}
+
+export function statusTelemetry(configPath = defaultTelemetryConfigPath()) {
+  return readTelemetryConfig(configPath);
+}
+
+/** Only an explicit `yes` in an interactive session enables collection; anything else
+ *  (blank, `no`, EOF, or a non-interactive caller) writes the disabled prompt marker so
+ *  upgrades and reinstalls never re-prompt or silently opt a user in. */
+export function enableTelemetry({ configPath = defaultTelemetryConfigPath(), answer, interactive = true, now = () => new Date() } = {}) {
+  if (!interactive || typeof answer !== 'string' || answer.trim().toLowerCase() !== 'yes') {
+    return writeTelemetryConfig(configPath, { schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: CONSENT_VERSION });
+  }
+  return writeTelemetryConfig(configPath, {
+    schema_version: TELEMETRY_CONFIG_VERSION,
+    enabled: true,
+    prompted_consent_version: CONSENT_VERSION,
+    consent_version: CONSENT_VERSION,
+    consented_at: now().toISOString(),
+    endpoint: TELEMETRY_ENDPOINT,
+  });
+}
+
+export function disableTelemetry({ configPath = defaultTelemetryConfigPath(), purge = false, statePaths = defaultTelemetryStatePaths() } = {}) {
+  const previous = readTelemetryConfig(configPath);
+  const result = writeTelemetryConfig(configPath, {
+    schema_version: TELEMETRY_CONFIG_VERSION,
+    enabled: false,
+    prompted_consent_version: previous.prompted_consent_version || CONSENT_VERSION,
+  });
+  if (purge) {
+    for (const target of [statePaths.counters, statePaths.queue]) fs.rmSync(target, { force: true });
+  }
+  return result;
 }
