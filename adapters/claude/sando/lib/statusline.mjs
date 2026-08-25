@@ -116,6 +116,6 @@ export function renderStatusLine({ metrics } = {}, _now = Date.now()) {
     || !Number.isSafeInteger(metrics.savedTokens) || metrics.savedTokens <= 0) return '🥪 —';
   const estimated = metrics.source === 'estimate';
   const savings = `${estimated ? '~' : ''}${compactTokens(metrics.savedTokens)} token saved`;
-  const cost = compactCost(metrics.savedTokens, metrics.model);
+  const cost = estimated ? undefined : compactCost(metrics.savedTokens, metrics.model);
   return `🥪 ${[savings, cost && `(-${cost})`].filter(Boolean).join(' ')}`;
 }

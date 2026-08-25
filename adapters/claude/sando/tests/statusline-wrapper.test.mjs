@@ -41,7 +41,7 @@ test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
     },
   });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved (-$0.01)');
+  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved');
 });
 
 test('Claude statusline accepts a shell-backed existing statusline', (t) => {
