@@ -8,6 +8,46 @@ Dependency-free Node 22 tooling for deterministic tool-output preparation and op
 
 Sando redacts common credential-shaped values, keeps a bounded inline view, preserves a complete redacted artifact, and records receipts and metrics. The core and hooks do not call an LLM or access the network; the opt-in proxy only forwards provider requests after deterministic history reduction.
 
+## Measured savings
+
+**Peak: 45.7% fewer input tokens.** Median of 5 paired live runs against the real Anthropic API,
+counted from provider-reported billing rather than estimated, with every run passing its
+output-quality check. Codex on the same harness: 13.9%. Reproduce with
+`benchmarks/live/proxy-e2e-run.mjs`.
+
+Read the next paragraph before quoting that number.
+
+**It comes from a short session.** That benchmark is a two-message exchange with one large repetitive
+tool result — the shape Sando is best at. The saving is real and provider-billed, but it is a peak,
+not a typical figure, and it does **not** extrapolate to long sessions.
+
+| Scenario | Saving | Basis |
+|---|---|---|
+| Short session, repetitive tool output | **45.7%** | live, provider-billed, n=5 |
+| Long session, host without prompt caching | ~10% median (0–30%) | `bytes/4` estimate, 25 real sessions |
+| Long session, host **with** prompt caching (Claude Code) | **~0%** | deliberate — see below |
+
+**Why ~0% is the right answer when your host caches.** Claude Code already places 3 of Anthropic's 4
+`cache_control` breakpoints, and a cache read bills at 0.1× fresh input. Rewriting history to shave
+tokens invalidates that cached prefix. Across 685 rewrites in 23 real sessions, only 1.5% reclaimed
+enough to pay back the cache-write premium. So Sando prices each rewrite and **declines the ones that
+would cost more than they save** (`policy.cacheRewriteRatio`).
+
+Fewer tokens on the wire is not the same as a smaller bill. Sando optimizes for the bill, which
+sometimes means doing nothing.
+
+Savings track **repetition, not length** — repeated reads of the same files and repetitive command
+output are what Sando removes. A 250k-token session measured 8.8%; a 128k-token one measured 22.1%.
+Measure your own instead of trusting any of the above:
+
+```sh
+npm run probe:rewrite-payback -- ~/.claude/projects/*/*.jsonl
+```
+
+Separately, the always-on hook path bounds individual tool outputs before they reach the model. That
+runs regardless of caching and is reported by `node packages/sando/src/metrics-cli.mjs`, labelled as
+an estimate — it is byte arithmetic, not provider-billed tokens.
+
 ## Install
 
 Requires Node.js `22.22.x`.

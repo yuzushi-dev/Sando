@@ -136,12 +136,30 @@ node benchmarks/live/proxy-e2e-run.mjs --host codex --model gpt-5.6-luna \
   --out benchmarks/results/live-proxy-codex-5-current.json
 ```
 
-Snapshot: 2026-08-24. Both campaigns completed 5/5 quality gates with provider-reported counters:
+Snapshot: 2026-08-24, re-run 2026-08-25. All campaigns completed 5/5 quality gates with
+provider-reported counters:
 
 | Host | Provider boundary | Baseline → optimized input | Saved | Median saved |
 | --- | --- | ---: | ---: | ---: |
 | Claude Code `2.1.233` / `claude-opus-5` | Anthropic Messages via loopback proxy | 139,730 → 74,233 | 65,497 (46.87%) | 46.91% |
+| Claude Code `2.1.233` / `claude-opus-5`, **cache guard active** | same | 136,845 → 74,247 | 62,598 (45.74%) | **45.71%** |
 | Codex CLI `0.149.1` / `gpt-5.6-luna` | Responses `custom_tool_call*` via loopback proxy | 309,567 → 265,209 | 44,358 (14.33%) | 13.92% |
+
+The guarded run reports `cacheProtectedSkips: 0` — the guard never engaged, so the 1.2pp gap is
+between-run noise rather than a guard effect. That is by design: this fixture is a two-message
+session, so the suffix behind any rewrite is small and the payback ratio clears the threshold easily.
+The guard only engages once history is deep. It is therefore shown here **not to break the proxy
+path**; it is not shown to help, because this fixture cannot reach the regime where it matters.
+
+**This fixture cannot measure long sessions.** `--repetitions` restarts the same two-turn session
+rather than growing one, and `buildProxyPrompt` issues a single user turn with two tool calls.
+Crossing a `budgetTriggered` threshold by accumulation needs a multi-turn fixture that does not exist
+yet. For the long-session question use `npm run probe:rewrite-payback` against real transcripts.
+
+A first attempt at the guarded run was invalid and is noted so the discrepancy is not rediscovered:
+run without `--model`, it picked up a session default of `claude-sonnet-5`, and the *baseline* — which
+never passes through the proxy — doubled to 52.9k input tokens because system prompt and tool set
+differ per model. Always pass `--model` explicitly when comparing against an earlier run.
 
 The exact aggregate in each report is authoritative; cache fields and output tokens remain reported separately. The Codex proxy uses the ChatGPT OAuth backend by default; an API-key run can pass `--upstream https://api.openai.com/v1`.
 
