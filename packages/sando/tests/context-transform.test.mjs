@@ -243,6 +243,7 @@ test('detects provider tool shapes conservatively and leaves no-op requests clon
     budgetTriggered: false,
     cacheProtectedSkips: 0,
     cacheRewriteRatio: null,
+    cacheIdleFlushed: false,
   });
 });
 
@@ -425,6 +426,50 @@ test('never rewrites history behind a cache_control breakpoint the host placed',
   assert.equal(unguarded.stats.supersededReads, 1);
   assert.equal(unguarded.stats.cacheProtectedSkips, 0);
   assert.equal(unguarded.stats.cacheRewriteRatio, null);
+});
+
+test('idle-flush bypasses the ratio guard once the host cache has expired on its own', () => {
+  // Same fixture as the breakpoint test: a small reclaim behind a large suffix, which
+  // the ratio guard normally protects. Past the idle-flush threshold, the host's own
+  // 1h ephemeral TTL has already lapsed, so the rewrite costs nothing extra.
+  const MARK = { type: 'ephemeral', ttl: '1h' };
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const build = () => ({
+    model: 'claude-sonnet-5',
+    system: [
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 's2', cache_control: MARK },
+    ],
+    messages: [
+      { role: 'assistant', content: [read('t1', '/a.ts')] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `OLD ${'x'.repeat(800)}` }] },
+      { role: 'assistant', content: [read('t2', '/a.ts')] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW' }] },
+      { role: 'user', content: [{ type: 'text', text: 'filler '.repeat(20_000) }] },
+      { role: 'user', content: [{ type: 'text', text: 'tail', cache_control: MARK }] },
+    ],
+  });
+
+  const stillWarm = transformProviderRequest({
+    provider: 'anthropic', body: build(), policy: {}, idleMs: 10 * 60_000,
+  });
+  assert.equal(stillWarm.stats.cacheProtectedSkips, 1);
+  assert.equal(stillWarm.stats.cacheIdleFlushed, false);
+
+  const flushed = transformProviderRequest({
+    provider: 'anthropic', body: build(), policy: {}, idleMs: 65 * 60_000,
+  });
+  assert.equal(flushed.changed, true);
+  assert.equal(flushed.stats.supersededReads, 1);
+  assert.equal(flushed.stats.cacheProtectedSkips, 0);
+  assert.equal(flushed.stats.cacheIdleFlushed, true);
+
+  // policy.cacheIdleFlushMs: null disables idle-flush; the ratio guard governs alone.
+  const disabled = transformProviderRequest({
+    provider: 'anthropic', body: build(), policy: { cacheIdleFlushMs: null }, idleMs: 65 * 60_000,
+  });
+  assert.equal(disabled.stats.cacheProtectedSkips, 1);
+  assert.equal(disabled.stats.cacheIdleFlushed, false);
 });
 
 test('a rewrite that reclaims most of its suffix is allowed through', () => {

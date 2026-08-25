@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { createProviderProxy } from '../src/proxy.mjs';
@@ -255,4 +258,48 @@ test('shadow observer runs after forwarding and cannot delay the provider respon
   release();
   await response.text();
   await waitFor(() => proxy.lastStats.semantic.pending === 0);
+});
+
+test('proxy persists provider-reported usage and transform stats when metricsPath is set', async (t) => {
+  const upstream = http.createServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":80,"cache_read_input_tokens":0}}}\n\n');
+    response.end('event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":16}}\n\n');
+  });
+  const upstreamAddress = await listen(upstream);
+  const metricsPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sando-proxy-metrics-')), 'proxy-requests.jsonl');
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    policy: { maxHistoryTokens: 10_000 },
+    metricsPath,
+  });
+  t.after(async () => {
+    await proxy.close();
+    await close(upstream);
+  });
+
+  const body = {
+    model: 'fixture-model',
+    messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'old', name: 'Read', input: { file_path: 'src/app.ts:1-20' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old', content: 'old body' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'new', name: 'Read', input: { file_path: 'src/app.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'new', content: 'new body' }] },
+    ],
+  };
+  const response = await fetch(`${proxy.url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await response.text();
+
+  await waitFor(() => fs.existsSync(metricsPath));
+  const record = JSON.parse(fs.readFileSync(metricsPath, 'utf8').trim().split('\n')[0]);
+  assert.equal(record.schema, 'sando-proxy-metrics/v1');
+  assert.equal(record.provider, 'anthropic');
+  assert.equal(record.model, 'fixture-model');
+  assert.equal(record.stats.supersededReads, 1);
+  assert.deepEqual(record.usage, { input_tokens: 5, cache_creation_input_tokens: 80, cache_read_input_tokens: 0, output_tokens: 16 });
 });

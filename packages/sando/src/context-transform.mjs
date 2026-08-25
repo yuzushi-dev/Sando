@@ -288,6 +288,16 @@ function carriesBreakpoint(value) {
 const DEFAULT_CACHE_REWRITE_RATIO = 0.51;
 
 /**
+ * Below this idle time, the ratio guard above governs. At or beyond it, the host's
+ * prompt cache has already expired on its own — Anthropic's longest published ephemeral
+ * TTL is 1h (measured on a real Claude Code request: `{"type":"ephemeral","ttl":"1h"}`),
+ * so a request idle this long forces a full cache-write regardless of what Sando does.
+ * Rewriting costs nothing extra at that point, so the ratio guard is bypassed entirely.
+ * Set `policy.cacheIdleFlushMs: null` to disable (ratio guard always governs).
+ */
+const DEFAULT_CACHE_IDLE_FLUSH_MS = 65 * 60_000;
+
+/**
  * Token counts of the suffix following each message index.
  *
  * Position relative to a breakpoint is the wrong metric here. A real Claude Code
@@ -311,7 +321,7 @@ function suffixTokensByPosition(body) {
   return suffix;
 }
 
-export function transformProviderRequest({ provider, body, policy } = {}) {
+export function transformProviderRequest({ provider, body, policy, idleMs } = {}) {
   const clone = structuredClone(body);
   const estimatedInputTokens = estimate(body);
   const selectedProvider = provider ?? detectProviderBody(body);
@@ -336,11 +346,20 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
   if (typeof cacheRewriteRatio !== 'number' || !(cacheRewriteRatio >= 0) || cacheRewriteRatio > 1) {
     throw new TypeError('cacheRewriteRatio must be a number between 0 and 1');
   }
+  const cacheIdleFlushMs = object(policy) && Object.hasOwn(policy, 'cacheIdleFlushMs')
+    ? policy.cacheIdleFlushMs
+    : DEFAULT_CACHE_IDLE_FLUSH_MS;
+  if (cacheIdleFlushMs !== null && (typeof cacheIdleFlushMs !== 'number' || !(cacheIdleFlushMs >= 0))) {
+    throw new TypeError('cacheIdleFlushMs must be a non-negative number or null');
+  }
   const cacheWarm = cacheRewriteRatio > 0 && carriesBreakpoint(clone);
   const suffixTokens = cacheWarm ? suffixTokensByPosition(clone) : null;
+  // The host's own cache has already gone cold from inactivity: any rewrite here is
+  // free, since the provider will cache-write the whole prefix again regardless.
+  const idleCold = cacheIdleFlushMs !== null && typeof idleMs === 'number' && idleMs >= cacheIdleFlushMs;
   // `reclaimed` is how many tokens this particular rewrite removes.
   const cacheProtected = (entry, reclaimed) => {
-    if (!cacheWarm) return false;
+    if (!cacheWarm || idleCold) return false;
     const suffix = suffixTokens[entry.position] ?? 0;
     if (suffix === 0) return false;
     return reclaimed / suffix < cacheRewriteRatio;
@@ -467,6 +486,7 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
       budgetTriggered,
       cacheProtectedSkips,
       cacheRewriteRatio: cacheWarm ? cacheRewriteRatio : null,
+      cacheIdleFlushed: cacheWarm ? idleCold : false,
     },
   };
 }

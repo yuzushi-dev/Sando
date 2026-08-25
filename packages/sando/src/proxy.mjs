@@ -1,6 +1,7 @@
 import http from 'node:http';
 
 import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './context-transform.mjs';
+import { recordProxyRequest } from './proxy-metrics.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set([
@@ -62,13 +63,34 @@ function responseHeaders(response) {
   return headers;
 }
 
-async function pipeResponse(response, outgoing) {
+const MAX_USAGE_SCAN_BYTES = 2 * 1024 * 1024;
+
+/** Merges every `"usage":{...}` object seen across a (possibly streamed) Anthropic
+ *  response: `message_start` carries input/cache token counts, `message_delta`
+ *  carries the final output count, and later objects overwrite matching keys. */
+function extractUsage(text) {
+  let usage = null;
+  for (const match of text.matchAll(/"usage":\s*(\{[^{}]*\})/g)) {
+    try { usage = { ...usage, ...JSON.parse(match[1]) }; } catch { /* ignore malformed fragment */ }
+  }
+  return usage;
+}
+
+async function pipeResponse(response, outgoing, onText) {
   outgoing.writeHead(response.status, response.statusText, responseHeaders(response));
   if (!response.body) {
     outgoing.end();
     return;
   }
-  for await (const chunk of response.body) outgoing.write(chunk);
+  const decoder = new TextDecoder();
+  let scanned = 0;
+  for await (const chunk of response.body) {
+    outgoing.write(chunk);
+    if (onText && scanned < MAX_USAGE_SCAN_BYTES) {
+      scanned += chunk.length;
+      onText(decoder.decode(chunk, { stream: true }));
+    }
+  }
   outgoing.end();
 }
 
@@ -108,11 +130,12 @@ async function observeSemanticCandidates({ provider, candidates, semanticCompact
   }
 }
 
-export async function createProviderProxy({ upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, semanticCompactor } = {}) {
+export async function createProviderProxy({ upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, semanticCompactor, metricsPath } = {}) {
   const upstreamUrl = assertUpstream(upstream);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError('port is invalid');
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024) throw new TypeError('maxBodyBytes is invalid');
   let lastStats = null;
+  let lastRequestAt = null;
 
   const server = http.createServer(async (request, outgoing) => {
     try {
@@ -122,14 +145,23 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
       }
       const rawBody = await readBody(request, maxBodyBytes);
       let body = rawBody;
+      let recordProvider = null;
+      let recordModel = null;
+      let recordStats = null;
       if (rawBody.length > 0 && /application\/json/i.test(request.headers['content-type'] ?? '')) {
         try {
           const parsed = JSON.parse(rawBody.toString('utf8'));
           const provider = detectProviderBody(parsed, request.headers);
           if (provider) {
-            const transformed = transformProviderRequest({ provider, body: parsed, policy });
+            const now = Date.now();
+            const idleMs = lastRequestAt === null ? null : now - lastRequestAt;
+            lastRequestAt = now;
+            const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
             if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
             lastStats = { provider, ...transformed.stats, changed: transformed.changed, reasons: transformed.reasons };
+            recordProvider = provider;
+            recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
+            recordStats = transformed.stats;
             if (typeof semanticCompactor === 'function') {
               const candidates = listSemanticCandidates({ provider, body: transformed.body });
               const stats = createSemanticStats(candidates);
@@ -147,7 +179,16 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
         body: ['GET', 'HEAD'].includes(request.method) ? undefined : body,
         redirect: 'manual',
       });
-      await pipeResponse(response, outgoing);
+      let responseText = '';
+      await pipeResponse(response, outgoing, metricsPath ? (chunk) => { responseText += chunk; } : undefined);
+      if (metricsPath && recordProvider) {
+        try {
+          recordProxyRequest({
+            storagePath: metricsPath, provider: recordProvider, model: recordModel,
+            stats: recordStats, usage: extractUsage(responseText),
+          });
+        } catch { /* metrics are best-effort and must never affect the proxied response */ }
+      }
     } catch (error) {
       if (!outgoing.headersSent) jsonResponse(outgoing, error.message === 'request body exceeds proxy limit' ? 413 : 502, { error: 'sando proxy upstream failure' });
       else outgoing.destroy();

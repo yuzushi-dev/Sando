@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createProviderProxy } from '../packages/sando/src/proxy.mjs';
+import { defaultProxyMetricsPath } from '../packages/sando/src/proxy-metrics.mjs';
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -8,7 +9,7 @@ function option(name, fallback) {
 }
 
 if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: SANDO_UPSTREAM_URL=https://provider.example npm run proxy [--port PORT] [--host HOST]\n');
+  process.stdout.write('Usage: SANDO_UPSTREAM_URL=https://provider.example npm run proxy [--port PORT] [--host HOST] [--metrics-path PATH]\n');
   process.exit(0);
 }
 
@@ -19,13 +20,15 @@ if (!upstream) {
 }
 
 try {
+  const metricsPath = option('metrics-path', defaultProxyMetricsPath());
   const proxy = await createProviderProxy({
     upstream,
     host: option('host', process.env.SANDO_PROXY_HOST || '127.0.0.1'),
     port: Number(option('port', process.env.SANDO_PROXY_PORT || '0')),
     policy: process.env.SANDO_CONTEXT_POLICY ? JSON.parse(process.env.SANDO_CONTEXT_POLICY) : {},
+    metricsPath,
   });
-  process.stdout.write(`${JSON.stringify({ schema: 'sando-provider-proxy/v1', url: proxy.url, upstream: new URL(upstream).origin })}\n`);
+  process.stdout.write(`${JSON.stringify({ schema: 'sando-provider-proxy/v1', url: proxy.url, upstream: new URL(upstream).origin, metricsPath })}\n`);
   const shutdown = async () => {
     await proxy.close();
     process.exit(0);
