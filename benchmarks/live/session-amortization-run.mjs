@@ -258,6 +258,19 @@ function sleep(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
+// The completers force a sando-semantic-summary/v1 JSON reply, but
+// SEMANTIC_SYSTEM_PROMPT (shared with the CLI/windowed-fold adapters) only
+// says "return one JSON object" — it never names the schema. windowed-fold-
+// run.mjs's buildPrompt() adds that instruction in the user turn; this
+// harness sent raw turn text with no such wrapper, so a live run (2026-08-25)
+// got a real JSON reply that didn't match the schema and failed to parse.
+// Every prompt sent to a completer in this harness needs the same wrapper,
+// even for turns whose content we only care about for billed usage — the
+// completer still requires a schema-conformant reply to succeed at all.
+export function wrapSemanticPrompt(text) {
+  return `Summarize the following content. Preserve exact paths, identifiers, errors, numbers, and negations. Return JSON {schema:"sando-semantic-summary/v1", summary: string, preservedFacts: string[]}.\n\n${text}`;
+}
+
 // Provider caches expire on a TTL (minutes, not hours); replaying turns
 // back-to-back with no delay can see cache hits a real, slower-paced session
 // would not. Making the delay an explicit, recorded parameter — rather than
@@ -276,7 +289,7 @@ export async function runSessionAmortization({
   const baselineUsages = [];
   for (let i = 0; i < turnTexts.length; i += 1) {
     if (i > 0 && interTurnDelayMs > 0) await sleep(interTurnDelayMs);
-    const response = await turnCompleter({ prompt: cumulativeText(turnTexts, i) });
+    const response = await turnCompleter({ prompt: wrapSemanticPrompt(cumulativeText(turnTexts, i)) });
     baselineUsages.push(response.usage);
   }
 
@@ -284,7 +297,7 @@ export async function runSessionAmortization({
   const anchorFacts = pickAnchorFacts(torsoText, anchorFactCount);
 
   if (interTurnDelayMs > 0) await sleep(interTurnDelayMs);
-  const summaryResponse = await summaryCompleter({ prompt: torsoText });
+  const summaryResponse = await summaryCompleter({ prompt: wrapSemanticPrompt(torsoText) });
   const compactionUsage = summaryResponse.usage;
   const summaryText = summaryResponse.summary;
   const preservedFacts = summaryResponse.preservedFacts ?? [];
@@ -294,7 +307,7 @@ export async function runSessionAmortization({
   for (let i = compactAtTurn; i < turnTexts.length; i += 1) {
     if (interTurnDelayMs > 0) await sleep(interTurnDelayMs);
     const tail = turnTexts.slice(compactAtTurn, i + 1).join('\n---\n');
-    const response = await turnCompleter({ prompt: `${summaryText}\n---\n${tail}` });
+    const response = await turnCompleter({ prompt: wrapSemanticPrompt(`${summaryText}\n---\n${tail}`) });
     compactedUsages.push(response.usage);
   }
 

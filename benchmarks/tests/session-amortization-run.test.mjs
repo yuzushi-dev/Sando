@@ -9,6 +9,7 @@ import {
   findBaselineInfeasibleTurn,
   pickAnchorFacts,
   computeRecall,
+  wrapSemanticPrompt,
   runSessionAmortization,
 } from '../live/session-amortization-run.mjs';
 
@@ -128,6 +129,12 @@ test('runSessionAmortization computes factRecall from anchor facts picked out of
   assert.ok(result.factRecall > 0 && result.factRecall <= 1);
 });
 
+test('wrapSemanticPrompt names the sando-semantic-summary/v1 schema explicitly, not just the shared system prompt', () => {
+  const wrapped = wrapSemanticPrompt('some raw content');
+  assert.ok(wrapped.includes('sando-semantic-summary/v1'));
+  assert.ok(wrapped.includes('some raw content'));
+});
+
 test('runSessionAmortization honors interTurnDelayMs between provider calls (cache-TTL reproducibility)', async () => {
   const turnTexts = ['t0', 't1', 't2'];
   const compactAtTurn = 1;
@@ -187,11 +194,13 @@ test('runSessionAmortization reuses shared-prefix cost and only diverges after c
   // 4 baseline turn calls + 2 post-compaction turn calls = 6 turnCompleter calls
   assert.equal(turnPrompts.length, 6);
   assert.equal(summaryPrompts.length, 1);
-  assert.equal(summaryPrompts[0], 't0\n---\nt1');
+  // every prompt is wrapped with the schema instruction (see wrapSemanticPrompt)
+  assert.ok(summaryPrompts[0].endsWith('t0\n---\nt1'));
+  assert.ok(summaryPrompts[0].includes('sando-semantic-summary/v1'));
   // post-compaction prompts carry the summary text, not the raw pre-compaction turns
-  assert.ok(turnPrompts[4].startsWith('SUMMARY\n---\nt2'));
+  assert.ok(turnPrompts[4].includes('SUMMARY\n---\nt2'));
   assert.ok(!turnPrompts[4].includes('t0'));
-  assert.equal(result.compactionUsage.inputTokens, 't0\n---\nt1'.length);
+  assert.equal(result.compactionUsage.inputTokens, summaryPrompts[0].length);
   assert.equal(result.summaryText, 'SUMMARY');
   assert.equal(result.baselineCumulative.length, 4);
   assert.equal(result.compactedCumulative.length, 4);
