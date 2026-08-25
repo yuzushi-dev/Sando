@@ -79,6 +79,49 @@ export function cumulativeText(turnTexts, uptoIndexInclusive) {
   return turnTexts.slice(0, uptoIndexInclusive + 1).join('\n---\n');
 }
 
+// Mechanical, independent from any LLM-produced content — same role as
+// windowed-fold-run.mjs's fact-ledger extraction, kept as a separate
+// implementation here (not imported) so this harness's quality gate cannot
+// pass by construction against the same patterns the compactor is scored
+// against. Picks up to k "meaningful" lines (paths, errors, numbers) evenly
+// spaced across the torso, instead of only the first/last line — a single
+// first/last probe was already shown noisy run-to-run in the windowed-fold
+// harness (handoff 2026-08-25).
+const MEANINGFUL_LINE_RE = /[\w.-]+\/[\w.-]+|error|exception|fail(ed|ure)?|\b\d{2,}\b/i;
+
+function meaningfulLines(text) {
+  return text.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 8 && MEANINGFUL_LINE_RE.test(line));
+}
+
+export function pickAnchorFacts(text, k) {
+  if (typeof text !== 'string') throw new TypeError('text is required');
+  if (!Number.isInteger(k) || k < 1) throw new TypeError('k must be a positive integer');
+  const lines = meaningfulLines(text);
+  if (lines.length === 0) return [];
+  const facts = [];
+  const seen = new Set();
+  const count = Math.min(k, lines.length);
+  for (let i = 0; i < count; i += 1) {
+    const idx = Math.floor((i * lines.length) / count);
+    const fact = lines[idx].slice(0, 200);
+    if (!seen.has(fact)) { seen.add(fact); facts.push(fact); }
+  }
+  return facts;
+}
+
+// Fraction of anchor facts that survive verbatim in the compactor's summary
+// output. No anchor facts (an empty/trivial torso) is vacuously full recall —
+// there was nothing to lose, not evidence the compactor did anything right.
+export function computeRecall(anchorFacts, haystack) {
+  if (!Array.isArray(anchorFacts)) throw new TypeError('anchorFacts are required');
+  if (typeof haystack !== 'string') throw new TypeError('haystack is required');
+  if (anchorFacts.length === 0) return 1;
+  const survivedCount = anchorFacts.filter((fact) => haystack.includes(fact)).length;
+  return survivedCount / anchorFacts.length;
+}
+
 export function findBreakEvenTurn(baselineCumulative, compactedCumulative) {
   if (!Array.isArray(baselineCumulative) || !Array.isArray(compactedCumulative)
     || baselineCumulative.length !== compactedCumulative.length) {
@@ -205,7 +248,7 @@ export function computeAmortization({ turnTexts, compactAtTurn, baselineUsages, 
   };
 }
 
-export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter }) {
+export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount = 8 }) {
   if (!Array.isArray(turnTexts) || turnTexts.length < 2) throw new TypeError('turnTexts are required');
   if (!Number.isInteger(compactAtTurn) || compactAtTurn < 1 || compactAtTurn >= turnTexts.length) {
     throw new TypeError('compactAtTurn must be between 1 and turnTexts.length - 1');
@@ -219,9 +262,14 @@ export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCom
     baselineUsages.push(response.usage);
   }
 
-  const summaryResponse = await summaryCompleter({ prompt: cumulativeText(turnTexts, compactAtTurn - 1) });
+  const torsoText = cumulativeText(turnTexts, compactAtTurn - 1);
+  const anchorFacts = pickAnchorFacts(torsoText, anchorFactCount);
+
+  const summaryResponse = await summaryCompleter({ prompt: torsoText });
   const compactionUsage = summaryResponse.usage;
   const summaryText = summaryResponse.summary;
+  const preservedFacts = summaryResponse.preservedFacts ?? [];
+  const factRecall = computeRecall(anchorFacts, `${summaryText}\n${preservedFacts.join('\n')}`);
 
   const compactedUsages = [];
   for (let i = compactAtTurn; i < turnTexts.length; i += 1) {
@@ -231,7 +279,7 @@ export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCom
   }
 
   const totals = computeAmortization({ turnTexts, compactAtTurn, baselineUsages, compactionUsage, compactedUsages });
-  return { ...totals, baselineUsages, compactionUsage, compactedUsages, summaryText };
+  return { ...totals, baselineUsages, compactionUsage, compactedUsages, summaryText, anchorFacts, factRecall };
 }
 
 async function main() {
@@ -249,6 +297,7 @@ async function main() {
   const turnMaxOutputTokens = validatePositiveInteger(option('turn-max-output-tokens', '256'), '--turn-max-output-tokens');
   const summaryMaxOutputTokens = validatePositiveInteger(option('summary-max-output-tokens', '2048'), '--summary-max-output-tokens');
   const contextWindowTokens = validatePositiveInteger(option('context-window-tokens', '200000'), '--context-window-tokens');
+  const anchorFactCount = validatePositiveInteger(option('anchor-facts', '8'), '--anchor-facts');
   const outPath = option('out');
   if (!outPath) throw new Error('--out is required');
   if (turnsCount < 2) throw new Error('--turns must be >= 2');
@@ -272,7 +321,7 @@ async function main() {
     ? create({ model, timeoutMs, maxOutputTokens: summaryMaxOutputTokens })
     : create({ model, timeoutMs });
 
-  const result = await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter });
+  const result = await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount });
 
   const report = {
     schema: 'sando-session-amortization/v1',
@@ -283,6 +332,9 @@ async function main() {
     compactAtTurn,
     contextWindowTokens,
     baselineInfeasibleTurn,
+    anchorFactCount,
+    anchorFacts: result.anchorFacts,
+    factRecall: result.factRecall,
     baselineTotal: result.baselineTotal,
     compactedTotal: result.compactedTotal,
     netSavedTokens: result.netSavedTokens,
@@ -307,6 +359,7 @@ async function main() {
     turnsCount,
     compactAtTurn,
     baselineInfeasibleTurn,
+    factRecall: report.factRecall,
     baselineTotal: report.baselineTotal,
     compactedTotal: report.compactedTotal,
     netSavedTokens: report.netSavedTokens,

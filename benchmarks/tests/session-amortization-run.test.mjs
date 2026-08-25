@@ -7,6 +7,8 @@ import {
   computeAmortization,
   findBreakEvenTurn,
   findBaselineInfeasibleTurn,
+  pickAnchorFacts,
+  computeRecall,
   runSessionAmortization,
 } from '../live/session-amortization-run.mjs';
 
@@ -84,6 +86,46 @@ test('computeAmortization tracks fresh/cache-read/cache-write tokens separately,
   assert.equal(lastBaseline.freshInputTokens, 100 + (100 - 90));
   const lastCompacted = result.compactedCumulativeBreakdown.at(-1);
   assert.equal(lastCompacted.cacheWriteTokens, 10);
+});
+
+test('pickAnchorFacts spreads up to k meaningful lines across the whole text, not just first/last', () => {
+  const text = [
+    'changed src/core/index.mjs',
+    'plain filler line one',
+    'Error: cannot read property',
+    'plain filler line two',
+    'fixed issue in module 42',
+    'plain filler line three',
+    'commit 9a8b7c6d5e4',
+  ].join('\n');
+  const facts = pickAnchorFacts(text, 3);
+  assert.equal(facts.length, 3);
+  assert.ok(facts.every((f) => !f.startsWith('plain filler')));
+});
+
+test('pickAnchorFacts returns fewer than k when the text has fewer meaningful lines, never throws', () => {
+  const facts = pickAnchorFacts('just plain prose with no signal', 5);
+  assert.deepEqual(facts, []);
+});
+
+test('computeRecall reports the fraction of anchor facts found verbatim in the haystack', () => {
+  assert.equal(computeRecall(['fact a', 'fact b', 'fact c', 'fact d'], 'contains fact a and fact c only'), 0.5);
+  assert.equal(computeRecall([], 'anything'), 1);
+  assert.equal(computeRecall(['missing'], 'nope'), 0);
+});
+
+test('runSessionAmortization computes factRecall from anchor facts picked out of the torso against the summary output', async () => {
+  const turnTexts = ['changed src/core/index.mjs and Error: bad state', 't1', 't2', 't3'];
+  const compactAtTurn = 1;
+  const turnCompleter = async () => ({ usage: { inputTokens: 1, outputTokens: 1 } });
+  const summaryCompleter = async () => ({
+    summary: 'summary verbatim: changed src/core/index.mjs and Error: bad state',
+    preservedFacts: [],
+    usage: { inputTokens: 1, outputTokens: 1 },
+  });
+  const result = await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount: 4 });
+  assert.ok(result.anchorFacts.length > 0);
+  assert.ok(result.factRecall > 0 && result.factRecall <= 1);
 });
 
 test('findBaselineInfeasibleTurn flags the first turn whose cumulative estimate exceeds the context window', () => {
