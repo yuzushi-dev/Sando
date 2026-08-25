@@ -6,6 +6,7 @@ import {
   cumulativeText,
   computeAmortization,
   findBreakEvenTurn,
+  findBaselineInfeasibleTurn,
   runSessionAmortization,
 } from '../live/session-amortization-run.mjs';
 
@@ -62,6 +63,34 @@ test('computeAmortization shares pre-compaction cost and adds compaction overhea
   assert.equal(result.compactedTotal, 90);
   assert.equal(result.netSavedTokens, 14);
   assert.equal(result.breakEvenTurn, 3);
+});
+
+test('computeAmortization tracks fresh/cache-read/cache-write tokens separately, not folded into the raw total', () => {
+  const turnTexts = ['t0', 't1'];
+  const compactAtTurn = 1;
+  const baselineUsages = [
+    { inputTokens: 100, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    { inputTokens: 100, outputTokens: 1, cacheReadTokens: 90, cacheWriteTokens: 0 },
+  ];
+  const compactionUsage = { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 10 };
+  const compactedUsages = [{ inputTokens: 20, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }];
+
+  const result = computeAmortization({ turnTexts, compactAtTurn, baselineUsages, compactionUsage, compactedUsages });
+
+  // raw total is unaffected by the cache fields (back-compat with existing metric)
+  assert.equal(result.baselineTotal, 101 + 101);
+  const lastBaseline = result.baselineCumulativeBreakdown.at(-1);
+  assert.equal(lastBaseline.cacheReadTokens, 90);
+  assert.equal(lastBaseline.freshInputTokens, 100 + (100 - 90));
+  const lastCompacted = result.compactedCumulativeBreakdown.at(-1);
+  assert.equal(lastCompacted.cacheWriteTokens, 10);
+});
+
+test('findBaselineInfeasibleTurn flags the first turn whose cumulative estimate exceeds the context window', () => {
+  const turnTexts = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)];
+  const estimate = (text) => text.length;
+  assert.equal(findBaselineInfeasibleTurn(turnTexts, 1000, estimate), null);
+  assert.equal(findBaselineInfeasibleTurn(turnTexts, 50, estimate), 1);
 });
 
 test('computeAmortization validates array lengths and range of compactAtTurn', () => {

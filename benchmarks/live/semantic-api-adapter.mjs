@@ -89,6 +89,8 @@ function parseApiUsage(usage) {
   return {
     inputTokens: uncachedInputTokens + cacheCreationInputTokens + cacheReadInputTokens,
     outputTokens,
+    cacheWriteTokens: cacheCreationInputTokens,
+    cacheReadTokens: cacheReadInputTokens,
   };
 }
 

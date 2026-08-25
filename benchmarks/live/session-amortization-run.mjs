@@ -94,6 +94,53 @@ function usageTotal(usage) {
   return usage.inputTokens + usage.outputTokens;
 }
 
+// Cache reads/writes are billed at different rates than fresh input tokens
+// (see handoff 2026-08-25): a headline that sums raw tokens without this
+// breakdown can be off by an order of magnitude once the baseline branch
+// starts hitting cache on its repeatedly-resent prefix. Reported alongside
+// the raw total, not folded into it — this harness does not assert a $
+// conversion, since that requires a verified per-provider price table this
+// repo does not yet have (see statusline.mjs INPUT_PRICE_PER_MILLION, Claude
+// input-only, no cache/Codex prices).
+function cacheBreakdown(usage) {
+  const cacheReadTokens = usage.cacheReadTokens ?? 0;
+  const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
+  return {
+    freshInputTokens: usage.inputTokens - cacheReadTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    outputTokens: usage.outputTokens,
+  };
+}
+
+function sumBreakdowns(a, b) {
+  return {
+    freshInputTokens: a.freshInputTokens + b.freshInputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+  };
+}
+
+const ZERO_BREAKDOWN = { freshInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+
+// A baseline turn's prompt is the full cumulative raw history; once that
+// exceeds a real model's context window the baseline branch is not just
+// expensive, it's infeasible. Flags the first turn (if any) where the
+// estimated baseline prompt crosses the threshold, so that outcome is
+// reported explicitly instead of silently producing a token-savings number
+// for a branch that couldn't actually run.
+export function findBaselineInfeasibleTurn(turnTexts, contextWindowTokens, estimate) {
+  if (!Array.isArray(turnTexts) || turnTexts.length === 0) throw new TypeError('turnTexts are required');
+  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens < 1) {
+    throw new TypeError('contextWindowTokens must be a positive integer');
+  }
+  for (let i = 0; i < turnTexts.length; i += 1) {
+    if (estimate(cumulativeText(turnTexts, i)) > contextWindowTokens) return i;
+  }
+  return null;
+}
+
 export function computeAmortization({ turnTexts, compactAtTurn, baselineUsages, compactionUsage, compactedUsages }) {
   if (!Array.isArray(turnTexts) || turnTexts.length < 2) throw new TypeError('turnTexts are required');
   if (!Number.isInteger(compactAtTurn) || compactAtTurn < 1 || compactAtTurn >= turnTexts.length) {
@@ -110,22 +157,33 @@ export function computeAmortization({ turnTexts, compactAtTurn, baselineUsages, 
   }
 
   const baselineCumulative = [];
+  const baselineCumulativeBreakdown = [];
   let runningBaseline = 0;
+  let runningBaselineBreakdown = ZERO_BREAKDOWN;
   for (const usage of baselineUsages) {
     runningBaseline += usageTotal(usage);
     baselineCumulative.push(runningBaseline);
+    runningBaselineBreakdown = sumBreakdowns(runningBaselineBreakdown, cacheBreakdown(usage));
+    baselineCumulativeBreakdown.push(runningBaselineBreakdown);
   }
 
   const compactedCumulative = [];
+  const compactedCumulativeBreakdown = [];
   let runningCompacted = 0;
+  let runningCompactedBreakdown = ZERO_BREAKDOWN;
   for (let i = 0; i < compactAtTurn; i += 1) {
     runningCompacted += usageTotal(baselineUsages[i]);
     compactedCumulative.push(runningCompacted);
+    runningCompactedBreakdown = sumBreakdowns(runningCompactedBreakdown, cacheBreakdown(baselineUsages[i]));
+    compactedCumulativeBreakdown.push(runningCompactedBreakdown);
   }
   runningCompacted += usageTotal(compactionUsage);
+  runningCompactedBreakdown = sumBreakdowns(runningCompactedBreakdown, cacheBreakdown(compactionUsage));
   for (const usage of compactedUsages) {
     runningCompacted += usageTotal(usage);
     compactedCumulative.push(runningCompacted);
+    runningCompactedBreakdown = sumBreakdowns(runningCompactedBreakdown, cacheBreakdown(usage));
+    compactedCumulativeBreakdown.push(runningCompactedBreakdown);
   }
 
   const baselineTotal = baselineCumulative[baselineCumulative.length - 1];
@@ -137,6 +195,8 @@ export function computeAmortization({ turnTexts, compactAtTurn, baselineUsages, 
   return {
     baselineCumulative,
     compactedCumulative,
+    baselineCumulativeBreakdown,
+    compactedCumulativeBreakdown,
     baselineTotal,
     compactedTotal,
     netSavedTokens,
@@ -188,6 +248,7 @@ async function main() {
   const timeoutMs = validatePositiveInteger(option('timeout-ms', '180000'), '--timeout-ms');
   const turnMaxOutputTokens = validatePositiveInteger(option('turn-max-output-tokens', '256'), '--turn-max-output-tokens');
   const summaryMaxOutputTokens = validatePositiveInteger(option('summary-max-output-tokens', '2048'), '--summary-max-output-tokens');
+  const contextWindowTokens = validatePositiveInteger(option('context-window-tokens', '200000'), '--context-window-tokens');
   const outPath = option('out');
   if (!outPath) throw new Error('--out is required');
   if (turnsCount < 2) throw new Error('--turns must be >= 2');
@@ -198,6 +259,11 @@ async function main() {
 
   const estimatedTotalTokens = turnTexts.reduce((sum, text) => sum + estimateTokens(text), 0);
   process.stderr.write(`session-amortization-run: ${turnsCount} turns, ~${estimatedTotalTokens} estimated raw tokens, compacting at turn ${compactAtTurn}\n`);
+
+  const baselineInfeasibleTurn = findBaselineInfeasibleTurn(turnTexts, contextWindowTokens, estimateTokens);
+  if (baselineInfeasibleTurn !== null) {
+    process.stderr.write(`session-amortization-run: WARNING baseline branch's estimated cumulative prompt exceeds --context-window-tokens (${contextWindowTokens}) at turn ${baselineInfeasibleTurn} — baseline may be infeasible on the real model, not just costlier. Reporting anyway; treat baselineTotal past this turn as evidence of infeasibility, not a valid cost comparison.\n`);
+  }
 
   const turnCompleter = provider === 'claude'
     ? create({ model, timeoutMs, maxOutputTokens: turnMaxOutputTokens })
@@ -215,6 +281,8 @@ async function main() {
     turnsCount,
     eventsPerTurn,
     compactAtTurn,
+    contextWindowTokens,
+    baselineInfeasibleTurn,
     baselineTotal: result.baselineTotal,
     compactedTotal: result.compactedTotal,
     netSavedTokens: result.netSavedTokens,
@@ -222,6 +290,8 @@ async function main() {
     breakEvenTurn: result.breakEvenTurn,
     baselineCumulative: result.baselineCumulative,
     compactedCumulative: result.compactedCumulative,
+    baselineCumulativeBreakdown: result.baselineCumulativeBreakdown,
+    compactedCumulativeBreakdown: result.compactedCumulativeBreakdown,
     compactionUsage: result.compactionUsage,
     baselineUsages: result.baselineUsages,
     compactedUsages: result.compactedUsages,
@@ -236,6 +306,7 @@ async function main() {
     model,
     turnsCount,
     compactAtTurn,
+    baselineInfeasibleTurn,
     baselineTotal: report.baselineTotal,
     compactedTotal: report.compactedTotal,
     netSavedTokens: report.netSavedTokens,

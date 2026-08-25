@@ -83,12 +83,22 @@ function parseSemanticJson(outputText) {
   return parsed;
 }
 
+// Cache field names verified against the openai-python SDK's ResponseUsage/
+// InputTokensDetails type definitions (input_tokens_details.cached_tokens,
+// input_tokens_details.cache_write_tokens) — not observed on a live Codex
+// payload in this repo, so treat as unverified against the ChatGPT-OAuth
+// Codex Responses backend specifically until confirmed on a real call.
 function parseApiUsage(usage) {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) throw new Error('codex api returned invalid usage');
   const inputTokens = nonNegativeInt(usage.input_tokens);
   const outputTokens = nonNegativeInt(usage.output_tokens);
   if (inputTokens === null || outputTokens === null) throw new Error('codex api returned invalid usage');
-  return { inputTokens, outputTokens };
+  const details = usage.input_tokens_details;
+  const cacheReadTokens = details && details.cached_tokens !== undefined
+    ? nonNegativeInt(details.cached_tokens) ?? 0 : 0;
+  const cacheWriteTokens = details && details.cache_write_tokens !== undefined
+    ? nonNegativeInt(details.cache_write_tokens) ?? 0 : 0;
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
 }
 
 async function readSseBody(body) {

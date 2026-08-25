@@ -99,7 +99,7 @@ test('createCodexApiSemanticCompleter resolves with schema, summary, preservedFa
     schema: 'sando-semantic-summary/v1',
     summary: 'a summary',
     preservedFacts: ['fact one'],
-    usage: { inputTokens: 100, outputTokens: 20 },
+    usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 },
   });
   assert.equal(capturedHeaders.Authorization, `Bearer ${FAKE_TOKEN}`);
   assert.equal(capturedHeaders['chatgpt-account-id'], 'acct_test123');
@@ -107,6 +107,34 @@ test('createCodexApiSemanticCompleter resolves with schema, summary, preservedFa
   assert.equal(capturedHeaders['User-Agent'], 'omp/18.0.3');
   assert.equal(complete.provider, 'codex');
   assert.equal(complete.model, DEFAULT_CODEX_API_MODEL);
+});
+
+test('createCodexApiSemanticCompleter parses input_tokens_details.cached_tokens/cache_write_tokens when present', async () => {
+  const file = await writeCredentials({ tokens: { access_token: FAKE_TOKEN } });
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    body: sseStream([
+      {
+        type: 'response.completed',
+        response: {
+          output_text: JSON.stringify({
+            schema: 'sando-semantic-summary/v1',
+            summary: 'a summary',
+            preservedFacts: ['fact one'],
+          }),
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            input_tokens_details: { cached_tokens: 60, cache_write_tokens: 15 },
+          },
+        },
+      },
+    ]),
+  });
+  const complete = createCodexApiSemanticCompleter({ credentialsPath: file, fetchImpl });
+  const result = await complete({ prompt: 'summarize this' });
+  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 60, cacheWriteTokens: 15 });
 });
 
 test('createCodexApiSemanticCompleter strips a markdown fence around output_text', async () => {

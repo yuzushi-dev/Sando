@@ -66,7 +66,7 @@ test('createApiSemanticCompleter resolves with schema, summary, preservedFacts, 
     schema: 'sando-semantic-summary/v1',
     summary: 'a summary',
     preservedFacts: ['fact one'],
-    usage: { inputTokens: 105, outputTokens: 20 },
+    usage: { inputTokens: 105, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 0 },
   });
   assert.equal(capturedHeaders.Authorization, `Bearer ${FAKE_TOKEN}`);
   assert.equal(complete.provider, 'claude');
