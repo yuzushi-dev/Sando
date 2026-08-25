@@ -262,6 +262,55 @@ export function listSemanticCandidates({ provider, body, model } = {}) {
     }));
 }
 
+function carriesBreakpoint(value) {
+  if (Array.isArray(value)) return value.some(carriesBreakpoint);
+  if (!object(value)) return false;
+  if (value.cache_control !== undefined) return true;
+  return Object.values(value).some(carriesBreakpoint);
+}
+
+/**
+ * Minimum fraction of the re-prefilled suffix a rewrite must reclaim to pay for itself.
+ *
+ * Derived from Anthropic's published multipliers (cache read 0.1x, 5-minute cache
+ * write 1.25x of base input). With `S` tokens reclaimed, `P` tokens of suffix forced
+ * back through a cache write, and `K` further turns to amortize over:
+ *
+ *   rewrite: 1.25(P-S) + 0.10(P-S)K        leave: 0.10P(K+1)
+ *   rewrite wins  <=>  S/P > 1.15 / (1.25 + 0.10K)
+ *
+ * The threshold is a RATIO and is independent of P — an absolute token budget is the
+ * wrong parameterization. K=0 needs 92%, K=10 needs 51%, K=50 needs 18%. Sando cannot
+ * know K (how much longer the session runs), so this uses the K=10 point: a rewrite
+ * must reclaim over half the suffix it invalidates. Conservative for short sessions,
+ * slightly cautious for very long ones.
+ */
+const DEFAULT_CACHE_REWRITE_RATIO = 0.51;
+
+/**
+ * Token counts of the suffix following each message index.
+ *
+ * Position relative to a breakpoint is the wrong metric here. A real Claude Code
+ * request (measured: 90 tools, 2 system markers, 1 message marker, all ttl 1h) marks
+ * the LAST message, moving the breakpoint forward every turn so the growing
+ * conversation stays one cached span — the same strategy Cline documents. Protecting
+ * everything at or before that marker would protect the entire conversation and
+ * disable the transform outright (measured: 17.1% mechanical saving -> 0%).
+ *
+ * What actually matters is how much has to be re-prefilled, which is the size of the
+ * suffix after the rewritten message.
+ */
+function suffixTokensByPosition(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const suffix = new Array(messages.length).fill(0);
+  let running = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    suffix[index] = running;
+    running += estimateTokens(JSON.stringify(messages[index]) ?? '');
+  }
+  return suffix;
+}
+
 export function transformProviderRequest({ provider, body, policy } = {}) {
   const clone = structuredClone(body);
   const estimatedInputTokens = estimate(body);
@@ -277,6 +326,28 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
     : null;
   const budgetTriggered = maxHistoryTokens !== null
     && BigInt(estimatedInputTokens) * 5n > BigInt(maxHistoryTokens) * 4n;
+  // Don't rewrite warm cached history unless the rewrite reclaims enough of the suffix
+  // it invalidates to pay the cache-write premium. Only applies when the host actually
+  // asked for caching — with no breakpoint there is no warm prefix to protect.
+  // Set `policy.cacheRewriteRatio: 0` to disable.
+  const cacheRewriteRatio = object(policy) && Object.hasOwn(policy, 'cacheRewriteRatio')
+    ? policy.cacheRewriteRatio
+    : DEFAULT_CACHE_REWRITE_RATIO;
+  if (typeof cacheRewriteRatio !== 'number' || !(cacheRewriteRatio >= 0) || cacheRewriteRatio > 1) {
+    throw new TypeError('cacheRewriteRatio must be a number between 0 and 1');
+  }
+  const cacheWarm = cacheRewriteRatio > 0 && carriesBreakpoint(clone);
+  const suffixTokens = cacheWarm ? suffixTokensByPosition(clone) : null;
+  // `reclaimed` is how many tokens this particular rewrite removes.
+  const cacheProtected = (entry, reclaimed) => {
+    if (!cacheWarm) return false;
+    const suffix = suffixTokens[entry.position] ?? 0;
+    if (suffix === 0) return false;
+    return reclaimed / suffix < cacheRewriteRatio;
+  };
+  let cacheProtectedSkips = 0;
+  const reclaimedTokens = (before, after) =>
+    Math.max(0, estimateTokens(before) - estimateTokens(after));
 
   if (collector) {
     const entries = collector(clone);
@@ -308,6 +379,7 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
       const newer = reads.slice(index + 1).find((candidate) =>
         covers(candidate.identity, old.identity) && !useless(candidate.text));
       if (!newer) continue;
+      if (cacheProtected(old.result, reclaimedTokens(old.text, SUPERSEDED))) { cacheProtectedSkips += 1; continue; }
       replaceResult(old.result.item, old.result.key, SUPERSEDED);
       supersededReads += 1;
     }
@@ -317,6 +389,7 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
       const text = resultText(result.item[result.key]);
       if (text === null) continue;
       if (text === SUPERSEDED || resultError(result.item, text) || !useless(text)) continue;
+      if (cacheProtected(result, reclaimedTokens(text, USELESS))) { cacheProtectedSkips += 1; continue; }
       replaceResult(result.item, result.key, USELESS);
       elidedUselessSuccesses += 1;
     }
@@ -332,6 +405,8 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
       if (!candidateIds.has(reduced.id)) continue;
       const original = recordsById.get(reduced.id);
       if (!original || reduced.output === original.output) continue;
+      if (cacheProtected(original.entry, reclaimedTokens(
+        resultText(original.output) ?? '', resultText(reduced.output) ?? ''))) { cacheProtectedSkips += 1; continue; }
       replaceResult(original.entry.item, original.entry.key, reduced.output);
       deduplicatedResults += 1;
     }
@@ -347,6 +422,7 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
         isError: record.isError,
       });
       if (compacted === text) continue;
+      if (cacheProtected(record.entry, reclaimedTokens(text, compacted))) { cacheProtectedSkips += 1; continue; }
       replaceResult(record.entry.item, record.entry.key, compacted);
       compactedStructures += 1;
     }
@@ -363,6 +439,7 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
           isError: record.isError,
         });
         if (!shaken.changed) continue;
+        if (cacheProtected(record.entry, reclaimedTokens(text, shaken.text))) { cacheProtectedSkips += 1; continue; }
         replaceResult(record.entry.item, record.entry.key, shaken.text);
         shakenResults += 1;
       }
@@ -388,6 +465,8 @@ export function transformProviderRequest({ provider, body, policy } = {}) {
       compactedStructures,
       shakenResults,
       budgetTriggered,
+      cacheProtectedSkips,
+      cacheRewriteRatio: cacheWarm ? cacheRewriteRatio : null,
     },
   };
 }

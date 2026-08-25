@@ -241,6 +241,8 @@ test('detects provider tool shapes conservatively and leaves no-op requests clon
     compactedStructures: 0,
     shakenResults: 0,
     budgetTriggered: false,
+    cacheProtectedSkips: 0,
+    cacheRewriteRatio: null,
   });
 });
 
@@ -328,8 +330,13 @@ test('preserves a cache_control breakpoint when collapsing multi-block tool resu
   // marker sitting on a later block — that would forfeit a cache read every turn.
   const marker = { type: 'ephemeral' };
   const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  // The cache guard would normally refuse to touch this message at all — that is the
+  // safer outer behaviour, covered separately. Opt out here to exercise the collapse
+  // path itself, which must still carry the marker forward when it does run (e.g. on
+  // a body whose only marker sits behind the rewrite point).
   const result = transformProviderRequest({
     provider: 'anthropic',
+    policy: { cacheRewriteRatio: 0 },
     body: {
       model: 'claude-sonnet-5',
       messages: [
@@ -378,4 +385,89 @@ test('leaves tool results carrying a non-text block untouched', () => {
   assert.equal(result.stats.supersededReads, 0);
   assert.equal(result.changed, false);
   assert.deepEqual(result.body.messages[1].content[0].content[1], image);
+});
+
+test('never rewrites history behind a cache_control breakpoint the host placed', () => {
+  // Measured against a real Claude Code request: it places 3 of Anthropic's 4
+  // breakpoints (2 on system, 1 on the last message, ttl 1h). Anthropic hashes
+  // cumulatively up to each breakpoint, so rewriting anything at or before the last
+  // marked message forces a full re-prefill of everything after it.
+  const MARK = { type: 'ephemeral', ttl: '1h' };
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const build = () => ({
+    model: 'claude-sonnet-5',
+    system: [
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 's2', cache_control: MARK },
+    ],
+    messages: [
+      { role: 'assistant', content: [read('t1', '/a.ts')] },
+      // Small reclaim (a few hundred tokens) sitting behind a large suffix: the
+      // rewrite would invalidate far more than it recovers.
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `OLD ${'x'.repeat(800)}` }] },
+      { role: 'assistant', content: [read('t2', '/a.ts')] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW' }] },
+      { role: 'user', content: [{ type: 'text', text: 'filler '.repeat(20_000) }] },
+      { role: 'user', content: [{ type: 'text', text: 'tail', cache_control: MARK }] },
+    ],
+  });
+
+  const guarded = transformProviderRequest({ provider: 'anthropic', body: build(), policy: {} });
+  assert.equal(guarded.changed, false);
+  assert.equal(guarded.stats.supersededReads, 0);
+  assert.equal(guarded.stats.cacheProtectedSkips, 1);
+  assert.equal(guarded.stats.cacheRewriteRatio, 0.51);
+
+  // The guard is opt-out, so the prior behaviour stays reachable and testable.
+  const unguarded = transformProviderRequest({
+    provider: 'anthropic', body: build(), policy: { cacheRewriteRatio: 0 },
+  });
+  assert.equal(unguarded.stats.supersededReads, 1);
+  assert.equal(unguarded.stats.cacheProtectedSkips, 0);
+  assert.equal(unguarded.stats.cacheRewriteRatio, null);
+});
+
+test('a rewrite that reclaims most of its suffix is allowed through', () => {
+  // The guard is economic, not positional: a rewrite clearing more than
+  // 1.15/(1.25+0.10K) of the suffix it invalidates pays for the cache write. Here the
+  // superseded read is nearly the whole prompt, so its ratio is high and it proceeds.
+  const MARK = { type: 'ephemeral', ttl: '1h' };
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const result = transformProviderRequest({
+    provider: 'anthropic',
+    policy: {},
+    body: {
+      model: 'claude-sonnet-5',
+      messages: [
+        { role: 'assistant', content: [read('t1', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'OLD '.repeat(5_000) }] },
+        { role: 'assistant', content: [read('t2', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW', cache_control: MARK }] },
+      ],
+    },
+  });
+  assert.equal(result.stats.supersededReads, 1);
+  assert.equal(result.stats.cacheProtectedSkips, 0);
+});
+
+test('protects nothing when the host places no breakpoints', () => {
+  // Codex/Responses bodies carry no cache_control at all, so the guard must be inert
+  // rather than silently disabling the transform.
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const result = transformProviderRequest({
+    provider: 'anthropic',
+    body: {
+      model: 'claude-sonnet-5',
+      messages: [
+        { role: 'assistant', content: [read('t1', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `OLD ${'x'.repeat(200)}` }] },
+        { role: 'assistant', content: [read('t2', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW' }] },
+      ],
+    },
+    policy: {},
+  });
+  assert.equal(result.stats.cacheRewriteRatio, null);
+  assert.equal(result.stats.cacheProtectedSkips, 0);
+  assert.equal(result.stats.supersededReads, 1);
 });
