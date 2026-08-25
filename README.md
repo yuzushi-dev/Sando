@@ -8,7 +8,7 @@ Sando cuts what Claude Code and Codex charge you to re-read their own output. It
 
 ## Measured savings
 
-**45.7% fewer input tokens, best case.** Measured against the real Anthropic API (provider-billed, not estimated), median of 5 live runs. Codex on the same test: 13.9%. Reproduce it with `node benchmarks/live/proxy-e2e-run.mjs`.
+**45.7% fewer input tokens, best case.** Measured against the real Anthropic API (provider-billed, not estimated), median of 5 live runs. Reproduce it with `node benchmarks/live/proxy-e2e-run.mjs`.
 
 | Scenario | Saving |
 |---|---|
