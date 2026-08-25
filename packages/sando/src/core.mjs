@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
+import { redact } from './secret-redaction.mjs';
 
 const DEFAULT_POLICY = Object.freeze({
   mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 65536, headBytes: undefined, tailBytes: undefined,
@@ -113,19 +114,6 @@ function readSelector(toolInput) {
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
   return ['offset', 'limit', 'line_start', 'line_end', 'start_line', 'end_line']
     .some((key) => Object.hasOwn(toolInput, key));
-}
-
-function redact(text) {
-  let count = 0;
-  const replace = (pattern, replacement) => {
-    text = text.replace(pattern, (...args) => {
-      count += 1;
-      return typeof replacement === 'function' ? replacement(...args) : replacement;
-    });
-  };
-  replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,"'}]+/gi, (_match, prefix) => `${prefix}[REDACTED]`);
-  replace(/(["']?(?:api[_-]?key|access[_-]?token|password|secret|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, (_match, prefix) => `${prefix}[REDACTED]`);
-  return { text, count };
 }
 
 export function estimateTokens(text) {
