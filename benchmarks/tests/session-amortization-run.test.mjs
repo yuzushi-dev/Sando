@@ -89,19 +89,30 @@ test('computeAmortization tracks fresh/cache-read/cache-write tokens separately,
   assert.equal(lastCompacted.cacheWriteTokens, 10);
 });
 
-test('pickAnchorFacts spreads up to k meaningful lines across the whole text, not just first/last', () => {
+test('pickAnchorFacts spreads up to k meaningful prose lines across the whole text, not just first/last', () => {
   const text = [
-    'changed src/core/index.mjs',
+    'we changed the file at src/core/index.mjs to fix the bug',
     'plain filler line one',
-    'Error: cannot read property',
+    'Error: cannot read the requested property',
     'plain filler line two',
-    'fixed issue in module 42',
+    'we fixed an issue in module number 42 today',
     'plain filler line three',
-    'commit 9a8b7c6d5e4',
+    'the commit hash for this change is 9a8b7c6d5e4',
   ].join('\n');
   const facts = pickAnchorFacts(text, 3);
   assert.equal(facts.length, 3);
   assert.ok(facts.every((f) => !f.startsWith('plain filler')));
+});
+
+test('pickAnchorFacts excludes lines that only look meaningful mechanically (coordinate/listing dumps with no real prose)', () => {
+  const text = [
+    '775  gsr-patch-v04/',
+    '39\tCUSTOM_LIB = KICAD_ROOT / "libraries" / "symbols" / "Custom.kicad_sym"',
+    '10 smd       at -2.54 8.278 180      size 1.626 1.325 drill -',
+    'the wrist carrier design replaces the on-skin patch from version 03',
+  ].join('\n');
+  const facts = pickAnchorFacts(text, 4);
+  assert.deepEqual(facts, ['the wrist carrier design replaces the on-skin patch from version 03']);
 });
 
 test('pickAnchorFacts returns fewer than k when the text has fewer meaningful lines, never throws', () => {
@@ -116,17 +127,21 @@ test('computeRecall reports the fraction of anchor facts found verbatim in the h
 });
 
 test('runSessionAmortization computes factRecall from anchor facts picked out of the torso against the summary output', async () => {
-  const turnTexts = ['changed src/core/index.mjs and Error: bad state', 't1', 't2', 't3'];
+  const torsoTurn = 'we changed the file at src/core/index.mjs after hitting Error: bad state';
+  const turnTexts = [torsoTurn, 't1', 't2', 't3'];
   const compactAtTurn = 1;
   const turnCompleter = async () => ({ usage: { inputTokens: 1, outputTokens: 1 } });
   const summaryCompleter = async () => ({
-    summary: 'summary verbatim: changed src/core/index.mjs and Error: bad state',
+    summary: `summary verbatim: ${torsoTurn}`,
     preservedFacts: [],
     usage: { inputTokens: 1, outputTokens: 1 },
   });
   const result = await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount: 4 });
   assert.ok(result.anchorFacts.length > 0);
   assert.ok(result.factRecall > 0 && result.factRecall <= 1);
+  assert.equal(result.anchorFactSurvival.length, result.anchorFacts.length);
+  assert.ok(result.anchorFactSurvival.every((entry) => 'fact' in entry && 'survived' in entry));
+  assert.equal(result.summaryText, `summary verbatim: ${torsoTurn}`);
 });
 
 test('wrapSemanticPrompt names the sando-semantic-summary/v1 schema explicitly, not just the shared system prompt', () => {

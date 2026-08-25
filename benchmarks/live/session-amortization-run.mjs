@@ -94,11 +94,33 @@ export function cumulativeText(turnTexts, uptoIndexInclusive) {
 // first/last probe was already shown noisy run-to-run in the windowed-fold
 // harness (handoff 2026-08-25).
 const MEANINGFUL_LINE_RE = /[\w.-]+\/[\w.-]+|error|exception|fail(ed|ure)?|\b\d{2,}\b/i;
+// A word token used to require actual prose, not just alphanumeric noise.
+const WORD_TOKEN_RE = /^[A-Za-z][A-Za-z'-]{2,}$/;
+const MIN_PROSE_WORDS = 4;
+
+// Real multi-tool-output torsos (KiCad project logs, code dumps, coordinate
+// tables) are dominated by lines that trivially match MEANINGFUL_LINE_RE
+// (a directory listing has a 2+-digit permission count; a footprint
+// placement line has coordinates; a `cat -n` dump has a leading line
+// number) but that a correct summary is EXPECTED to drop, not preserve
+// verbatim — scoring recall against them measures probe quality, not
+// compactor quality. Measured on a real 129k-char torso (handoff
+// 2026-08-25): of 1368 MEANINGFUL_LINE_RE matches, only 283 also had ≥4
+// real words; the rest were coordinate dumps and line-numbered source.
+// Requiring prose words in addition is what makes the recall probe
+// actually test what a summary is supposed to carry. Still imperfect —
+// some short KiCad footprint lines have enough incidental keywords
+// (smd/size/drill) to clear the bar — but a large qualitative improvement
+// over the unfiltered pool, not a claim of perfect noise exclusion.
+function isProseLike(line) {
+  const words = line.split(/\s+/).filter((word) => WORD_TOKEN_RE.test(word));
+  return words.length >= MIN_PROSE_WORDS;
+}
 
 function meaningfulLines(text) {
   return text.split('\n')
     .map((line) => line.trim())
-    .filter((line) => line.length >= 8 && MEANINGFUL_LINE_RE.test(line));
+    .filter((line) => line.length >= 8 && MEANINGFUL_LINE_RE.test(line) && isProseLike(line));
 }
 
 export function pickAnchorFacts(text, k) {
@@ -301,7 +323,11 @@ export async function runSessionAmortization({
   const compactionUsage = summaryResponse.usage;
   const summaryText = summaryResponse.summary;
   const preservedFacts = summaryResponse.preservedFacts ?? [];
-  const factRecall = computeRecall(anchorFacts, `${summaryText}\n${preservedFacts.join('\n')}`);
+  const recallHaystack = `${summaryText}\n${preservedFacts.join('\n')}`;
+  const factRecall = computeRecall(anchorFacts, recallHaystack);
+  // Kept alongside the fraction so a run can be debugged after the fact
+  // without re-spending a live call just to see which facts were lost.
+  const anchorFactSurvival = anchorFacts.map((fact) => ({ fact, survived: recallHaystack.includes(fact) }));
 
   const compactedUsages = [];
   for (let i = compactAtTurn; i < turnTexts.length; i += 1) {
@@ -312,7 +338,17 @@ export async function runSessionAmortization({
   }
 
   const totals = computeAmortization({ turnTexts, compactAtTurn, baselineUsages, compactionUsage, compactedUsages });
-  return { ...totals, baselineUsages, compactionUsage, compactedUsages, summaryText, anchorFacts, factRecall };
+  return {
+    ...totals,
+    baselineUsages,
+    compactionUsage,
+    compactedUsages,
+    summaryText,
+    preservedFacts,
+    anchorFacts,
+    anchorFactSurvival,
+    factRecall,
+  };
 }
 
 async function main() {
@@ -371,7 +407,10 @@ async function main() {
     anchorFactCount,
     interTurnDelayMs,
     anchorFacts: result.anchorFacts,
+    anchorFactSurvival: result.anchorFactSurvival,
     factRecall: result.factRecall,
+    summaryText: result.summaryText,
+    preservedFacts: result.preservedFacts,
     baselineTotal: result.baselineTotal,
     compactedTotal: result.compactedTotal,
     netSavedTokens: result.netSavedTokens,
