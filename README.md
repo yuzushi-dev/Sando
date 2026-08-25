@@ -4,39 +4,34 @@
 
 # Sando
 
-Dependency-free Node 22 tooling for deterministic tool-output preparation and optional provider-request reduction around Claude Code and Codex.
+Sando keeps Claude Code and Codex from paying full price to re-read their own noise. It redacts secrets, caps runaway tool output, and, when you opt in, trims provider request history before the bill is cut, all without an LLM in the loop.
 
 Sando redacts common credential-shaped values, keeps a bounded inline view, preserves a complete redacted artifact, and records receipts and metrics. The core and hooks do not call an LLM or access the network; the opt-in proxy only forwards provider requests after deterministic history reduction.
 
 ## Measured savings
 
-**Peak: 45.7% fewer input tokens.** Median of 5 paired live runs against the real Anthropic API,
-counted from provider-reported billing rather than estimated, with every run passing its
-output-quality check. Codex on the same harness: 13.9%. Reproduce with
-`benchmarks/live/proxy-e2e-run.mjs`.
-
-Read the next paragraph before quoting that number.
-
-**It comes from a short session.** That benchmark is a two-message exchange with one large repetitive
-tool result — the shape Sando is best at. The saving is real and provider-billed, but it is a peak,
-not a typical figure, and it does **not** extrapolate to long sessions.
+**45.7% fewer input tokens, peak.** Measured against the real Anthropic API, from provider-reported
+billing rather than estimated, median of 5 paired live runs with every run passing its output-quality
+check. Codex on the same harness: 13.9%. Reproduce it yourself with `benchmarks/live/proxy-e2e-run.mjs`.
 
 | Scenario | Saving | Basis |
 |---|---|---|
 | Short session, repetitive tool output | **45.7%** | live, provider-billed, n=5 |
-| Long session, host without prompt caching | ~10% median (0–30%) | `bytes/4` estimate, 25 real sessions |
-| Long session, host **with** prompt caching (Claude Code) | **~0%** | deliberate — see below |
+| Long session, host without prompt caching | ~10% median (0-30%) | `bytes/4` estimate, 25 real sessions |
+| Long session, host **with** prompt caching (Claude Code) | **~0%, by design** | see below |
+
+That 45.7% peak comes from the case Sando is built for: a short session with one large, repetitive
+tool result. It won't hold on a long session, and on a host with prompt caching, Sando often does
+nothing at all, on purpose.
 
 **Why ~0% is the right answer when your host caches.** Claude Code already places 3 of Anthropic's 4
 `cache_control` breakpoints, and a cache read bills at 0.1× fresh input. Rewriting history to shave
 tokens invalidates that cached prefix. Across 685 rewrites in 23 real sessions, only 1.5% reclaimed
 enough to pay back the cache-write premium. So Sando prices each rewrite and **declines the ones that
-would cost more than they save** (`policy.cacheRewriteRatio`).
+would cost more than they save** (`policy.cacheRewriteRatio`); it optimizes for the bill, not for a
+smaller number on the wire, which sometimes means doing nothing.
 
-Fewer tokens on the wire is not the same as a smaller bill. Sando optimizes for the bill, which
-sometimes means doing nothing.
-
-Savings track **repetition, not length** — repeated reads of the same files and repetitive command
+Savings track **repetition, not length**: repeated reads of the same files and repetitive command
 output are what Sando removes. A 250k-token session measured 8.8%; a 128k-token one measured 22.1%.
 Measure your own instead of trusting any of the above:
 
@@ -46,7 +41,7 @@ npm run probe:rewrite-payback -- ~/.claude/projects/*/*.jsonl
 
 Separately, the always-on hook path bounds individual tool outputs before they reach the model. That
 runs regardless of caching and is reported by `node packages/sando/src/metrics-cli.mjs`, labelled as
-an estimate — it is byte arithmetic, not provider-billed tokens.
+an estimate: byte arithmetic, not provider-billed tokens.
 
 ## Install
 
@@ -70,9 +65,9 @@ claude --plugin-dir "$PWD/adapters/claude/sando"
 
 The hook applies preparation by default for supported result shapes. Set `SANDO_MODE=observe` or `SANDO_OBSERVE_ONLY=1` to keep the original result while retaining local candidate metrics. The plugin also exposes the read-only `prepare_tool_output` MCP tool. See [`adapters/claude/sando/README.md`](adapters/claude/sando/README.md).
 
-At `Stop`, the Claude adapter parses numeric usage from the transcript and appends it to `~/.local/state/sando/provider-usage.json`. The active workspace statusline wraps Honey and shows readable savings, for example `🍯 honey:full · 🥪 2.51M token risparmiati (stima)`.
+At `Stop`, the Claude adapter parses numeric usage from the transcript and appends it to `~/.local/state/sando/provider-usage.json`. A statusline can read that file and show running savings, for example `🥪 2.51M tokens saved (est.)`.
 
-Savings are only priced when they come from real provider-reported usage, and then only as an upper bound (`≤$5.02`): the price table carries uncached input rates with no cache multipliers, while cache reads bill at 0.1×. Mechanical `bytes/4` estimates are never converted to currency — they are labelled `(stima)` and shown as tokens only. Provider input/output/cache counters remain available in the ledger and reports, not in the statusline.
+Savings are only priced when they come from real provider-reported usage, and then only as an upper bound (`≤$5.02`): the price table carries uncached input rates with no cache multipliers, while cache reads bill at 0.1×. Mechanical `bytes/4` estimates are never converted to currency; they are labelled `(stima)` and shown as tokens only. Provider input/output/cache counters remain available in the ledger and reports, not in the statusline.
 
 ## Codex
 
@@ -104,9 +99,9 @@ SANDO_UPSTREAM_URL=https://api.anthropic.com SANDO_PROXY_PORT=8787 npm run proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude --plugin-dir "$PWD/adapters/claude/sando"
 ```
 
-For Codex, use a custom `model_providers.<id>` with `wire_api = "responses"` and `base_url = "http://127.0.0.1:8788"`. With ChatGPT OAuth, start the proxy against `https://chatgpt.com/backend-api/codex` and set `requires_openai_auth = true`; with an API key, use `https://api.openai.com/v1` and `env_key`. The proxy is deterministic, makes no LLM calls, preserves tool IDs/errors/order, and passes streaming responses through. It reduces model input context but does not retroactively redact host UI/transcripts. Optional budget gating is configured with `SANDO_CONTEXT_POLICY='{"maxHistoryTokens":120000}'`; additional deduplication, repeated-line compaction, and extractive history shake activate above 80% of that budget. A rewrite that would invalidate a warm provider cache is skipped unless it reclaims enough of the suffix to pay for the cache-write it forces (`policy.cacheRewriteRatio`, default 0.51) — or unless the request has been idle long enough (default 65 min, past Anthropic's longest published TTL) that the cache is cold on its own, in which case the guard is bypassed for free (`policy.cacheIdleFlushMs`).
+For Codex, use a custom `model_providers.<id>` with `wire_api = "responses"` and `base_url = "http://127.0.0.1:8788"`. With ChatGPT OAuth, start the proxy against `https://chatgpt.com/backend-api/codex` and set `requires_openai_auth = true`; with an API key, use `https://api.openai.com/v1` and `env_key`. The proxy is deterministic, makes no LLM calls, preserves tool IDs/errors/order, and passes streaming responses through. It reduces model input context but does not retroactively redact host UI/transcripts. Optional budget gating is configured with `SANDO_CONTEXT_POLICY='{"maxHistoryTokens":120000}'`; additional deduplication, repeated-line compaction, and extractive history shake activate above 80% of that budget. A rewrite that would invalidate a warm provider cache is skipped unless it reclaims enough of the suffix to pay for the cache-write it forces (`policy.cacheRewriteRatio`, default 0.51), or unless the request has been idle long enough (default 65 min, past Anthropic's longest published TTL) that the cache is cold on its own, in which case the guard is bypassed for free (`policy.cacheIdleFlushMs`).
 
-`npm run proxy` records one JSONL line per forwarded request to `~/.local/state/sando/proxy-requests.jsonl` (override with `--metrics-path` or `SANDO_PROXY_METRICS_PATH`): the mechanical token reduction Sando made and, when parseable from the response, the provider's real billed usage (including cache read/write tokens). `npm run proxy:report` summarizes that log — requests, mechanical tokens saved, cache hit rate, and how often the idle-flush and ratio guards fired. There is no live A/B in day-to-day use (only the optimized body is ever sent), so this reports what happened, not a percent-vs-baseline claim; `benchmarks/live/idle-flush-real-session-run.mjs` is what produces the latter, from a real, already-idle transcript replayed against both variants.
+`npm run proxy` records one JSONL line per forwarded request to `~/.local/state/sando/proxy-requests.jsonl` (override with `--metrics-path` or `SANDO_PROXY_METRICS_PATH`): the mechanical token reduction Sando made and, when parseable from the response, the provider's real billed usage (including cache read/write tokens). `npm run proxy:report` summarizes that log: requests, mechanical tokens saved, cache hit rate, and how often the idle-flush and ratio guards fired. There is no live A/B in day-to-day use (only the optimized body is ever sent), so this reports what happened, not a percent-vs-baseline claim; `benchmarks/live/idle-flush-real-session-run.mjs` is what produces the latter, from a real, already-idle transcript replayed against both variants.
 
 The semantic layer is shadow-only. `createSemanticCompactor()` accepts an injected completion function, redacts before that boundary, validates a versioned JSON summary, rejects missing/ungrounded facts, secrets, and oversized output, caches validated summaries, and never changes the forwarded body. The proxy can observe candidates with an explicit `semanticCompactor` callback; absent that callback, no LLM call occurs. The isolated live benchmark uses Codex `gpt-5.6-luna` first and falls back to Claude `claude-haiku-4-5` only when Codex is unavailable; it remains shadow-only and records provider-reported compactor cost.
 

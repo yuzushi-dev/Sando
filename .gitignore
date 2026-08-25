@@ -2,14 +2,13 @@ node_modules/
 .sando/
 benchmarks/results/
 graphify-out/
+.pytest_cache/
 
-# Internal plans, scaffold notes, and spike reports.
+# Internal plans, scaffold notes, spikes, and session handoffs.
 # Public usage docs live in README.md files outside these paths.
-docs/*
-!docs/README.md
-!docs/usage.md
-spikes/**/ROUTING-AUDIT.md
-spikes/**/README.md
+docs/
+spikes/
+handoffs/
 
 # Build and test output
 coverage/
