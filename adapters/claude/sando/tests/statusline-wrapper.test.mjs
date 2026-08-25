@@ -36,7 +36,7 @@ test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
   const result = spawnSync(process.execPath, [wrapper], {
     input: JSON.stringify({ transcript_path: '/tmp/fixture.jsonl', session_id: 's1', model: { id: 'claude-sonnet-5' } }), encoding: 'utf8', timeout: 3000,
     env: {
-      ...childEnv, SANDO_HONEY_STATUSLINE: honey,
+      ...childEnv, SANDO_WRAPPED_STATUSLINE: honey,
       SANDO_METRICS_PATH: metrics, SANDO_PROVIDER_USAGE_PATH: providerUsage,
     },
   });
@@ -52,7 +52,7 @@ test('Claude statusline accepts a shell-backed existing statusline', (t) => {
   const result = spawnSync(process.execPath, [wrapper], {
     input: '{}', encoding: 'utf8', timeout: 3000,
     env: {
-      ...childEnv, SANDO_HONEY_STATUSLINE: `sh ${honey}`,
+      ...childEnv, SANDO_WRAPPED_STATUSLINE: `sh ${honey}`,
       SANDO_METRICS_PATH: path.join(directory, 'missing-metrics.json'),
       SANDO_PROVIDER_USAGE_PATH: path.join(directory, 'missing-provider-usage.json'),
     },

@@ -69,13 +69,13 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude --plugin-dir "$PWD/adapters/clau
 
 The proxy is opt-in, loopback-only by default, requires an explicit upstream, and never logs request bodies or credentials. Set `SANDO_CONTEXT_POLICY='{"maxHistoryTokens":120000}'` to gate the extra deduplication, repeated-line reductions, and extractive history shake at 80% of the request budget; the safe repeated-`Read` pass remains active without that setting. The shake is not a semantic summary: it preserves selected head/tail/high-signal lines and tells the model to rerun the tool if needed. Its local token counts are estimates; provider-reported savings still require paired A/B counters. The host's raw UI/transcript may still retain the original result: the proxy guarantees model-request reduction, not transcript redaction.
 
+A rewrite that would invalidate a warm provider cache is skipped unless it reclaims enough of the suffix to pay for the cache-write it forces (`policy.cacheRewriteRatio`, default 0.51), or unless the request has been idle long enough (`policy.cacheIdleFlushMs`, default 65 min, past Anthropic's longest published cache TTL) that the cache is cold on its own, in which case the guard is skipped for free.
+
 Semantic compaction is exposed as a shadow-only API. Inject a completion adapter into `createSemanticCompactor()` or the proxy to evaluate safe historical candidates. Sando redacts the prompt boundary, requires `sando-semantic-summary/v1`, validates required-fact recall and output ratio, caches only validated summaries, and fails open on timeout or invalid output. The result is telemetry only; the provider request is unchanged until a separately approved apply path exists.
 
 For Codex, point `base_url` at the loopback root (without `/v1`). Use `https://chatgpt.com/backend-api/codex` as the upstream with ChatGPT OAuth, or `https://api.openai.com/v1` with an API key.
 
 Codex can target the proxy through a custom `model_providers.<id>.base_url` using `wire_api = "responses"`; do not edit provider configuration automatically. See the host adapter READMEs for examples.
-
-`spikes/context-lifecycle/` and `spikes/provider-routing/` are experimental, host-independent prototypes; they are not wired into Claude Code or Codex.
 
 ## Test
 

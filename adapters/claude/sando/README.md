@@ -24,7 +24,7 @@ When replacement produces an artifact reference, the adapter writes the complete
 
 The bundle also exposes the read-only, network-free `prepare_tool_output` MCP tool. Malformed events, persistence failures, and telemetry failures are fail-open. Invalid `SANDO_POLICY` exits with status `2`.
 
-The `Stop` hook reads `transcript_path`, keeps only numeric `message.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The workspace statusline wrapper at [`statusline.mjs`](statusline.mjs) preserves Honey's output and appends the current Claude session's compact Sando savings plus an input-cost estimate when the selected model is recognized; provider usage counters remain in the ledger.
+The `Stop` hook reads `transcript_path`, keeps only numeric `message.usage` counters, and appends them idempotently to `~/.local/state/sando/provider-usage.json`. It never stores transcript text. The statusline wrapper at [`statusline.mjs`](statusline.mjs) preserves any existing statusline output and appends the current Claude session's compact Sando savings plus an input-cost estimate when the selected model is recognized; provider usage counters remain in the ledger.
 
 ## Metrics
 
@@ -35,7 +35,7 @@ node adapters/claude/sando/metrics.mjs --json
 
 The report uses `sando-report/v1` and separates local transform estimates from provider-reported savings. With RTK or another `PostToolUse` transformer active, estimates are measured at Sando's hook boundary and must not be added to the other plugin's percentage. See [`packages/sando/README.md`](../../../packages/sando/README.md) for the core API.
 
-The bundle includes `bin/sando-statusline`, which resolves the installed plugin root itself. Set Claude's command-backed `statusLine` to `sando-statusline` and set `SANDO_HONEY_STATUSLINE` to the existing statusline command when another badge should be preserved.
+The bundle includes `bin/sando-statusline`, which resolves the installed plugin root itself. Set Claude's command-backed `statusLine` to `sando-statusline` and set `SANDO_WRAPPED_STATUSLINE` to the existing statusline command when another badge should be preserved.
 
 Run the adapter-boundary probe with its captured PostToolUse fixture:
 

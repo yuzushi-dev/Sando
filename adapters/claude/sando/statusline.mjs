@@ -19,7 +19,7 @@ function claudeStatusContext(value) {
 }
 
 function honeyStatus() {
-  const script = process.env.SANDO_HONEY_STATUSLINE;
+  const script = process.env.SANDO_WRAPPED_STATUSLINE;
   if (!script) return '';
   try {
     const nodeScript = /\.(?:c|m)?js$/.test(script) && !/[\s]/.test(script);
