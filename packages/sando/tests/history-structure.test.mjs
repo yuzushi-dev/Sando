@@ -49,3 +49,24 @@ test('fails closed when a replacement would not reduce the text', () => {
     toolName: 'Bash', historical: true, isError: false, text,
   }), text);
 });
+
+test('collapses repeated lines for every tool history-shake supports', async () => {
+  // These two modules do variants of the same job and previously disagreed on which
+  // tools qualify: shake allowed exec/grep, structure did not. Codex reports tool
+  // results as exec/grep, so structural collapse could never run there — the cause of
+  // the mirrored compactedStructures/shakenResults counts in the recorded proxy runs.
+  const { shakeHistoricalResult } = await import('../src/history-shake.mjs');
+  const text = ['header', ...Array.from({ length: 900 }, () => 'repeated-noise'), 'tail'].join('\n');
+
+  for (const toolName of ['bash', 'exec', 'grep', 'log']) {
+    const compacted = compactHistoricalStructure({ toolName, text, historical: true, isError: false });
+    assert.notEqual(compacted, text, `${toolName} should collapse`);
+    assert.ok(Buffer.byteLength(compacted) < Buffer.byteLength(text));
+    // and the tool is one shake accepts too, so the allowlists stay in step
+    assert.equal(shakeHistoricalResult({ toolName, text, historical: true, isError: false }).changed, true);
+  }
+
+  // `read` is deliberately excluded: whole-file reads are handled by the
+  // superseded-read path, not by structural line collapse.
+  assert.equal(compactHistoricalStructure({ toolName: 'read', text, historical: true, isError: false }), text);
+});

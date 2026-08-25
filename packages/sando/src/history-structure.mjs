@@ -1,6 +1,16 @@
+// Matches history-shake.mjs's SUPPORTED_TOOLS. These two modules do variants of the
+// same job — collapsing repetitive historical line output — and previously disagreed
+// on which tools qualify: shake allowed exec/grep, this one did not. Codex reports
+// tool results as `exec`/`grep`, so structural collapse could never run there, which
+// is the whole reason the recorded Claude and Codex proxy runs show mirrored
+// compactedStructures/shakenResults counts. This transform is the more conservative
+// of the two (identical consecutive lines only, and it returns the original unless
+// the result is strictly smaller), so anything shake may touch it may touch too.
+const SUPPORTED_TOOLS = new Set(['bash', 'exec', 'grep', 'log']);
+
 export function compactHistoricalStructure({ toolName, text, historical, isError }) {
   const normalizedTool = typeof toolName === 'string' ? toolName.toLowerCase() : '';
-  if (!historical || isError || (normalizedTool !== 'bash' && normalizedTool !== 'log')) return text;
+  if (!historical || isError || !SUPPORTED_TOOLS.has(normalizedTool)) return text;
 
   const lines = text.split('\n');
   const compacted = [];

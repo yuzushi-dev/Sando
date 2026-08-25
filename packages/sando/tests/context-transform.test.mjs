@@ -137,10 +137,17 @@ test('supports Codex custom_tool_call history in Responses requests', () => {
 
   const result = transformProviderRequest({ provider: 'openai-responses', body, policy: { maxHistoryTokens: 1000 } });
 
-  assert.match(result.body.input[1].output[0].text, /history shake/);
+  // Structural collapse now runs for `exec` (its allowlist was aligned with
+  // history-shake's), and it wins on this input: it reaches the same repetitive
+  // output first and produces a strictly better result than shake would — smaller,
+  // and it preserves the trailing fact verbatim instead of eliding around it.
+  const shaken = result.body.input[1].output[0].text;
+  assert.match(shaken, /\[sando repeated x500\]/);
+  assert.ok(shaken.includes('SANDO_PROXY_HEAD_FACT'), 'structural collapse keeps the tail fact');
   assert.equal(result.body.input[4].output[0].text, 'SANDO_PROXY_FINAL_FACT');
-  assert.equal(result.stats.shakenResults, 1);
-  assert.deepEqual(result.reasons, ['history-shake']);
+  assert.equal(result.stats.compactedStructures, 1);
+  assert.deepEqual(result.reasons, ['repeated-lines']);
+  assert.ok(result.stats.estimatedOutputTokens < result.stats.estimatedInputTokens / 10);
 });
 
 test('lists only historical successful provider results as semantic candidates', () => {
