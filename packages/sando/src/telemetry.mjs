@@ -160,6 +160,162 @@ export function enableTelemetry({ configPath = defaultTelemetryConfigPath(), ans
   });
 }
 
+const QUEUE_MAX_ROWS = 256;
+const QUEUE_MAX_BYTES = 256 * 1024;
+const DEFAULT_BATCH_MAX = 32;
+
+function emptyCounters() { return { schema_version: TELEMETRY_CONFIG_VERSION, counters: {} }; }
+function readCounters(countersPath) {
+  if (!fs.existsSync(countersPath)) return emptyCounters();
+  return JSON.parse(fs.readFileSync(countersPath, 'utf8'));
+}
+
+function readQueueRows(queuePath) {
+  if (!fs.existsSync(queuePath)) return [];
+  return fs.readFileSync(queuePath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function writeQueueRows(queuePath, rows) {
+  ensureDirectory(path.dirname(queuePath));
+  const temporary = path.join(path.dirname(queuePath), `.${path.basename(queuePath)}.${process.pid}.tmp`);
+  const content = rows.length ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
+  fs.writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 });
+  try { fs.renameSync(temporary, queuePath); } catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
+  fs.chmodSync(queuePath, 0o600);
+}
+
+/** Enforces the bounded queue (256 rows / 256 KiB), dropping the oldest rows first —
+ *  a telemetry backlog must never grow without bound or block product behavior. */
+function appendQueueRows(queuePath, newRows) {
+  withLock(`${queuePath}.lock`, () => {
+    let rows = [...readQueueRows(queuePath), ...newRows];
+    if (rows.length > QUEUE_MAX_ROWS) rows = rows.slice(rows.length - QUEUE_MAX_ROWS);
+    while (rows.length > 0 && Buffer.byteLength(rows.map((row) => JSON.stringify(row)).join('\n')) > QUEUE_MAX_BYTES) rows.shift();
+    writeQueueRows(queuePath, rows);
+  });
+}
+
+function majorityCacheHit(entry) {
+  const yes = entry.cacheHitYes ?? 0;
+  const no = entry.cacheHitNo ?? 0;
+  const unknown = entry.cacheHitUnknown ?? 0;
+  if (yes > no && yes >= unknown) return 'yes';
+  if (no > yes && no >= unknown) return 'no';
+  return 'unknown';
+}
+
+function bucketEntry(entry, pluginVersion) {
+  if (entry.event === 'hook_summary') {
+    return {
+      schema_version: TELEMETRY_CONFIG_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: pluginVersion,
+      host: entry.host, mode: entry.mode,
+      tool_calls_bucket: countBucket(entry.toolCalls ?? 0),
+      redactions_bucket: countBucket(entry.redactions ?? 0),
+      capped_outputs_bucket: countBucket(entry.cappedOutputs ?? 0),
+      bytes_saved_bucket: byteBucket(entry.bytesSaved ?? 0),
+    };
+  }
+  return {
+    schema_version: TELEMETRY_CONFIG_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    host: entry.host,
+    rewrites_applied_bucket: countBucket(entry.rewritesApplied ?? 0),
+    rewrites_skipped_cache_bucket: countBucket(entry.rewritesSkippedCache ?? 0),
+    input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
+    prompt_cache_hit: majorityCacheHit(entry),
+  };
+}
+
+/** Accumulates raw per-day counts in memory/on disk; values are only bucketed (and thus
+ *  only ever leave the machine) once `closeDay` closes a finished UTC day. */
+export function incrementCounter({ statePaths, day, event, host, mode, deltas = {} }) {
+  if (!['hook_summary', 'proxy_summary'].includes(event)) throw new Error('incrementCounter: invalid event');
+  const key = `${day}|${event}|${host}|${mode ?? ''}`;
+  ensureDirectory(path.dirname(statePaths.counters));
+  withLock(`${statePaths.counters}.lock`, () => {
+    const state = readCounters(statePaths.counters);
+    const existing = state.counters[key] ?? { day, event, host, mode: mode ?? null };
+    for (const [field, value] of Object.entries(deltas)) {
+      if (!Number.isInteger(value) || value < 0) throw new Error(`incrementCounter: invalid delta ${field}`);
+      existing[field] = (existing[field] ?? 0) + value;
+    }
+    state.counters[key] = existing;
+    atomicWrite(statePaths.counters, state);
+  });
+}
+
+/** Closes a finished UTC day: buckets its raw counters into daily_aggregate rows,
+ *  appends them to the upload queue, and clears them from the raw counter file so a
+ *  day is never counted twice. */
+export function closeDay({ statePaths, day, pluginVersion }) {
+  const closedRows = [];
+  withLock(`${statePaths.counters}.lock`, () => {
+    const state = readCounters(statePaths.counters);
+    const remaining = {};
+    for (const [key, entry] of Object.entries(state.counters)) {
+      if (entry.day !== day) { remaining[key] = entry; continue; }
+      closedRows.push(validateEvent(bucketEntry(entry, pluginVersion)));
+    }
+    state.counters = remaining;
+    ensureDirectory(path.dirname(statePaths.counters));
+    atomicWrite(statePaths.counters, state);
+  });
+  if (closedRows.length) appendQueueRows(statePaths.queue, closedRows);
+  return closedRows;
+}
+
+export function loadBatch({ statePaths, max = DEFAULT_BATCH_MAX } = {}) {
+  return readQueueRows(statePaths.queue).slice(0, max);
+}
+
+export function ackBatch({ statePaths, count }) {
+  withLock(`${statePaths.queue}.lock`, () => {
+    const rows = readQueueRows(statePaths.queue);
+    writeQueueRows(statePaths.queue, rows.slice(count));
+  });
+}
+
+export function toOtlpLogs(rows) {
+  return {
+    resourceLogs: [{
+      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'sando' } }] },
+      scopeLogs: [{
+        logRecords: rows.map((row) => ({
+          body: { stringValue: 'sando.daily_aggregate' },
+          attributes: Object.entries(row).map(([key, value]) => ({ key, value: { stringValue: String(value) } })),
+        })),
+      }],
+    }],
+  };
+}
+
+export function previewNextUpload({ statePaths, endpoint = TELEMETRY_ENDPOINT, max = DEFAULT_BATCH_MAX } = {}) {
+  const rows = loadBatch({ statePaths, max });
+  return { url: endpoint, headers: { 'content-type': 'application/json' }, body: toOtlpLogs(rows) };
+}
+
+/** Uploads at most one batch. Every failure mode (timeout, network error, non-2xx) is
+ *  swallowed and reported as `sent: 0` — telemetry must never throw into, or change the
+ *  outcome of, the hook or proxy call that triggered a day close. */
+export async function flushQueue({ statePaths, endpoint = TELEMETRY_ENDPOINT, max = DEFAULT_BATCH_MAX, timeoutMs = 3000 } = {}) {
+  const rows = loadBatch({ statePaths, max });
+  if (rows.length === 0) return { sent: 0 };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(toOtlpLogs(rows)), signal: controller.signal,
+    });
+    if (!response.ok) return { sent: 0 };
+    ackBatch({ statePaths, count: rows.length });
+    return { sent: rows.length };
+  } catch {
+    return { sent: 0 };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function disableTelemetry({ configPath = defaultTelemetryConfigPath(), purge = false, statePaths = defaultTelemetryStatePaths() } = {}) {
   const previous = readTelemetryConfig(configPath);
   const result = writeTelemetryConfig(configPath, {

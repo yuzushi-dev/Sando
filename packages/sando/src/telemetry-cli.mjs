@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   TELEMETRY_DISCLOSURE, defaultTelemetryConfigPath, defaultTelemetryStatePaths,
-  disableTelemetry, enableTelemetry, statusTelemetry,
+  disableTelemetry, enableTelemetry, flushQueue, previewNextUpload, statusTelemetry,
 } from './telemetry.mjs';
 
 const USAGE = 'Usage: sando telemetry <status|enable|disable [--purge]|preview|flush>\n';
@@ -45,6 +45,22 @@ export async function runTelemetryCli({
     if (command === 'disable') {
       const result = disableTelemetry({ configPath, statePaths, purge: rest.includes('--purge') });
       stdout.write('telemetry disabled.\n');
+      return result;
+    }
+    if (command === 'preview') {
+      const config = statusTelemetry(configPath);
+      const preview = previewNextUpload({ statePaths, endpoint: config.endpoint });
+      stdout.write(`${JSON.stringify(preview, null, 2)}\n`);
+      return preview;
+    }
+    if (command === 'flush') {
+      const config = statusTelemetry(configPath);
+      if (!config.enabled) {
+        stdout.write('telemetry is disabled; nothing to flush.\n');
+        return { sent: 0 };
+      }
+      const result = await flushQueue({ statePaths, endpoint: config.endpoint });
+      stdout.write(`flushed ${result.sent} row(s).\n`);
       return result;
     }
     stdout.write(USAGE);
