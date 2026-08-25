@@ -12,7 +12,8 @@ function claudeStatusContext(value) {
     const status = JSON.parse(value || '{}');
     const sessionId = typeof status.session_id === 'string' ? status.session_id : undefined;
     const model = typeof status.model === 'string' ? status.model : status.model?.id ?? status.model?.display_name;
-    return { host: 'claude', sessionId, model };
+    const totalCostUsd = typeof status.cost?.total_cost_usd === 'number' ? status.cost.total_cost_usd : undefined;
+    return { host: 'claude', sessionId, model, totalCostUsd };
   } catch {
     return { host: 'claude' };
   }
@@ -34,7 +35,9 @@ function honeyStatus() {
 }
 
 try {
-  const parts = [honeyStatus(), renderStatusLine(readStatusSnapshot(claudeStatusContext(input)))].filter(Boolean);
+  const context = claudeStatusContext(input);
+  const snapshot = { ...readStatusSnapshot(context), totalCostUsd: context.totalCostUsd };
+  const parts = [honeyStatus(), renderStatusLine(snapshot)].filter(Boolean);
   process.stdout.write(`${parts.join(' · ')}\n`);
 } catch {
   process.stdout.write('🥪 —\n');

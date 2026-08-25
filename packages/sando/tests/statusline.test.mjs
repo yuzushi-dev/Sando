@@ -36,7 +36,7 @@ test('Codex statusline scopes savings to the selected session', (t) => {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati (stima)');
+  assert.equal(result.stdout.trim(), '🥪 ~1k token saved');
 });
 
 test('Codex statusline resolves the session from the tmux pane marker', (t) => {
@@ -70,7 +70,7 @@ test('Codex statusline resolves the session from the tmux pane marker', (t) => {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati (stima)');
+  assert.equal(result.stdout.trim(), '🥪 ~1k token saved');
 });
 
 test('Codex statusline hides historical savings without a current session marker', (t) => {
@@ -96,41 +96,49 @@ test('Codex statusline hides historical savings without a current session marker
   assert.equal(result.stdout.trim(), '🥪 —');
 });
 
-test('never prices an estimate: mechanical byte savings carry no dollar figure', () => {
-  // `estimate` savedTokens is a bytes/4 heuristic, not provider-billed usage.
-  // Multiplying it by an input price would present a mechanical figure as money.
+test('omits cost without a real session cost figure, estimate or not', () => {
+  // No totalCostUsd/providerUsage.totalTokens means there's no blended rate to price with.
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000, model: 'claude-sonnet-5' },
-    providerUsage: {
-      updatedAt: current, eventCount: 1, inputTokens: 150,
-      cachedInputTokens: 30, cacheWriteInputTokens: 20, outputTokens: 7,
-    },
-  }, Date.parse(current)), '🥪 2.51M token risparmiati (stima)');
+    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000 },
+  }, Date.parse(current)), '🥪 ~2.51M token saved');
 });
 
-test('prices provider-reported savings as an upper bound', () => {
-  // Priced at uncached input rate with no cache multipliers, so it can only ever
-  // overstate real spend — hence the ≤ marker.
+test('prices estimated savings at the session\'s blended rate when a real cost figure is available', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000, model: 'claude-sonnet-5' },
-  }, Date.parse(current)), '🥪 2.51M token risparmiati · ≤$5.02');
+    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000 },
+    providerUsage: { totalTokens: 5_000_000 },
+    totalCostUsd: 10,
+  }, Date.parse(current)), '🥪 ~2.51M token saved (-$5.02)');
 });
 
-test('renders small provider-reported savings with a sub-cent cost marker', () => {
+test('prices provider-reported savings at the session\'s blended rate', () => {
+  // effectiveRate = totalCostUsd / providerUsage.totalTokens — the harness's own
+  // billed rate, so cache reads/writes are already folded in.
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 840, model: 'claude-sonnet-5' },
-  }, Date.parse(current)), '🥪 840 token risparmiati · <$0.01');
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000 },
+    providerUsage: { totalTokens: 5_000_000 },
+    totalCostUsd: 10,
+  }, Date.parse(current)), '🥪 2.51M token saved (-$5.02)');
 });
 
-test('omits cost when the selected model has no known input price', () => {
+test('renders cost to two decimals', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 42_600, model: 'fixture' },
-  }, Date.parse(current)), '🥪 42.6k token risparmiati');
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 840 },
+    providerUsage: { totalTokens: 1_000 },
+    totalCostUsd: 0.05,
+  }, Date.parse(current)), '🥪 840 token saved (-$0.04)');
+});
+
+test('omits cost when providerUsage.totalTokens is unavailable', () => {
+  assert.equal(renderStatusLine({
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 42_600 },
+    totalCostUsd: 10,
+  }, Date.parse(current)), '🥪 42.6k token saved');
 });
 
 test('does not mark old data stale', () => {
   assert.equal(renderStatusLine({
     metrics: { updatedAt: current, source: 'estimate', savedTokens: 40 },
-  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 40 token risparmiati (stima)');
+  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 ~40 token saved');
   assert.equal(renderStatusLine({}, Date.parse(current)), '🥪 —');
 });

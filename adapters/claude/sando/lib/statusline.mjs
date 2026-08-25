@@ -11,20 +11,6 @@ import {
 
 export const STATUSLINE_MAX_AGE_MS = 5 * 60 * 1000;
 
-const INPUT_PRICE_PER_MILLION = [
-  [/^(?:claude-)?sonnet(?:-?5)?$/, 2],
-  [/claude-sonnet-5/, 2],
-  [/claude-sonnet-(?:4(?:[.-][0-9]+)?|3(?:[.-][0-9]+)?)/, 3],
-  [/claude-opus-4[.-]1$/, 15],
-  [/claude-opus-4$/, 15],
-  [/^(?:claude-)?opus(?:-?4(?:[.-][0-9]+)?)?$/, 5],
-  [/claude-opus-4\.[5678]|claude-opus-4-(?:[5678]|[.]\d+)/, 5],
-  [/^(?:claude-)?haiku$/, 1],
-  [/claude-haiku-4[.-]5/, 1],
-  [/claude-haiku-3[.-]5/, 0.8],
-  [/claude-haiku-3$/, 0.25],
-];
-
 function latestAt(records) {
   const timestamp = records.reduce((latest, item) => {
     const value = Date.parse(item.at);
@@ -88,34 +74,27 @@ export function readStatusSnapshot({
   };
 }
 
-function inputPrice(model) {
-  const normalized = typeof model === 'string' ? model.toLowerCase().replaceAll('_', '-') : '';
-  return INPUT_PRICE_PER_MILLION.find(([pattern]) => pattern.test(normalized))?.[1];
-}
-
 function compactTokens(value) {
   if (value < 1_000) return String(value);
   if (value < 1_000_000) return `${Number((value / 1_000).toFixed(1))}k`;
   return `${Number((value / 1_000_000).toFixed(2))}M`;
 }
 
-// Only ever called for provider-reported savings. The price table is uncached
-// full input price: applying it to a `bytes/4` estimate would present a mechanical
-// byte figure as money, which is the one conflation this project must not ship.
-// It also carries no cache multipliers (cache read bills at 0.1x, writes at
-// 1.25x/2x), so even a provider-reported figure is an upper bound on real spend.
-function compactCost(tokens, model) {
-  const price = inputPrice(model);
-  if (price === undefined) return undefined;
-  const dollars = tokens * price / 1_000_000;
-  return dollars < 0.01 ? '$0.01' : `$${dollars.toFixed(2)}`;
+// The rate is the session's own blended $/token (totalCostUsd / totalTokens),
+// so cache reads (0.1x) and cache writes (1.25x/2x) are already folded in:
+// it's the harness's real billed rate, not a reconstructed list price.
+function compactCost(tokens, effectiveRate) {
+  return `$${(tokens * effectiveRate).toFixed(2)}`;
 }
 
-export function renderStatusLine({ metrics } = {}, _now = Date.now()) {
+export function renderStatusLine({ metrics, providerUsage, totalCostUsd } = {}, _now = Date.now()) {
   if (!metrics || !['estimate', 'provider-reported'].includes(metrics.source)
     || !Number.isSafeInteger(metrics.savedTokens) || metrics.savedTokens <= 0) return '🥪 —';
   const estimated = metrics.source === 'estimate';
   const savings = `${estimated ? '~' : ''}${compactTokens(metrics.savedTokens)} token saved`;
-  const cost = estimated ? undefined : compactCost(metrics.savedTokens, metrics.model);
+  const effectiveRate = Number.isFinite(totalCostUsd) && totalCostUsd > 0
+    && Number.isSafeInteger(providerUsage?.totalTokens) && providerUsage.totalTokens > 0
+    ? totalCostUsd / providerUsage.totalTokens : undefined;
+  const cost = effectiveRate === undefined ? undefined : compactCost(metrics.savedTokens, effectiveRate);
   return `🥪 ${[savings, cost && `(-${cost})`].filter(Boolean).join(' ')}`;
 }

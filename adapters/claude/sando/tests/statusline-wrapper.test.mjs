@@ -34,14 +34,56 @@ test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
     }],
   }));
   const result = spawnSync(process.execPath, [wrapper], {
-    input: JSON.stringify({ transcript_path: '/tmp/fixture.jsonl', session_id: 's1', model: { id: 'claude-sonnet-5' } }), encoding: 'utf8', timeout: 3000,
+    input: JSON.stringify({
+      transcript_path: '/tmp/fixture.jsonl', session_id: 's1', model: { id: 'claude-sonnet-5' },
+      cost: { total_cost_usd: 0.05 },
+    }),
+    encoding: 'utf8', timeout: 3000,
     env: {
       ...childEnv, SANDO_WRAPPED_STATUSLINE: honey,
       SANDO_METRICS_PATH: metrics, SANDO_PROVIDER_USAGE_PATH: providerUsage,
     },
   });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved');
+  // effectiveRate = 0.05 / 157 totalTokens; cost = 40 estimated saved tokens * effectiveRate
+  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved (-$0.01)');
+});
+
+test('Claude statusline prices savings at the session\'s blended rate', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-statusline-cost-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const metrics = path.join(directory, 'metrics.json');
+  const providerUsage = path.join(directory, 'provider-usage.json');
+  fs.writeFileSync(metrics, JSON.stringify({
+    schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: [{
+      eventKey: 'event:statusline-cost', receiptDigest: 'sha256:statusline-cost',
+      at: new Date().toISOString(), host: 'claude', sessionId: 's1', client: null,
+      clientVersion: null, model: null, estimatedInputTokens: 100,
+      estimatedInlineTokens: 75, estimatedTransformSavingsTokens: 25,
+      providerReportedSavingsTokens: 25,
+    }],
+  }));
+  fs.writeFileSync(providerUsage, JSON.stringify({
+    schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records: [{
+      eventKey: 'usage:claude:fixture-cost', schema: 'sando-provider-usage/v1', version: 1,
+      host: 'claude', source: 'claude-transcript', sessionId: 's1', turnId: 't1',
+      at: new Date().toISOString(), inputTokens: 150, cachedInputTokens: 30,
+      cacheWriteInputTokens: 20, outputTokens: 7, reasoningOutputTokens: 0, totalTokens: 157,
+    }],
+  }));
+  const result = spawnSync(process.execPath, [wrapper], {
+    input: JSON.stringify({
+      transcript_path: '/tmp/fixture.jsonl', session_id: 's1', model: { id: 'claude-sonnet-5' },
+      cost: { total_cost_usd: 0.5 },
+    }),
+    encoding: 'utf8', timeout: 3000,
+    env: {
+      ...childEnv, SANDO_METRICS_PATH: metrics, SANDO_PROVIDER_USAGE_PATH: providerUsage,
+    },
+  });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  // effectiveRate = 0.5 / 157 totalTokens; cost = 25 saved tokens * effectiveRate
+  assert.equal(result.stdout.trim(), '🥪 25 token saved (-$0.08)');
 });
 
 test('Claude statusline accepts a shell-backed existing statusline', (t) => {
