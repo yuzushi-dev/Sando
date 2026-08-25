@@ -88,12 +88,24 @@ function resultText(value) {
   return null;
 }
 
+// Collapsing a run of text blocks into one drops every block after index 0. Any
+// `cache_control` breakpoint the host (e.g. Claude Code) placed on a later block
+// would vanish silently, costing a cache read on every subsequent turn. Carry the
+// deepest marker onto the surviving block: cache semantics cover everything up to
+// and including a marked block, so the collapsed block inherits that boundary.
+function collapseTextBlocks(blocks, value) {
+  const collapsed = { ...blocks[0], text: value };
+  const marker = blocks.findLast((block) => block?.cache_control !== undefined)?.cache_control;
+  if (marker !== undefined) collapsed.cache_control = marker;
+  return [collapsed];
+}
+
 function replaceResult(item, key, value) {
   if (typeof item[key] === 'string' && typeof value === 'string') item[key] = value;
   else if (Array.isArray(item[key]) && Array.isArray(value)) item[key] = value;
   else if (Array.isArray(item[key]) && typeof value === 'string'
     && item[key].every((block) => ['text', 'input_text'].includes(block?.type))) {
-    item[key] = [{ ...item[key][0], text: value }];
+    item[key] = collapseTextBlocks(item[key], value);
   }
 }
 

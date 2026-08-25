@@ -314,3 +314,61 @@ test('shakes large historical Bash output only after the history budget trigger'
   assert.ok(result.stats.estimatedOutputTokens < result.stats.estimatedInputTokens);
   assert.equal(result.body.messages[3].content, 'current');
 });
+
+test('preserves a cache_control breakpoint when collapsing multi-block tool results', () => {
+  // Claude Code places cache_control markers in the request body Sando's proxy
+  // rewrites. Collapsing a text-block run into one block must not silently drop a
+  // marker sitting on a later block — that would forfeit a cache read every turn.
+  const marker = { type: 'ephemeral' };
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const result = transformProviderRequest({
+    provider: 'anthropic',
+    body: {
+      model: 'claude-sonnet-5',
+      messages: [
+        { role: 'assistant', content: [read('t1', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [
+          { type: 'text', text: 'OLD PART ONE' },
+          { type: 'text', text: 'OLD PART TWO', cache_control: marker },
+        ] }] },
+        { role: 'assistant', content: [read('t2', '/a.ts')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW BODY' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+      ],
+    },
+  });
+
+  assert.equal(result.stats.supersededReads, 1);
+  const collapsed = result.body.messages[1].content[0].content;
+  assert.equal(collapsed.length, 1);
+  assert.equal(collapsed[0].text, SUPERSEDED);
+  assert.deepEqual(collapsed[0].cache_control, marker);
+});
+
+test('leaves tool results carrying a non-text block untouched', () => {
+  // resultText returns null for a mixed content array, so these are skipped
+  // entirely rather than partially rewritten. Asserted so the behaviour is
+  // deliberate rather than incidental.
+  const read = (id, file) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: file } });
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
+  const result = transformProviderRequest({
+    provider: 'anthropic',
+    body: {
+      model: 'claude-sonnet-5',
+      messages: [
+        { role: 'assistant', content: [read('t1', '/c.png')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [
+          { type: 'text', text: 'OLD BODY' },
+          image,
+        ] }] },
+        { role: 'assistant', content: [read('t2', '/c.png')] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW BODY' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+      ],
+    },
+  });
+
+  assert.equal(result.stats.supersededReads, 0);
+  assert.equal(result.changed, false);
+  assert.deepEqual(result.body.messages[1].content[0].content[1], image);
+});
