@@ -17,9 +17,14 @@
  */
 
 import fs from 'node:fs';
-import { transformProviderRequest } from '/home/cristina/Projects/Sando/packages/sando/src/context-transform.mjs';
+import { transformProviderRequest } from '../packages/sando/index.mjs';
 
 const TRANSCRIPT = process.argv[2];
+if (!TRANSCRIPT) {
+  console.error('usage: node benchmarks/prefix-divergence-probe.mjs <transcript.jsonl> [maxTurns] [maxHistoryTokens]');
+  console.error('  transcripts live under ~/.claude/projects/<slug>/<session>.jsonl');
+  process.exit(2);
+}
 const MAX_TURNS = Number(process.argv[3] ?? 60);
 const MAX_HISTORY_TOKENS = process.argv[4] ? Number(process.argv[4]) : null;
 

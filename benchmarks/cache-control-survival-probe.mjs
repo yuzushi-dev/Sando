@@ -32,9 +32,9 @@ function countMarkers(node, acc = { total: 0, paths: [] }, path = '$') {
   return acc;
 }
 
-function run(name, body, expectRewrite) {
+function run(name, body, expectRewrite, policy = {}) {
   const before = countMarkers(body);
-  const out = transformProviderRequest({ provider: 'anthropic', body, policy: {} });
+  const out = transformProviderRequest({ provider: 'anthropic', body, policy });
   const after = countMarkers(out.body);
   const s = out.stats;
   const claimed = s.supersededReads + s.elidedUselessSuccesses + s.deduplicatedResults
@@ -95,6 +95,25 @@ run('superseded read whose content array contains an image block', {
     { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
   ],
 }, true);
+
+// --- case 3b: the collapse helper itself, with the cache guard disabled ------------
+// Cases 2 and 3 are now short-circuited by the cacheRewriteRatio guard, which refuses
+// the rewrite before any collapse happens — the safer outer behaviour. Disable it here
+// so the inner helper is still exercised: when a collapse DOES run, it must carry the
+// deepest marker onto the surviving block rather than dropping it with blocks 1..n.
+run('collapse path itself (guard disabled): marker must survive', {
+  model: 'claude-sonnet-5',
+  messages: [
+    { role: 'assistant', content: [read('t1', '/d.ts')] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [
+      { type: 'text', text: 'OLD PART ONE' },
+      { type: 'text', text: 'OLD PART TWO', cache_control: MARK },
+    ] }] },
+    { role: 'assistant', content: [read('t2', '/d.ts')] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'NEW BODY' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+  ],
+}, true, { cacheRewriteRatio: 0 });
 
 // --- case 4: markers on system + tools, as Claude Code actually places them ---------
 run('markers on system and tools alongside a superseded read', {

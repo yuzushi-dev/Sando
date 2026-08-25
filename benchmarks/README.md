@@ -2,6 +2,59 @@
 
 Sando has two measurement modes: a provider-free local replay and a gated live prompt A/B.
 
+## Cache and history probes
+
+Deterministic diagnostics over committed result files and local transcripts. **No network, no
+provider calls, no cost** — safe to run any time, including in CI.
+
+Three take no arguments and run as a set:
+
+```sh
+npm run probes                    # cache-control + cache-hits + cache-attribution
+```
+
+| Script | Question it answers |
+|---|---|
+| `npm run probe:cache-control` | Does the history transform preserve `cache_control` breakpoints the host placed? Four request shapes, marker count in vs out. |
+| `npm run probe:cache-hits` | Which recorded run produced a given cache-hit figure, and what is the hit rate per measured path? |
+| `npm run probe:cache-attribution` | *Why* did the cache miss — `tools-changed`, `system-changed`, `history-rewritten`, `no-breakpoint`, `below-minimum`, `cold-start`, `ttl-expired`, or honestly `unexplained`. Also reports cache-write volume and write-to-read ratio. |
+
+Two take a transcript. Claude Code transcripts live at
+`~/.claude/projects/<slug>/<session-id>.jsonl`:
+
+```sh
+npm run probe:rewrite-payback -- ~/.claude/projects/<slug>/<session>.jsonl
+npm run probe:rewrite-payback -- ~/.claude/projects/*/*.jsonl        # table + aggregate
+npm run probe:prefix-divergence -- ~/.claude/projects/<slug>/<session>.jsonl 300 60000
+```
+
+- **`probe:rewrite-payback`** — does a history rewrite reclaim enough to pay for the cache it
+  invalidates? Anthropic bills a cache read at `0.1×` base input and a 5-minute write at `1.25×`, so
+  with `S` reclaimed, `P` suffix re-prefilled and `K` further turns:
+  `rewrite wins ⟺ S/P > 1.15/(1.25 + 0.10K)`. The threshold is a ratio, independent of `P`: K=0 needs
+  92%, K=10 needs 51%, K=50 needs 18%. This is the criterion `policy.cacheRewriteRatio` implements.
+  Pass several transcripts for a per-file table plus an aggregate.
+- **`probe:prefix-divergence`** — replays a growing conversation and reports, per turn, the first
+  message index whose serialization differs from the previous turn: the point from which the
+  provider's cumulative hash must be re-billed. Args: `<transcript> [maxTurns] [maxHistoryTokens]`.
+
+### Why not use the weekly savings counter for this
+
+`metrics-cli.mjs`'s `estimatedTransformSavingsTokens` (daily/weekly/monthly) measures
+`optimizeToolOutput` — truncation of a **single tool output** as it is produced, written only by
+`hook-cli.mjs`. **`proxy.mjs` writes no metrics at all.** The cache questions above concern
+`transformProviderRequest`, which rewrites the message history across turns. Different layer, and
+`metrics.json` records no cache counters, so the figure cannot answer them.
+
+### Caveats
+
+- Token counts are the `bytes/4` estimate, the same uncalibrated heuristic Sando uses internally — not
+  provider-billed tokens. Event counts and message indices are exact; absolute magnitudes are not.
+- `benchmarks/results/` is gitignored, so `probe:cache-hits` and `probe:cache-attribution` report only
+  what exists on the local filesystem.
+- Repo fixtures under `benchmarks/fixtures/` carry `toolName: "ToolResult"` and no `input`, so they
+  cannot trigger the supersede or dedupe paths. Use a real transcript for the transcript-taking probes.
+
 ## Local replay
 
 The local benchmark replays the same fixtures through a raw baseline and Sando. It reports paired inline estimates, artifact recovery, required-fact presence, model-visible quality, and secret-leak checks.
