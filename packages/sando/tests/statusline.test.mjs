@@ -36,7 +36,7 @@ test('Codex statusline scopes savings to the selected session', (t) => {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati');
+  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati (stima)');
 });
 
 test('Codex statusline resolves the session from the tmux pane marker', (t) => {
@@ -70,7 +70,7 @@ test('Codex statusline resolves the session from the tmux pane marker', (t) => {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati');
+  assert.equal(result.stdout.trim(), '🥪 1k token risparmiati (stima)');
 });
 
 test('Codex statusline hides historical savings without a current session marker', (t) => {
@@ -96,31 +96,41 @@ test('Codex statusline hides historical savings without a current session marker
   assert.equal(result.stdout.trim(), '🥪 —');
 });
 
-test('renders estimated savings and provider-reported usage separately', () => {
+test('never prices an estimate: mechanical byte savings carry no dollar figure', () => {
+  // `estimate` savedTokens is a bytes/4 heuristic, not provider-billed usage.
+  // Multiplying it by an input price would present a mechanical figure as money.
   assert.equal(renderStatusLine({
     metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000, model: 'claude-sonnet-5' },
     providerUsage: {
       updatedAt: current, eventCount: 1, inputTokens: 150,
       cachedInputTokens: 30, cacheWriteInputTokens: 20, outputTokens: 7,
     },
-  }, Date.parse(current)), '🥪 2.51M token risparmiati · $5.02');
+  }, Date.parse(current)), '🥪 2.51M token risparmiati (stima)');
 });
 
-test('renders small savings with a sub-cent cost marker', () => {
+test('prices provider-reported savings as an upper bound', () => {
+  // Priced at uncached input rate with no cache multipliers, so it can only ever
+  // overstate real spend — hence the ≤ marker.
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 840, model: 'claude-sonnet-5' },
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000, model: 'claude-sonnet-5' },
+  }, Date.parse(current)), '🥪 2.51M token risparmiati · ≤$5.02');
+});
+
+test('renders small provider-reported savings with a sub-cent cost marker', () => {
+  assert.equal(renderStatusLine({
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 840, model: 'claude-sonnet-5' },
   }, Date.parse(current)), '🥪 840 token risparmiati · <$0.01');
 });
 
 test('omits cost when the selected model has no known input price', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 42_600, model: 'fixture' },
+    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 42_600, model: 'fixture' },
   }, Date.parse(current)), '🥪 42.6k token risparmiati');
 });
 
 test('does not mark old data stale', () => {
   assert.equal(renderStatusLine({
     metrics: { updatedAt: current, source: 'estimate', savedTokens: 40 },
-  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 40 token risparmiati');
+  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 40 token risparmiati (stima)');
   assert.equal(renderStatusLine({}, Date.parse(current)), '🥪 —');
 });

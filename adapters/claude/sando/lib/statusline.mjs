@@ -99,17 +99,23 @@ function compactTokens(value) {
   return `${Number((value / 1_000_000).toFixed(2))}M`;
 }
 
+// Only ever called for provider-reported savings. The price table is uncached
+// full input price: applying it to a `bytes/4` estimate would present a mechanical
+// byte figure as money, which is the one conflation this project must not ship.
+// It also carries no cache multipliers (cache read bills at 0.1x, writes at
+// 1.25x/2x), so even a provider-reported figure is an upper bound on real spend.
 function compactCost(tokens, model) {
   const price = inputPrice(model);
   if (price === undefined) return undefined;
   const dollars = tokens * price / 1_000_000;
-  return dollars < 0.01 ? '<$0.01' : `$${dollars.toFixed(2)}`;
+  return dollars < 0.01 ? '<$0.01' : `≤$${dollars.toFixed(2)}`;
 }
 
 export function renderStatusLine({ metrics } = {}, _now = Date.now()) {
   if (!metrics || !['estimate', 'provider-reported'].includes(metrics.source)
     || !Number.isSafeInteger(metrics.savedTokens) || metrics.savedTokens <= 0) return '🥪 —';
-  const savings = `${compactTokens(metrics.savedTokens)} token risparmiati`;
-  const cost = compactCost(metrics.savedTokens, metrics.model);
+  const estimated = metrics.source === 'estimate';
+  const savings = `${compactTokens(metrics.savedTokens)} token risparmiati${estimated ? ' (stima)' : ''}`;
+  const cost = estimated ? undefined : compactCost(metrics.savedTokens, metrics.model);
   return `🥪 ${[savings, cost].filter(Boolean).join(' · ')}`;
 }

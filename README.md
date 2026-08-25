@@ -30,7 +30,9 @@ claude --plugin-dir "$PWD/adapters/claude/sando"
 
 The hook applies preparation by default for supported result shapes. Set `SANDO_MODE=observe` or `SANDO_OBSERVE_ONLY=1` to keep the original result while retaining local candidate metrics. The plugin also exposes the read-only `prepare_tool_output` MCP tool. See [`adapters/claude/sando/README.md`](adapters/claude/sando/README.md).
 
-At `Stop`, the Claude adapter parses numeric usage from the transcript and appends it to `~/.local/state/sando/provider-usage.json`. The active workspace statusline wraps Honey and shows readable savings, for example `🍯 honey:full · 🥪 2.51M token risparmiati · $5.02`. Provider input/output/cache counters remain available in the ledger and reports, not in the statusline.
+At `Stop`, the Claude adapter parses numeric usage from the transcript and appends it to `~/.local/state/sando/provider-usage.json`. The active workspace statusline wraps Honey and shows readable savings, for example `🍯 honey:full · 🥪 2.51M token risparmiati (stima)`.
+
+Savings are only priced when they come from real provider-reported usage, and then only as an upper bound (`≤$5.02`): the price table carries uncached input rates with no cache multipliers, while cache reads bill at 0.1×. Mechanical `bytes/4` estimates are never converted to currency — they are labelled `(stima)` and shown as tokens only. Provider input/output/cache counters remain available in the ledger and reports, not in the statusline.
 
 ## Codex
 
