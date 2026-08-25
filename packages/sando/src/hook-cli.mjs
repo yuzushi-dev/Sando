@@ -4,6 +4,35 @@ import path from 'node:path';
 
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
+import {
+  defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+} from './telemetry.mjs';
+
+function todayUtc() { return new Date().toISOString().slice(0, 10); }
+
+/** Only counts (never content, paths, or IDs) — see docs/plans/2026-08-25-sando-telemetry-design.md.
+ *  `enforce` covers both `apply` and `dry-run`: both walk the real rewrite path, only
+ *  `observe` collects without deciding anything. */
+function recordHookTelemetry({ host, env, policy, optimization }) {
+  let config;
+  try { config = readTelemetryConfig(defaultTelemetryConfigPath(env)); } catch { return; }
+  if (!config.enabled) return;
+  try {
+    incrementCounter({
+      statePaths: defaultTelemetryStatePaths(env),
+      day: todayUtc(),
+      event: 'hook_summary',
+      host,
+      mode: policy.mode === 'observe' ? 'observe' : 'enforce',
+      deltas: {
+        toolCalls: 1,
+        redactions: optimization.stats.redactions,
+        cappedOutputs: optimization.artifact ? 1 : 0,
+        bytesSaved: Math.max(0, optimization.stats.inputBytes - optimization.stats.inlineBytes),
+      },
+    });
+  } catch { /* telemetry is best-effort and must never affect hook output */ }
+}
 
 function hookPolicy(env, host) {
   const policy = env.SANDO_POLICY
@@ -69,6 +98,7 @@ export function runHookCli({ host, env = process.env } = {}) {
       try {
         recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt });
       } catch {}
+      recordHookTelemetry({ host, env, policy, optimization });
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
         return;

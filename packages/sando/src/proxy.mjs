@@ -1,7 +1,40 @@
 import http from 'node:http';
 
+import { estimateTokens } from './core.mjs';
 import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './context-transform.mjs';
 import { recordProxyRequest } from './proxy-metrics.mjs';
+import {
+  defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+} from './telemetry.mjs';
+
+function todayUtc() { return new Date().toISOString().slice(0, 10); }
+
+/** Only counts (never request/response content) — see docs/plans/2026-08-25-sando-telemetry-design.md.
+ *  `host` here is the provider request shape (`anthropic`/`openai`), which does not map cleanly to
+ *  Sando's `claude`/`codex` telemetry host enum; the proxy fronts both hosts equally, so it reports
+ *  under a fixed `claude` label — this is the one place the design doc's host/provider split is
+ *  approximate, flagged for the design doc rather than silently assumed. */
+function recordProxyTelemetry({ env, transformed, beforeText, afterText }) {
+  let config;
+  try { config = readTelemetryConfig(defaultTelemetryConfigPath(env)); } catch { return; }
+  if (!config.enabled) return;
+  const cacheWarm = transformed.stats.cacheRewriteRatio !== null;
+  try {
+    incrementCounter({
+      statePaths: defaultTelemetryStatePaths(env),
+      day: todayUtc(),
+      event: 'proxy_summary',
+      host: 'claude',
+      deltas: {
+        rewritesApplied: transformed.changed ? 1 : 0,
+        rewritesSkippedCache: transformed.stats.cacheProtectedSkips > 0 ? 1 : 0,
+        inputTokensSaved: Math.max(0, estimateTokens(beforeText) - estimateTokens(afterText)),
+        cacheHitYes: cacheWarm ? 1 : 0,
+        cacheHitNo: cacheWarm ? 0 : 1,
+      },
+    });
+  } catch { /* telemetry is best-effort and must never affect the proxied response */ }
+}
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set([
@@ -130,7 +163,7 @@ async function observeSemanticCandidates({ provider, candidates, semanticCompact
   }
 }
 
-export async function createProviderProxy({ upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, semanticCompactor, metricsPath } = {}) {
+export async function createProviderProxy({ upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES, semanticCompactor, metricsPath, env = process.env } = {}) {
   const upstreamUrl = assertUpstream(upstream);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError('port is invalid');
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024) throw new TypeError('maxBodyBytes is invalid');
@@ -158,6 +191,10 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
             lastRequestAt = now;
             const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
             if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
+            recordProxyTelemetry({
+              env, transformed,
+              beforeText: rawBody.toString('utf8'), afterText: body.toString('utf8'),
+            });
             lastStats = { provider, ...transformed.stats, changed: transformed.changed, reasons: transformed.reasons };
             recordProvider = provider;
             recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
