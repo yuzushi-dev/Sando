@@ -117,7 +117,7 @@ const LEDGER_NEGATION_LINE_RE = /^.*\b(?:not|never|isn't|doesn't|cannot|no longe
 // itself become the thing that blows the token budget. maxTokens caps that — entries
 // are kept in first-seen order until the budget is spent; the rest are reported as
 // droppedCount, never silently discarded.
-export function extractFactLedger(events, { maxTokens = 2000, estimate = estimateTokens } = {}) {
+export function extractFactLedger(events, { maxTokens = 4000, estimate = estimateTokens } = {}) {
   const candidates = new Set();
   for (const event of events) {
     const text = event.output ?? '';
