@@ -148,6 +148,13 @@ test('extractFactLedger pulls file paths, SHAs, issue refs, error and negation l
   assert.equal(droppedCount, 0);
 });
 
+test('extractFactLedger catches plain action/event sentences with no path, SHA, issue#, error, or negation', () => {
+  const events = [ev('a', 'Launching skill: kicad-design')];
+  const { ledger, droppedCount } = extractFactLedger(events);
+  assert.ok(ledger.some((f) => f.includes('Launching skill: kicad-design')));
+  assert.equal(droppedCount, 0);
+});
+
 test('extractFactLedger caps total tokens and reports how many entries were dropped, never silently', () => {
   const events = Array.from({ length: 50 }, (_, i) => ev(`e${i}`, `this does not touch item ${i} at all`));
   const { ledger, droppedCount, usedTokens } = extractFactLedger(events, { maxTokens: 50, estimate: (t) => t.length });

@@ -106,6 +106,11 @@ const LEDGER_SHA_RE = /\b[0-9a-f]{7,40}\b/gi;
 const LEDGER_ISSUE_RE = /\b(?:PR|pull request|issue)\s*#?\d+\b/gi;
 const LEDGER_ERROR_LINE_RE = /^.*\b(?:error|exception|failed|failure|traceback)\b.*$/gim;
 const LEDGER_NEGATION_LINE_RE = /^.*\b(?:not|never|isn't|doesn't|cannot|no longer)\b.*$/gim;
+// Plain action/event sentences (e.g. "Launching skill: kicad-design") carry no path,
+// SHA, issue#, error, or negation, so none of the patterns above catch them — yet
+// they're exactly the kind of line an anchor-fact probe can land on. Independent of
+// pickFact()'s MEANINGFUL_RE, per the no-circularity rule above.
+const LEDGER_ACTION_LINE_RE = /^.*\b(?:Launching|Starting|Running|Building|Installing|Deploying|Loading|Executing|Invoking|Calling|Opening|Creating|Stopping|Restarting)\b.*$/gim;
 
 // Mechanical, regex-only extraction — deliberately NOT the same patterns pickFact()
 // uses to pick the grounding-probe fact. This ledger is what actually ships in the
@@ -129,7 +134,7 @@ export function extractFactLedger(events, { maxTokens = 4000, margin = 0, estima
         if (value.length >= 4) candidates.add(value);
       }
     }
-    for (const re of [LEDGER_ERROR_LINE_RE, LEDGER_NEGATION_LINE_RE]) {
+    for (const re of [LEDGER_ERROR_LINE_RE, LEDGER_NEGATION_LINE_RE, LEDGER_ACTION_LINE_RE]) {
       for (const match of text.matchAll(re)) {
         const line = match[0].trim();
         if (line.length >= 8) candidates.add(line.slice(0, 200));
