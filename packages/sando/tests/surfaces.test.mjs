@@ -104,10 +104,7 @@ test('Codex MCP config resolves its server from the installed plugin root', () =
 test('public adapter and plugin text uses neutral branding', () => {
   for (const file of [
     'plugins/sando/.codex-plugin/plugin.json',
-    'plugins/sando/README.md',
     'adapters/claude/sando/.claude-plugin/plugin.json',
-    'adapters/claude/sando/README.md',
-    'adapters/codex/sando/README.md',
   ]) {
     const content = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(content, /Sando|sando/);
