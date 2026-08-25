@@ -156,6 +156,16 @@ test('extractFactLedger caps total tokens and reports how many entries were drop
   assert.equal(droppedCount, events.length - ledger.length);
 });
 
+test('extractFactLedger margin reserves headroom below maxTokens without splitting entries', () => {
+  const events = Array.from({ length: 50 }, (_, i) => ev(`e${i}`, `this does not touch item ${i} at all`));
+  const noMargin = extractFactLedger(events, { maxTokens: 50, margin: 0, estimate: (t) => t.length });
+  const withMargin = extractFactLedger(events, { maxTokens: 50, margin: 15, estimate: (t) => t.length });
+  assert.ok(withMargin.usedTokens <= 35);
+  assert.ok(withMargin.usedTokens <= noMargin.usedTokens);
+  assert.ok(withMargin.ledger.length <= noMargin.ledger.length);
+  assert.ok(withMargin.ledger.every((entry) => noMargin.ledger.includes(entry)));
+});
+
 test('groundingCheck survives via the mechanical ledger even when the LLM summary drops the fact (whole-line capture)', () => {
   const summarizedEvents = [ev('e', 'Error: cannot read property of undefined')];
   const droppedByLlm = groundingCheck({

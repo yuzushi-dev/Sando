@@ -116,8 +116,10 @@ const LEDGER_NEGATION_LINE_RE = /^.*\b(?:not|never|isn't|doesn't|cannot|no longe
 // pattern like "contains not/never/cannot" can match a large fraction of lines and
 // itself become the thing that blows the token budget. maxTokens caps that — entries
 // are kept in first-seen order until the budget is spent; the rest are reported as
-// droppedCount, never silently discarded.
-export function extractFactLedger(events, { maxTokens = 4000, estimate = estimateTokens } = {}) {
+// droppedCount, never silently discarded. Entries are always added whole (never split
+// mid-entry); `margin` just reserves extra headroom below maxTokens before stopping.
+export function extractFactLedger(events, { maxTokens = 4000, margin = 0, estimate = estimateTokens } = {}) {
+  const effectiveMaxTokens = Math.max(0, maxTokens - margin);
   const candidates = new Set();
   for (const event of events) {
     const text = event.output ?? '';
@@ -139,7 +141,7 @@ export function extractFactLedger(events, { maxTokens = 4000, estimate = estimat
   let droppedCount = 0;
   for (const candidate of candidates) {
     const candidateTokens = estimate(candidate);
-    if (usedTokens + candidateTokens > maxTokens) {
+    if (usedTokens + candidateTokens > effectiveMaxTokens) {
       droppedCount += 1;
       continue;
     }
@@ -380,7 +382,7 @@ async function main() {
     };
 
   const { ledger: factLedger, droppedCount: factLedgerDroppedCount } = summarizedEvents.length > 0
-    ? extractFactLedger(summarizedEvents)
+    ? extractFactLedger(summarizedEvents, { maxTokens: 1500, margin: 150 })
     : { ledger: [], droppedCount: 0 };
 
   const originalText = windowText(events);
