@@ -15,6 +15,11 @@ export {
 export { createProviderProxy } from './src/proxy.mjs';
 export { shakeHistoricalResult } from './src/history-shake.mjs';
 export {
+  attributeSession,
+  attributeTurn,
+  CACHE_MISS_CAUSES,
+} from './src/cache-attribution.mjs';
+export {
   buildMetricsReport,
   defaultMetricsPath,
   formatMetricsReport,
