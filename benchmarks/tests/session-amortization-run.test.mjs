@@ -128,6 +128,24 @@ test('runSessionAmortization computes factRecall from anchor facts picked out of
   assert.ok(result.factRecall > 0 && result.factRecall <= 1);
 });
 
+test('runSessionAmortization honors interTurnDelayMs between provider calls (cache-TTL reproducibility)', async () => {
+  const turnTexts = ['t0', 't1', 't2'];
+  const compactAtTurn = 1;
+  const callTimestamps = [];
+  const turnCompleter = async () => {
+    callTimestamps.push(Date.now());
+    return { usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  const summaryCompleter = async () => {
+    callTimestamps.push(Date.now());
+    return { summary: 's', preservedFacts: [], usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, interTurnDelayMs: 20 });
+  for (let i = 1; i < callTimestamps.length; i += 1) {
+    assert.ok(callTimestamps[i] - callTimestamps[i - 1] >= 15, `gap ${i} was ${callTimestamps[i] - callTimestamps[i - 1]}ms`);
+  }
+});
+
 test('findBaselineInfeasibleTurn flags the first turn whose cumulative estimate exceeds the context window', () => {
   const turnTexts = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)];
   const estimate = (text) => text.length;

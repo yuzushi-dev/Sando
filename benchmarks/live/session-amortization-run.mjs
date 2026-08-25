@@ -58,6 +58,12 @@ function validatePositiveInteger(value, flag) {
   return parsed;
 }
 
+function validateNonNegativeInteger(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${flag} must be a non-negative integer`);
+  return parsed;
+}
+
 export function buildTurns(events, turnsCount, eventsPerTurn) {
   if (!Array.isArray(events) || events.length === 0) throw new TypeError('events are required');
   if (!Number.isInteger(turnsCount) || turnsCount < 2) throw new TypeError('turnsCount must be an integer >= 2');
@@ -248,7 +254,18 @@ export function computeAmortization({ turnTexts, compactAtTurn, baselineUsages, 
   };
 }
 
-export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount = 8 }) {
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+// Provider caches expire on a TTL (minutes, not hours); replaying turns
+// back-to-back with no delay can see cache hits a real, slower-paced session
+// would not. Making the delay an explicit, recorded parameter — rather than
+// an implementation detail of how fast this script happens to run — is what
+// makes a reported breakEvenTurn reproducible (see handoff 2026-08-25).
+export async function runSessionAmortization({
+  turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount = 8, interTurnDelayMs = 0,
+}) {
   if (!Array.isArray(turnTexts) || turnTexts.length < 2) throw new TypeError('turnTexts are required');
   if (!Number.isInteger(compactAtTurn) || compactAtTurn < 1 || compactAtTurn >= turnTexts.length) {
     throw new TypeError('compactAtTurn must be between 1 and turnTexts.length - 1');
@@ -258,6 +275,7 @@ export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCom
 
   const baselineUsages = [];
   for (let i = 0; i < turnTexts.length; i += 1) {
+    if (i > 0 && interTurnDelayMs > 0) await sleep(interTurnDelayMs);
     const response = await turnCompleter({ prompt: cumulativeText(turnTexts, i) });
     baselineUsages.push(response.usage);
   }
@@ -265,6 +283,7 @@ export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCom
   const torsoText = cumulativeText(turnTexts, compactAtTurn - 1);
   const anchorFacts = pickAnchorFacts(torsoText, anchorFactCount);
 
+  if (interTurnDelayMs > 0) await sleep(interTurnDelayMs);
   const summaryResponse = await summaryCompleter({ prompt: torsoText });
   const compactionUsage = summaryResponse.usage;
   const summaryText = summaryResponse.summary;
@@ -273,6 +292,7 @@ export async function runSessionAmortization({ turnTexts, compactAtTurn, turnCom
 
   const compactedUsages = [];
   for (let i = compactAtTurn; i < turnTexts.length; i += 1) {
+    if (interTurnDelayMs > 0) await sleep(interTurnDelayMs);
     const tail = turnTexts.slice(compactAtTurn, i + 1).join('\n---\n');
     const response = await turnCompleter({ prompt: `${summaryText}\n---\n${tail}` });
     compactedUsages.push(response.usage);
@@ -298,6 +318,7 @@ async function main() {
   const summaryMaxOutputTokens = validatePositiveInteger(option('summary-max-output-tokens', '2048'), '--summary-max-output-tokens');
   const contextWindowTokens = validatePositiveInteger(option('context-window-tokens', '200000'), '--context-window-tokens');
   const anchorFactCount = validatePositiveInteger(option('anchor-facts', '8'), '--anchor-facts');
+  const interTurnDelayMs = validateNonNegativeInteger(option('inter-turn-delay-ms', '0'), '--inter-turn-delay-ms');
   const outPath = option('out');
   if (!outPath) throw new Error('--out is required');
   if (turnsCount < 2) throw new Error('--turns must be >= 2');
@@ -321,7 +342,9 @@ async function main() {
     ? create({ model, timeoutMs, maxOutputTokens: summaryMaxOutputTokens })
     : create({ model, timeoutMs });
 
-  const result = await runSessionAmortization({ turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount });
+  const result = await runSessionAmortization({
+    turnTexts, compactAtTurn, turnCompleter, summaryCompleter, anchorFactCount, interTurnDelayMs,
+  });
 
   const report = {
     schema: 'sando-session-amortization/v1',
@@ -333,6 +356,7 @@ async function main() {
     contextWindowTokens,
     baselineInfeasibleTurn,
     anchorFactCount,
+    interTurnDelayMs,
     anchorFacts: result.anchorFacts,
     factRecall: result.factRecall,
     baselineTotal: result.baselineTotal,
