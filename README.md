@@ -72,17 +72,3 @@ For Codex, point a custom `model_providers.<id>` (`wire_api = "responses"`, `bas
 
 Deterministic, no LLM calls, streams through unchanged. It dedupes and prunes repeated tool results above `SANDO_CONTEXT_POLICY`'s token budget, and skips any rewrite that would cost more (in cache invalidation) than it saves, so a warm prompt cache stays warm. There's also a shadow-only semantic-compaction layer that never touches the forwarded request; it only logs what an LLM summary would have saved.
 
-## Benchmarks
-
-```sh
-npm run benchmark:local -- --scenario terminal-noise --repetitions 5
-```
-
-Local counts are `bytes/4` estimates, not provider billing. Live, provider-billed numbers require `--confirm-cost` and real API quota; see `benchmarks/live/` for the scripts behind the numbers above.
-
-## Verify
-
-```sh
-npm test
-npm run check
-```
