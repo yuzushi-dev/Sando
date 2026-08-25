@@ -22,6 +22,29 @@ const localAuditEvidence = {
   tokenAccounting: { source: 'estimate', formula: 'ceil(UTF-8 bytes / 4)', providerObserved: false },
 };
 
+test('paired and median-of-medians savings diverge on noisy scenarios', () => {
+  // medianSavedPercent subtracts two independently-ranked medians, so the median
+  // baseline and the median optimized can come from different repetitions — pairing
+  // numbers that never occurred together. pairedMedianSavedPercent is the median of
+  // the real per-repetition deltas.
+  const run = (repetition, variant, inputTokens) => ({
+    scenario: 'noisy', repetition, variant, inputTokens, quality: 'pass',
+    measurement: 'local-replay', tokenAccounting: 'estimate', audit: localAuditEvidence,
+  });
+
+  // Per-pair savings: 10%, 90%, 50% -> the true median saving is 50%.
+  // Median baseline is 200 (rep 1), median optimized is 90 (rep 0): 55%, a pairing
+  // that never happened.
+  const summary = summarizeRuns([
+    run(0, 'baseline', 100), run(0, 'optimized', 90),
+    run(1, 'baseline', 200), run(1, 'optimized', 20),
+    run(2, 'baseline', 300), run(2, 'optimized', 150),
+  ]);
+  const scenario = summary.scenarios[0];
+  assert.equal(scenario.pairedMedianSavedPercent, 50);
+  assert.ok(Math.abs(scenario.medianSavedPercent - 55) < 1e-9);
+});
+
 test('estimates tokens deterministically and never returns less than one for text', () => {
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens('abcd'), 1);
@@ -59,6 +82,8 @@ test('summarizes paired medians and refuses missing pairs', () => {
     optimizedMedianInputTokens: 55,
     medianSavedInputTokens: 35,
     medianSavedPercent: 38.88888888888889,
+    pairedMedianSavedInputTokens: 35,
+    pairedMedianSavedPercent: 37.5,
     qualityPassRate: 1,
   });
   assert.equal(summary.pairedRuns, 2);

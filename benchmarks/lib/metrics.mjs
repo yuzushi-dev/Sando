@@ -229,6 +229,8 @@ export function summarizeRuns(runs) {
     scenarios: [...scenarios.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([scenario, values]) => {
       const baselineMedianInputTokens = median(values.map((value) => value.baselineInputTokens));
       const optimizedMedianInputTokens = median(values.map((value) => value.optimizedInputTokens));
+      // Difference of two independently-ranked medians. Kept because every published
+      // figure to date used it, so removing it would silently restate history.
       const medianSavedInputTokens = baselineMedianInputTokens - optimizedMedianInputTokens;
       return {
         scenario,
@@ -237,6 +239,13 @@ export function summarizeRuns(runs) {
         optimizedMedianInputTokens,
         medianSavedInputTokens,
         medianSavedPercent: baselineMedianInputTokens === 0 ? 0 : medianSavedInputTokens / baselineMedianInputTokens * 100,
+        // Median of the per-repetition paired deltas — what `medianSavedPercent`'s name
+        // implies but does not compute. computeDelta already produces these per pair and
+        // they were being discarded here. On a near-deterministic fixture the two agree;
+        // they diverge on noisy scenarios, where this one is the correct statistic
+        // because it never compares a baseline against a different run's optimized value.
+        pairedMedianSavedInputTokens: median(values.map((value) => value.savedInputTokens)),
+        pairedMedianSavedPercent: median(values.map((value) => value.savedPercent)),
         qualityPassRate: values.filter((value) => value.qualityPass).length / values.length,
       };
     }),
