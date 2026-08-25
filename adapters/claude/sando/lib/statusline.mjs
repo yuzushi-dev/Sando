@@ -108,14 +108,14 @@ function compactCost(tokens, model) {
   const price = inputPrice(model);
   if (price === undefined) return undefined;
   const dollars = tokens * price / 1_000_000;
-  return dollars < 0.01 ? '<$0.01' : `≤$${dollars.toFixed(2)}`;
+  return dollars < 0.01 ? '$0.01' : `$${dollars.toFixed(2)}`;
 }
 
 export function renderStatusLine({ metrics } = {}, _now = Date.now()) {
   if (!metrics || !['estimate', 'provider-reported'].includes(metrics.source)
     || !Number.isSafeInteger(metrics.savedTokens) || metrics.savedTokens <= 0) return '🥪 —';
   const estimated = metrics.source === 'estimate';
-  const savings = `${compactTokens(metrics.savedTokens)} token risparmiati${estimated ? ' (stima)' : ''}`;
-  const cost = estimated ? undefined : compactCost(metrics.savedTokens, metrics.model);
-  return `🥪 ${[savings, cost].filter(Boolean).join(' · ')}`;
+  const savings = `${estimated ? '~' : ''}${compactTokens(metrics.savedTokens)} token saved`;
+  const cost = compactCost(metrics.savedTokens, metrics.model);
+  return `🥪 ${[savings, cost && `(-${cost})`].filter(Boolean).join(' ')}`;
 }
