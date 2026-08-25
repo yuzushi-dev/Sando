@@ -57,7 +57,7 @@ function report(label, files, key) {
   return { calls, hits };
 }
 
-const all = fs.readdirSync(DIR).filter((f) => f.endsWith('.json'));
+const all = fs.existsSync(DIR) ? fs.readdirSync(DIR).filter((f) => f.endsWith('.json')) : [];
 
 function reportAmortization(files) {
   let calls = 0;

@@ -43,7 +43,7 @@ function amortizationTurns(usages, startedAt = '2026-08-25T08:00:00.000Z') {
   });
 }
 
-const files = fs.readdirSync(DIR).filter((f) => f.includes('session-amortization'));
+const files = fs.existsSync(DIR) ? fs.readdirSync(DIR).filter((f) => f.includes('session-amortization')) : [];
 if (files.length === 0) {
   console.log('no session-amortization results on disk (they are gitignored)');
   process.exit(0);
