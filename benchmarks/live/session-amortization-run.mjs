@@ -139,14 +139,44 @@ export function pickAnchorFacts(text, k) {
   return facts;
 }
 
-// Fraction of anchor facts that survive verbatim in the compactor's summary
-// output. No anchor facts (an empty/trivial torso) is vacuously full recall —
-// there was nothing to lose, not evidence the compactor did anything right.
+// A whole anchor line surviving verbatim in an LLM-authored summary is the
+// wrong bar: a correct summary REWRITES content, it doesn't copy-paste it.
+// The first live run (handoff 2026-08-25) scored factRecall: 0 against a
+// summary that was independently confirmed to contain the real substance of
+// 6 of 8 anchor facts (verified by extracting each fact's distinctive
+// 6+-char tokens — paths, identifiers, numbers, real words — and checking
+// how many appear in the haystack). This is the same class of mistake
+// windowed-fold-run.mjs's groundingCheck already fixed once for its own
+// fact-ledger (whole-line match undercounts when the summary keeps the
+// substance but not the surrounding prose) — ported here in general form.
+const IDENTIFYING_TOKEN_RE = /[A-Za-z0-9_.-]{6,}/g;
+
+export function extractIdentifyingTokens(fact) {
+  if (typeof fact !== 'string') throw new TypeError('fact is required');
+  return [...new Set(fact.match(IDENTIFYING_TOKEN_RE) ?? [])];
+}
+
+// A fact survives if a majority of its distinctive tokens appear in the
+// haystack. A fact with no extractable tokens (all short/generic words)
+// falls back to whole-line inclusion — there's nothing more specific to
+// check. Majority, not "any", so a fact that only coincidentally shares one
+// common token with the summary doesn't count as preserved.
+function factSurvived(fact, haystack) {
+  const tokens = extractIdentifyingTokens(fact);
+  if (tokens.length === 0) return haystack.includes(fact);
+  const survivedTokens = tokens.filter((token) => haystack.includes(token)).length;
+  return survivedTokens / tokens.length > 0.5;
+}
+
+// Fraction of anchor facts whose substance survives in the compactor's
+// summary output. No anchor facts (an empty/trivial torso) is vacuously
+// full recall — there was nothing to lose, not evidence the compactor did
+// anything right.
 export function computeRecall(anchorFacts, haystack) {
   if (!Array.isArray(anchorFacts)) throw new TypeError('anchorFacts are required');
   if (typeof haystack !== 'string') throw new TypeError('haystack is required');
   if (anchorFacts.length === 0) return 1;
-  const survivedCount = anchorFacts.filter((fact) => haystack.includes(fact)).length;
+  const survivedCount = anchorFacts.filter((fact) => factSurvived(fact, haystack)).length;
   return survivedCount / anchorFacts.length;
 }
 
@@ -327,7 +357,7 @@ export async function runSessionAmortization({
   const factRecall = computeRecall(anchorFacts, recallHaystack);
   // Kept alongside the fraction so a run can be debugged after the fact
   // without re-spending a live call just to see which facts were lost.
-  const anchorFactSurvival = anchorFacts.map((fact) => ({ fact, survived: recallHaystack.includes(fact) }));
+  const anchorFactSurvival = anchorFacts.map((fact) => ({ fact, survived: factSurvived(fact, recallHaystack) }));
 
   const compactedUsages = [];
   for (let i = compactAtTurn; i < turnTexts.length; i += 1) {

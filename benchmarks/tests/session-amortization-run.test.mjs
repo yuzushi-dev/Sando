@@ -9,6 +9,7 @@ import {
   findBaselineInfeasibleTurn,
   pickAnchorFacts,
   computeRecall,
+  extractIdentifyingTokens,
   wrapSemanticPrompt,
   runSessionAmortization,
 } from '../live/session-amortization-run.mjs';
@@ -120,10 +121,35 @@ test('pickAnchorFacts returns fewer than k when the text has fewer meaningful li
   assert.deepEqual(facts, []);
 });
 
-test('computeRecall reports the fraction of anchor facts found verbatim in the haystack', () => {
+test('computeRecall reports the fraction of anchor facts found verbatim in the haystack (facts with no distinctive tokens)', () => {
   assert.equal(computeRecall(['fact a', 'fact b', 'fact c', 'fact d'], 'contains fact a and fact c only'), 0.5);
   assert.equal(computeRecall([], 'anything'), 1);
   assert.equal(computeRecall(['missing'], 'nope'), 0);
+});
+
+test('extractIdentifyingTokens pulls distinctive 6+-char tokens (identifiers, filenames, dates), ignores short words', () => {
+  const tokens = extractIdentifyingTokens('The file index.mjs was updated at 2026-08-25, see MAX30102');
+  assert.ok(tokens.includes('index.mjs'));
+  assert.ok(tokens.includes('2026-08-25'));
+  assert.ok(tokens.includes('MAX30102'));
+  assert.ok(!tokens.includes('The'));
+  assert.ok(!tokens.includes('was'));
+});
+
+test('computeRecall counts a fact as survived when a majority of its distinctive tokens appear in the haystack, even without a verbatim whole-line match', () => {
+  // this mirrors a real live-run finding (handoff 2026-08-25): a whole-line
+  // check scored this kind of fact as lost even though the compactor's
+  // rewritten summary genuinely kept its substance (3 of 4 distinctive
+  // tokens present, just not stitched together in the same sentence).
+  const anchorFacts = ['component MAX30102 wired to gsr-xiao-v2 board successfully today'];
+  const rewrittenSummary = 'The component MAX30102 connects to the gsr-xiao-v2 board.';
+  assert.equal(computeRecall(anchorFacts, rewrittenSummary), 1);
+});
+
+test('computeRecall counts a fact as lost when only a minority of its distinctive tokens survive', () => {
+  const anchorFacts = ['Uses MAX30102 sensor wired to D0=GSR_ADC D1=GSR_DRV D2=PPG_INT D3=PPG_EN'];
+  const summaryMentioningOnlyOnePin = 'The board uses D0=GSR_ADC for the analog input.';
+  assert.equal(computeRecall(anchorFacts, summaryMentioningOnlyOnePin), 0);
 });
 
 test('runSessionAmortization computes factRecall from anchor facts picked out of the torso against the summary output', async () => {
