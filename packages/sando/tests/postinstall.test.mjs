@@ -42,7 +42,8 @@ test('interactive install with an explicit yes enables telemetry and records the
   const { xdgConfigHome, configPath } = tempConfigPath();
   const env = { XDG_CONFIG_HOME: xdgConfigHome };
   let written = '';
-  const rl = { question: async () => 'yes', close: () => {} };
+  let prompt = '';
+  const rl = { question: async (message) => { prompt = message; return 'yes'; }, close: () => {} };
   await runPostinstall({
     env,
     stdin: fakeStream({ isTTY: true }),
@@ -50,6 +51,7 @@ test('interactive install with an explicit yes enables telemetry and records the
     readlineFactory: () => rl,
   });
   assert.match(written, /telemetry enabled/);
+  assert.match(prompt, /https:\/\/github\.com\/yuzushi-dev\/Sando\/blob\/main\/TELEMETRY\.md/);
   assert.equal(readTelemetryConfig(configPath).enabled, true);
 });
 

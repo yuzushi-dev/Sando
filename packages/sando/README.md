@@ -1,6 +1,6 @@
 # sandoichi
 
-Sando's local JavaScript library for reducing repeated tool-output context.
+`sandoichi` is Sando's optional JavaScript library. The full Sando plugin is the main product. Install it through the Claude Code or Codex marketplace.
 
 ```bash
 npm install sandoichi
@@ -10,12 +10,10 @@ npm install sandoichi
 import { optimizeToolOutput, createProviderProxy } from 'sandoichi';
 ```
 
-Telemetry is off by default. The npm install asks once for consent.
+The library requires Node.js `>=22.22.0 <23` and has no runtime dependencies. Installing it does not install or enable the plugin.
 
-The Claude Code and Codex plugins are installed from the Yuzushi marketplace:
+For plugin installation, see the [main project README](https://github.com/yuzushi-dev/Sando#readme).
 
-```text
-/plugin install sando@yuzushi
-```
+Telemetry is off by default. An interactive npm install asks once for consent; see the [full disclosure](https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md).
 
 MIT.

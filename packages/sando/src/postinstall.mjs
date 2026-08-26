@@ -7,9 +7,11 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
-import { CONSENT_VERSION, defaultTelemetryConfigPath, enableTelemetry, readTelemetryConfig } from './telemetry.mjs';
+import {
+  CONSENT_VERSION, defaultTelemetryConfigPath, enableTelemetry, readTelemetryConfig, TELEMETRY_DETAILS_URL,
+} from './telemetry.mjs';
 
-const CONSENT_PROMPT = 'Enable anonymous telemetry? Full details at: TELEMETRY.md [y/N] ';
+const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/N] `;
 
 export async function runPostinstall({
   env = process.env, stdin = process.stdin, stdout = process.stdout,

@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { defaultTelemetryConfigPath, readTelemetryConfig } from './telemetry.mjs';
+import { defaultTelemetryConfigPath, readTelemetryConfig, TELEMETRY_DETAILS_URL } from './telemetry.mjs';
 
 export function runSessionStart({
   env = process.env,
@@ -19,7 +19,7 @@ export function runSessionStart({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         systemMessage: 'Sando can send anonymous aggregate telemetry (opt-in, off by default). '
-          + `Run \`node "${cli}" enable\` to turn it on. Details: TELEMETRY.md`,
+          + `Run \`node "${cli}" enable\` to turn it on. Details: ${TELEMETRY_DETAILS_URL}`,
       },
     })}\n`);
   } catch {

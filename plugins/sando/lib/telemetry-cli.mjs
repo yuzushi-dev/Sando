@@ -6,11 +6,11 @@ import { pathToFileURL } from 'node:url';
 
 import {
   defaultTelemetryConfigPath, defaultTelemetryStatePaths,
-  disableTelemetry, enableTelemetry, flushQueue, previewNextUpload, statusTelemetry,
+  disableTelemetry, enableTelemetry, flushQueue, previewNextUpload, statusTelemetry, TELEMETRY_DETAILS_URL,
 } from './telemetry.mjs';
 
 const USAGE = 'Usage: sando telemetry <status|enable|disable [--purge]|preview|flush>\n';
-const CONSENT_PROMPT = 'Enable anonymous telemetry? Full details at: TELEMETRY.md [y/N] ';
+const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/N] `;
 
 async function defaultPrompt(message) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

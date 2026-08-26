@@ -84,6 +84,7 @@ export function serializeEvent(payload) {
 
 export const TELEMETRY_CONFIG_VERSION = 1;
 export const CONSENT_VERSION = 1;
+export const TELEMETRY_DETAILS_URL = 'https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md';
 // Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
 // reachable from any of the owner's machines (see
 // session-handoff/deploy/telemetry/). Rate-limited at nginx (30 req/min/IP).

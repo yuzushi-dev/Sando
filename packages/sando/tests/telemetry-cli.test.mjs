@@ -45,7 +45,16 @@ test('interactive enable with an explicit yes enables telemetry', async () => {
   assert.equal(readTelemetryConfig(h.configPath).enabled, true);
 });
 
-test('enable points to docs/telemetry.md instead of printing the full disclosure inline', async () => {
+test('consent prompt links to the published telemetry disclosure', async () => {
+  const h = harness();
+  await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async (message) => { h.stdout.write(message); return 'no'; },
+  });
+  assert.match(h.output(), /https:\/\/github\.com\/yuzushi-dev\/Sando\/blob\/main\/TELEMETRY\.md/);
+});
+
+test('enable points to the disclosure instead of printing it inline', async () => {
   const h = harness();
   await runTelemetryCli({
     argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
