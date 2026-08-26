@@ -82,11 +82,12 @@ export function serializeEvent(payload) {
 
 export const TELEMETRY_CONFIG_VERSION = 1;
 const CONSENT_VERSION = 1;
-// Canary phase: points at the local shared backend (loopback only, see
-// session-handoff/deploy/telemetry/). Not a public endpoint yet — repoint
-// to the real public URL only after the release gates in
-// session-handoff/docs/telemetry-canary-report.md close.
-export const TELEMETRY_ENDPOINT = 'http://127.0.0.1:4318/v1/logs';
+// Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
+// reachable from any of the owner's machines (see
+// session-handoff/deploy/telemetry/). Rate-limited at nginx (30 req/min/IP).
+// Release/broader publication is still gated on the open items in
+// session-handoff/docs/telemetry-canary-report.md.
+export const TELEMETRY_ENDPOINT = 'https://telemetry.yuzushi.party/v1/logs';
 
 export const TELEMETRY_DISCLOSURE = [
   'Sando can send anonymous daily aggregate counts to a shared telemetry backend:',
