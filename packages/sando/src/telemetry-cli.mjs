@@ -5,11 +5,12 @@ import readline from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
-  TELEMETRY_DISCLOSURE, defaultTelemetryConfigPath, defaultTelemetryStatePaths,
+  defaultTelemetryConfigPath, defaultTelemetryStatePaths,
   disableTelemetry, enableTelemetry, flushQueue, previewNextUpload, statusTelemetry,
 } from './telemetry.mjs';
 
 const USAGE = 'Usage: sando telemetry <status|enable|disable [--purge]|preview|flush>\n';
+const CONSENT_PROMPT = 'Enable anonymous telemetry? Full details at: TELEMETRY.md [y/N] ';
 
 async function defaultPrompt(message) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -29,12 +30,11 @@ export async function runTelemetryCli({
       return config;
     }
     if (command === 'enable') {
-      stdout.write(`${TELEMETRY_DISCLOSURE}\n`);
       if (!interactive) {
         stderr.write('sando telemetry: enable requires an interactive session\n');
         return enableTelemetry({ configPath, interactive: false });
       }
-      const answer = await prompt('Enable anonymous aggregate telemetry? [y/N] ');
+      const answer = await prompt(CONSENT_PROMPT);
       const result = enableTelemetry({
         configPath, interactive: true,
         answer: /^(y|yes)$/i.test((answer ?? '').trim()) ? 'yes' : answer,

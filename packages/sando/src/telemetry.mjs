@@ -89,17 +89,6 @@ const CONSENT_VERSION = 1;
 // session-handoff/docs/telemetry-canary-report.md.
 export const TELEMETRY_ENDPOINT = 'https://telemetry.yuzushi.party/v1/logs';
 
-export const TELEMETRY_DISCLOSURE = [
-  'Sando can send anonymous daily aggregate counts to a shared telemetry backend:',
-  '  - hook: tool-call, redaction, capped-output counts, and bytes saved, per host/mode',
-  '  - proxy: rewrite-applied/skipped counts, estimated input tokens saved, prompt-cache hit',
-  'All values are bucketed (e.g. "2_to_5", "16_to_64k") — never a raw count, byte value, path,',
-  'transcript, tool output, session ID, or any other identifier.',
-  `Endpoint: ${TELEMETRY_ENDPOINT}`,
-  'Retention: 13 months, aggregate rows only.',
-  'This is an opt-in sample, not a population measurement — enabled users may not be representative.',
-].join('\n');
-
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 function emptyTelemetryConfig() {

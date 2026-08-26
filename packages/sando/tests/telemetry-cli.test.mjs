@@ -43,7 +43,16 @@ test('interactive enable with an explicit yes enables telemetry', async () => {
   });
   assert.equal(result.enabled, true);
   assert.equal(readTelemetryConfig(h.configPath).enabled, true);
-  assert.match(h.output(), /Endpoint:/);
+});
+
+test('enable points to docs/telemetry.md instead of printing the full disclosure inline', async () => {
+  const h = harness();
+  await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async (message) => { h.stdout.write(message); return 'no'; },
+  });
+  assert.match(h.output(), /TELEMETRY\.md/);
+  assert.doesNotMatch(h.output(), /Retention:/);
 });
 
 test('declined consent (blank answer) writes the disabled marker', async () => {
