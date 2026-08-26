@@ -41,31 +41,3 @@ After installation, Sando's hooks, MCP server, bounded tool commands, artifacts,
 ## Telemetry
 
 Telemetry is off by default. The plugin shows a non-blocking reminder until you make a choice. The optional npm library asks once during an interactive install. See the [full disclosure](TELEMETRY.md).
-
-## Optional JavaScript library
-
-Use the library only when integrating Sando into another JavaScript application:
-
-```bash
-npm install sandoichi
-```
-
-```js
-import { optimizeToolOutput, createProviderProxy } from 'sandoichi';
-```
-
-`sandoichi` is the library, not the plugin. Installing it does not install or enable Sando in Claude Code or Codex.
-
-## Troubleshooting
-
-- If installation succeeds but Sando is inactive, open `/plugins`, enable `sando`, and start a new session.
-- If the host cannot start Sando, verify that `node --version` satisfies `>=22.22.0 <23` and that `node` is on `PATH`.
-- The plugin is named `sando`; the optional npm library is named `sandoichi`.
-
-## Development
-
-```bash
-git clone https://github.com/yuzushi-dev/Sando.git
-cd Sando
-npm test
-```
