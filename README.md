@@ -1,102 +1,32 @@
-<p align="center">
-  <img src="assets/sando-mark.png" alt="Sando logo" width="96">
-</p>
-
 # Sando
 
-Sando cuts what Claude Code and Codex charge you to re-read their own output. It redacts secrets, caps oversized tool results, and, if you turn it on, trims request history before it's sent, all without calling an LLM itself.
+Sando reduces repeated tool-output context in Claude Code and Codex. It runs locally and makes no LLM calls.
 
-## Measured savings
+## Install the plugin
 
-**45.7% fewer input tokens, best case.** Measured against the real Anthropic API (provider-billed, not estimated), median of 5 live runs. Reproduce it with `node benchmarks/live/proxy-e2e-run.mjs`.
+Claude Code:
 
-| Scenario | Saving |
-|---|---|
-| Short session, repetitive tool output | **45.7%** (live, n=5) |
-| Long session, no prompt caching | ~10% median |
-| Long session, with prompt caching | ~0%, on purpose |
-
-That 45.7% is the case Sando is built for: a short session with one big, repeated tool result. Long sessions save less. And if your host already caches prompts (Claude Code does), Sando often saves nothing on purpose: rewriting history breaks the cache, so Sando skips any rewrite that would cost more than it saves.
-
-Check your own sessions instead of trusting the table:
-
-```sh
-npm run probe:rewrite-payback -- ~/.claude/projects/*/*.jsonl
-```
-
-## Install
-
-Requires Node.js `22.22.x`.
-
-**Claude Code** (recommended — installs from the marketplace, stays in sync with `main` on its own):
-
-```
+```text
 /plugin marketplace add yuzushi-dev/yuzushi-plugins
 /plugin install sando@yuzushi
 ```
 
-**From source** (needed for Codex, the provider proxy, or contributing):
+Codex:
 
-```sh
-git clone https://github.com/yuzushi-dev/Sando.git
-cd Sando
-npm test
+```bash
+codex plugin marketplace add yuzushi-dev/yuzushi-plugins
 ```
 
-The core library is also on npm as [`sandoichi`](https://www.npmjs.com/package/sandoichi)
-if you want to depend on it directly — note this is the library only, not the Claude Code
-plugin bundle above.
+Then run `/plugins` and install `sando`.
 
-## Claude Code
+## Install the npm package
 
-```sh
-claude --plugin-dir "$PWD/adapters/claude/sando"
+```bash
+npm install sandoichi
 ```
 
-(equivalent to the marketplace install above, but from a local checkout)
-
-The hook redacts and bounds tool output by default. Set `SANDO_MODE=observe` (or `SANDO_OBSERVE_ONLY=1`) to keep the original output and just collect metrics. It also exposes a read-only `prepare_tool_output` MCP tool.
-
-At session end, Claude usage gets appended to `~/.local/state/sando/provider-usage.json`; a statusline can read that file and show running savings, e.g. `🥪 2.51M tokens saved (est.)`.
-
-## Codex
-
-```sh
-node plugins/sando/cli.mjs read -- path/to/file
-node plugins/sando/cli.mjs grep -F -- pattern path/to/file
-```
-
-Codex's `PostToolUse` hook is observation-only; for plain file reads/greps, `PreToolUse` reroutes the command to Sando's CLI before it runs, no MCP round-trip needed. For everything else, three MCP tools are available: `sando_read`, `sando_grep`, and `sando_exec` (runs one command through Codex's own sandbox). `SANDO_OBSERVE_ONLY=1` forces observation regardless of policy.
-
-Codex has no built-in status line, so this repo drives one through tmux:
-
-```sh
-tmux set-option -g status-right "#(node $PWD/scripts/sando-statusline.mjs --pane '#{pane_id}')"
-```
-
-## Provider proxy (optional)
-
-The only Sando path that can shrink history already sent to the model:
-
-```sh
-SANDO_UPSTREAM_URL=https://api.anthropic.com SANDO_PROXY_PORT=8787 npm run proxy
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude --plugin-dir "$PWD/adapters/claude/sando"
-```
-
-For Codex, point a custom `model_providers.<id>` (`wire_api = "responses"`, `base_url = "http://127.0.0.1:8788"`) at the proxy instead.
-
-Deterministic, no LLM calls, streams through unchanged. It dedupes and prunes repeated tool results above `SANDO_CONTEXT_POLICY`'s token budget, and skips any rewrite that would cost more (in cache invalidation) than it saves, so a warm prompt cache stays warm. There's also a shadow-only semantic-compaction layer that never touches the forwarded request; it only logs what an LLM summary would have saved.
+The npm package is the library. It does not install the plugin.
 
 ## Telemetry
 
-Opt-in, off by default — no transcript, path, or session content ever leaves
-the machine, only bucketed counts. Installing the `sandoichi` npm package
-directly asks once during `postinstall`. Marketplace installs cannot run npm
-install scripts, so both the Claude Code and Codex plugins show a non-blocking
-notice at session start until you make a choice. Enable manually any time:
-
-```sh
-node packages/sando/src/telemetry-cli.mjs enable
-```
-
-See [TELEMETRY.md](TELEMETRY.md) for exactly what's collected.
+Telemetry is off by default. npm install asks once; plugin installs show a reminder until you choose.

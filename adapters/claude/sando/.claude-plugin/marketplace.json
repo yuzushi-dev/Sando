@@ -5,9 +5,9 @@
   "plugins": [
     {
       "name": "sando",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "source": "./",
-      "description": "Observe tool output and record bounded local savings estimates."
+      "description": "Reduce repeated tool-output context in Claude Code."
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "name": "sando",
-  "version": "0.1.0+codex.20260824061254",
-  "description": "Deterministic local tool-output preparation for token-efficiency experiments.",
+  "version": "0.1.3",
+  "description": "Reduce repeated tool-output context in Codex.",
   "author": {
     "name": "Sando contributors"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Sando",
     "shortDescription": "Prepare bounded tool-output references",
-    "longDescription": "Observe tool output and prepare deterministic, redacted, bounded inline output and artifact payloads without network access or LLM compression.",
+    "longDescription": "Reduce repeated tool-output context in Codex without network access or LLM calls.",
     "developerName": "Independent",
     "category": "Developer Tools",
     "capabilities": [

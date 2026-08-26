@@ -1,29 +1,21 @@
 # sandoichi
 
-Cuts what Claude Code and Codex charge you to re-read their own output. Redacts secrets, caps oversized tool results, and, if you turn it on, trims request history before it's sent — all without calling an LLM itself.
+Sando's local JavaScript library for reducing repeated tool-output context.
 
-This is the core library (`@sando/core` renamed `sandoichi` for npm). For the Claude Code plugin, Codex plugin, and provider proxy, see the [main repo](https://github.com/yuzushi-dev/Sando).
-
-## Install
-
-```sh
+```bash
 npm install sandoichi
 ```
-
-Requires Node.js `22.22.x`.
-
-An interactive install asks once whether to enable anonymous aggregate
-telemetry. It is disabled by default; marketplace plugin installs show a
-non-blocking session-start notice instead.
-
-## Usage
 
 ```js
 import { optimizeToolOutput, createProviderProxy } from 'sandoichi';
 ```
 
-See [index.mjs](./index.mjs) for the full list of exports (tool-output optimization, provider request transforms, semantic compaction, metrics, status line rendering).
+Telemetry is off by default. The npm install asks once for consent.
 
-## License
+The Claude Code and Codex plugins are installed from the Yuzushi marketplace:
 
-MIT
+```text
+/plugin install sando@yuzushi
+```
+
+MIT.
