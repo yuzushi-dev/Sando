@@ -5,8 +5,10 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import {
-  defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
 } from './telemetry.mjs';
+
+const PLUGIN_VERSION = '0.1';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
 
@@ -14,12 +16,14 @@ function todayUtc() { return new Date().toISOString().slice(0, 10); }
  *  `enforce` covers both `apply` and `dry-run`: both walk the real rewrite path, only
  *  `observe` collects without deciding anything. */
 function recordHookTelemetry({ host, env, policy, optimization }) {
+  const configPath = defaultTelemetryConfigPath(env);
   let config;
-  try { config = readTelemetryConfig(defaultTelemetryConfigPath(env)); } catch { return; }
+  try { config = readTelemetryConfig(configPath); } catch { return; }
   if (!config.enabled) return;
   try {
+    const statePaths = defaultTelemetryStatePaths(env);
     incrementCounter({
-      statePaths: defaultTelemetryStatePaths(env),
+      statePaths,
       day: todayUtc(),
       event: 'hook_summary',
       host,
@@ -31,6 +35,7 @@ function recordHookTelemetry({ host, env, policy, optimization }) {
         bytesSaved: Math.max(0, optimization.stats.inputBytes - optimization.stats.inlineBytes),
       },
     });
+    closeFinishedDays({ statePaths, configPath, day: todayUtc(), pluginVersion: PLUGIN_VERSION });
   } catch { /* telemetry is best-effort and must never affect hook output */ }
 }
 

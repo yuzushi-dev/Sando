@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { atomicWrite, ensureDirectory, withLock } from './provider-usage.mjs';
 
@@ -254,6 +256,37 @@ export function closeDay({ statePaths, day, pluginVersion }) {
     atomicWrite(statePaths.counters, state);
   });
   if (closedRows.length) appendQueueRows(statePaths.queue, closedRows);
+  return closedRows;
+}
+
+function launchDetachedFlush({ statePaths, configPath, spawnImpl }) {
+  try {
+    const entryPath = fileURLToPath(new URL('./telemetry-flush-entry.mjs', import.meta.url));
+    const child = spawnImpl(process.execPath, [entryPath, '--queue', statePaths.queue, '--config', configPath], {
+      detached: true, env: {}, stdio: 'ignore', windowsHide: true,
+    });
+    child.unref();
+  } catch { /* telemetry must never affect the caller */ }
+}
+
+/** Closes every raw counter day before `day` and starts one detached uploader.
+ * The child receives only local state paths and an empty environment. */
+export function closeFinishedDays({
+  statePaths, configPath = defaultTelemetryConfigPath(), day, pluginVersion,
+  spawnImpl = spawn,
+} = {}) {
+  const days = new Set();
+  if (fs.existsSync(statePaths.counters)) {
+    const state = readCounters(statePaths.counters);
+    for (const entry of Object.values(state.counters)) {
+      if (typeof entry.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.day) && entry.day < day) days.add(entry.day);
+    }
+  }
+  const closedRows = [];
+  for (const closedDay of [...days].sort()) {
+    closedRows.push(...closeDay({ statePaths, day: closedDay, pluginVersion }));
+  }
+  if (closedRows.length) launchDetachedFlush({ statePaths, configPath, spawnImpl });
   return closedRows;
 }
 

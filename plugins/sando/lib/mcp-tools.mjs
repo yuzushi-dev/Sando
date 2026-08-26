@@ -18,6 +18,34 @@ const MAX_EXEC_COMMAND_LENGTH = 8192;
 const MAX_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_CAPTURE_BYTES = 16_777_216;
 
+/** Resolves the real `codex` binary on PATH, preferring a `.session-handoff-original`
+ *  sibling when one exists. session-handoff (a companion plugin, same marketplace)
+ *  permanently replaces `codex` on PATH with its own launcher wrapper after `setup`,
+ *  backing up the original there; codex's own sandbox self-dispatch (via argv0) does
+ *  not survive going through that wrapper. Falls back to the literal 'codex' command
+ *  (unresolved, letting spawn's own ENOENT surface) when nothing is found on PATH. */
+export function resolveCodexCommand(env = process.env, fsImpl = fs) {
+  const fallback = 'codex';
+  if (process.platform === 'win32') return fallback; // session-handoff supports linux/darwin only
+  const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, 'codex');
+    try {
+      fsImpl.accessSync(candidate, fsImpl.constants.X_OK);
+    } catch {
+      continue;
+    }
+    const original = `${candidate}.session-handoff-original`;
+    try {
+      fsImpl.accessSync(original, fsImpl.constants.X_OK);
+      return original;
+    } catch {
+      return candidate;
+    }
+  }
+  return fallback;
+}
+
 const TOOLS = [
   {
     name: 'prepare_tool_output',
@@ -283,7 +311,7 @@ async function runSandboxedCommand({ state, root, workdir, command, timeoutMs, m
   if (signal?.aborted) throw execError('sando_exec cancelled', 'cancelled');
   const shell = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
   const args = ['sandbox', '--sandbox-state-json', JSON.stringify(state), '--', shell, ...shellArgs(root, workdir, command)];
-  const child = spawn('codex', args, { cwd: root, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(resolveCodexCommand(), args, { cwd: root, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let captured = 0;
   let truncated = false;
   let forceTimer;

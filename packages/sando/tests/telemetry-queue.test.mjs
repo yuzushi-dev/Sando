@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  ackBatch, closeDay, flushQueue, incrementCounter, loadBatch, previewNextUpload, toOtlpLogs,
+  ackBatch, closeDay, closeFinishedDays, flushQueue, incrementCounter, loadBatch, previewNextUpload, toOtlpLogs,
 } from '../src/telemetry.mjs';
 import { runTelemetryFlushEntry } from '../src/telemetry-flush-entry.mjs';
 
@@ -36,6 +36,29 @@ test('closeDay removes the closed day from raw counters so it is not double-coun
   closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   const again = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   assert.deepEqual(again, []);
+});
+
+test('closeFinishedDays closes old counters and launches a detached flush without provider env', () => {
+  const statePaths = tempStatePaths();
+  const configPath = path.join(path.dirname(statePaths.counters), 'telemetry.json');
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  let invocation;
+  const child = { unref() { invocation.unref = true; } };
+
+  const closed = closeFinishedDays({
+    statePaths, configPath, day: '2026-08-26', pluginVersion: '0.1',
+    spawnImpl(...args) { invocation = { args }; return child; },
+  });
+
+  assert.equal(closed.length, 1);
+  assert.equal(invocation.args[0], process.execPath);
+  assert.match(invocation.args[1][0], /telemetry-flush-entry\.mjs$/);
+  assert.deepEqual(invocation.args[1].slice(1), ['--queue', statePaths.queue, '--config', configPath]);
+  assert.deepEqual(invocation.args[2].env, {});
+  assert.equal(invocation.args[2].detached, true);
+  assert.deepEqual(invocation.args[2].stdio, 'ignore');
+  assert.equal(invocation.unref, true);
+  assert.equal(loadBatch({ statePaths }).length, 1);
 });
 
 test('closeDay buckets proxy_summary with majority prompt_cache_hit', () => {

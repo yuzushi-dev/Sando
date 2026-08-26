@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { callMcpTool, callMcpToolAsync, MCP_TOOLS } from '../lib/mcp-tools.mjs';
+import { callMcpTool, callMcpToolAsync, MCP_TOOLS, resolveCodexCommand } from '../lib/mcp-tools.mjs';
 import { readCoverage } from '../lib/coverage.mjs';
 
 // `codex` dispatches to its Linux sandbox helper surface when invoked via a
@@ -48,6 +48,19 @@ function sandboxMeta(cwd) {
     },
   };
 }
+
+test('sando_exec resolves the real Codex binary behind session-handoff', () => {
+  const pathEntries = ['/first', '/second'];
+  const executable = new Set(['/first/codex', '/first/codex.session-handoff-original', '/second/codex']);
+  const fsImpl = {
+    constants: { X_OK: 1 },
+    accessSync(candidate) {
+      if (!executable.has(candidate)) throw new Error('not executable');
+    },
+  };
+
+  assert.equal(resolveCodexCommand({ PATH: pathEntries.join(path.delimiter) }, fsImpl), '/first/codex.session-handoff-original');
+});
 
 test('sando_exec is advertised as a sandboxed terminal tool', () => {
   const tool = MCP_TOOLS.find((candidate) => candidate.name === 'sando_exec');

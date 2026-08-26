@@ -4,8 +4,10 @@ import { estimateTokens } from './core.mjs';
 import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './context-transform.mjs';
 import { recordProxyRequest } from './proxy-metrics.mjs';
 import {
-  defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
 } from './telemetry.mjs';
+
+const PLUGIN_VERSION = '0.1';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
 
@@ -15,13 +17,15 @@ function todayUtc() { return new Date().toISOString().slice(0, 10); }
  *  under a fixed `claude` label — this is the one place the design doc's host/provider split is
  *  approximate, flagged for the design doc rather than silently assumed. */
 function recordProxyTelemetry({ env, transformed, beforeText, afterText }) {
+  const configPath = defaultTelemetryConfigPath(env);
   let config;
-  try { config = readTelemetryConfig(defaultTelemetryConfigPath(env)); } catch { return; }
+  try { config = readTelemetryConfig(configPath); } catch { return; }
   if (!config.enabled) return;
   const cacheWarm = transformed.stats.cacheRewriteRatio !== null;
   try {
+    const statePaths = defaultTelemetryStatePaths(env);
     incrementCounter({
-      statePaths: defaultTelemetryStatePaths(env),
+      statePaths,
       day: todayUtc(),
       event: 'proxy_summary',
       host: 'claude',
@@ -33,6 +37,7 @@ function recordProxyTelemetry({ env, transformed, beforeText, afterText }) {
         cacheHitNo: cacheWarm ? 0 : 1,
       },
     });
+    closeFinishedDays({ statePaths, configPath, day: todayUtc(), pluginVersion: PLUGIN_VERSION });
   } catch { /* telemetry is best-effort and must never affect the proxied response */ }
 }
 
