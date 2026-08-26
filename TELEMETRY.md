@@ -28,10 +28,13 @@ are always bucketed — never a raw count or byte value.
 `https://telemetry.yuzushi.party/v1/logs` — a shared backend (OpenTelemetry
 Collector → Loki → Grafana) also used by the `session-handoff` project,
 each with its own closed schema. See
-`session-handoff/docs/telemetry-privacy.md` for the full data inventory,
+`~/selfhosted/telemetry/docs/telemetry-privacy.md` (separate infra repo,
+shared with session-handoff) for the full data inventory,
 retention, and processor list, and
-`session-handoff/docs/telemetry-canary-report.md` for the current release
-status (as of writing: canary and independent privacy review still open).
+`~/selfhosted/telemetry/docs/telemetry-canary-report.md` for the current
+release status (as of writing: canary and independent privacy review
+still open — the endpoint below is live ahead of those gates, an explicit
+choice, not a signal they're done).
 
 Retention: 13 months, aggregate rows only.
 
