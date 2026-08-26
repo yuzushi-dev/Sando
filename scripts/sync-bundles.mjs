@@ -10,7 +10,7 @@ const bundles = [
 ];
 
 for (const directory of bundles) {
-  for (const file of ['core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'secret-redaction.mjs']) {
+  for (const file of ['core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'secret-redaction.mjs', 'provider-usage.mjs', 'telemetry.mjs', 'telemetry-cli.mjs']) {
     await fs.copyFile(path.join(source, file), path.join(root, directory, file));
   }
 }
