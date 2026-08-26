@@ -26,7 +26,16 @@ npm run probe:rewrite-payback -- ~/.claude/projects/*/*.jsonl
 
 ## Install
 
-Requires Node.js `22.22.x`. No npm package yet.
+Requires Node.js `22.22.x`.
+
+**Claude Code** (recommended — installs from the marketplace, stays in sync with `main` on its own):
+
+```
+/plugin marketplace add yuzushi-dev/yuzushi-plugins
+/plugin install sando@yuzushi
+```
+
+**From source** (needed for Codex, the provider proxy, or contributing):
 
 ```sh
 git clone https://github.com/yuzushi-dev/Sando.git
@@ -34,11 +43,17 @@ cd Sando
 npm test
 ```
 
+The core library is also on npm as [`sandoichi`](https://www.npmjs.com/package/sandoichi)
+if you want to depend on it directly — note this is the library only, not the Claude Code
+plugin bundle above.
+
 ## Claude Code
 
 ```sh
 claude --plugin-dir "$PWD/adapters/claude/sando"
 ```
+
+(equivalent to the marketplace install above, but from a local checkout)
 
 The hook redacts and bounds tool output by default. Set `SANDO_MODE=observe` (or `SANDO_OBSERVE_ONLY=1`) to keep the original output and just collect metrics. It also exposes a read-only `prepare_tool_output` MCP tool.
 
@@ -71,4 +86,17 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude --plugin-dir "$PWD/adapters/clau
 For Codex, point a custom `model_providers.<id>` (`wire_api = "responses"`, `base_url = "http://127.0.0.1:8788"`) at the proxy instead.
 
 Deterministic, no LLM calls, streams through unchanged. It dedupes and prunes repeated tool results above `SANDO_CONTEXT_POLICY`'s token budget, and skips any rewrite that would cost more (in cache invalidation) than it saves, so a warm prompt cache stays warm. There's also a shadow-only semantic-compaction layer that never touches the forwarded request; it only logs what an LLM summary would have saved.
+
+## Telemetry
+
+Opt-in, off by default — no transcript, path, or session content ever leaves
+the machine, only bucketed counts. Currently only prompted when installing
+the `sandoichi` npm package directly; the Claude Code marketplace plugin
+doesn't ask yet. Enable manually any time:
+
+```sh
+node packages/sando/src/telemetry-cli.mjs enable
+```
+
+See [TELEMETRY.md](TELEMETRY.md) for exactly what's collected.
 
