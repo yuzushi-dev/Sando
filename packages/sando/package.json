@@ -1,6 +1,6 @@
 {
   "name": "sandoichi",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cuts what Claude Code and Codex charge you to re-read their own output.",
   "license": "MIT",
   "author": "yuzushi",
