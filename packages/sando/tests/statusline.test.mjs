@@ -103,30 +103,20 @@ test('omits cost without a real session cost figure, estimate or not', () => {
   }, Date.parse(current)), '🥪 ~2.51M token saved');
 });
 
-test('prices estimated savings at the session\'s blended rate when a real cost figure is available', () => {
+test('never renders cost even with a real cost figure available (estimate)', () => {
   assert.equal(renderStatusLine({
     metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000 },
     providerUsage: { totalTokens: 5_000_000 },
     totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 ~2.51M token saved (-$5.02)');
+  }, Date.parse(current)), '🥪 ~2.51M token saved');
 });
 
-test('prices provider-reported savings at the session\'s blended rate', () => {
-  // effectiveRate = totalCostUsd / providerUsage.totalTokens — the harness's own
-  // billed rate, so cache reads/writes are already folded in.
+test('never renders cost even with a real cost figure available (provider-reported)', () => {
   assert.equal(renderStatusLine({
     metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000 },
     providerUsage: { totalTokens: 5_000_000 },
     totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 2.51M token saved (-$5.02)');
-});
-
-test('renders cost to two decimals', () => {
-  assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 840 },
-    providerUsage: { totalTokens: 1_000 },
-    totalCostUsd: 0.05,
-  }, Date.parse(current)), '🥪 840 token saved (-$0.04)');
+  }, Date.parse(current)), '🥪 2.51M token saved');
 });
 
 test('omits cost when providerUsage.totalTokens is unavailable', () => {

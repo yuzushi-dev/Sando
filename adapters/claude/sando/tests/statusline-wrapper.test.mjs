@@ -45,11 +45,10 @@ test('Claude statusline preserves Honey and appends real Sando usage', (t) => {
     },
   });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  // effectiveRate = 0.05 / 157 totalTokens; cost = 40 estimated saved tokens * effectiveRate
-  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved (-$0.01)');
+  assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 ~40 token saved');
 });
 
-test('Claude statusline prices savings at the session\'s blended rate', (t) => {
+test('Claude statusline never displays cost even with a real cost figure', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-statusline-cost-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const metrics = path.join(directory, 'metrics.json');
@@ -82,8 +81,7 @@ test('Claude statusline prices savings at the session\'s blended rate', (t) => {
     },
   });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  // effectiveRate = 0.5 / 157 totalTokens; cost = 25 saved tokens * effectiveRate
-  assert.equal(result.stdout.trim(), '🥪 25 token saved (-$0.08)');
+  assert.equal(result.stdout.trim(), '🥪 25 token saved');
 });
 
 test('Claude statusline accepts a shell-backed existing statusline', (t) => {

@@ -95,6 +95,6 @@ export function renderStatusLine({ metrics, providerUsage, totalCostUsd } = {}, 
   const effectiveRate = Number.isFinite(totalCostUsd) && totalCostUsd > 0
     && Number.isSafeInteger(providerUsage?.totalTokens) && providerUsage.totalTokens > 0
     ? totalCostUsd / providerUsage.totalTokens : undefined;
-  const cost = effectiveRate === undefined ? undefined : compactCost(metrics.savedTokens, effectiveRate);
-  return `🥪 ${[savings, cost && `(-${cost})`].filter(Boolean).join(' ')}`;
+  void effectiveRate; // computed for downstream cost tracking, intentionally not shown in the status bar
+  return `🥪 ${savings}`;
 }
