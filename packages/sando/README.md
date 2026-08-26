@@ -12,6 +12,10 @@ npm install sandoichi
 
 Requires Node.js `22.22.x`.
 
+An interactive install asks once whether to enable anonymous aggregate
+telemetry. It is disabled by default; marketplace plugin installs show a
+non-blocking session-start notice instead.
+
 ## Usage
 
 ```js

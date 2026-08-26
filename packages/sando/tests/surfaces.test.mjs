@@ -90,7 +90,10 @@ test('Codex and Claude manifests keep hooks in companion files', () => {
     'plugins/sando/hooks/hooks.json',
     'adapters/claude/sando/hooks/hooks.json',
     'adapters/codex/sando/hooks/hooks.json',
-  ]) assert.ok(json(file).hooks.PostToolUse.length > 0);
+  ]) {
+    assert.ok(json(file).hooks.PostToolUse.length > 0);
+    assert.ok(json(file).hooks.SessionStart?.length > 0);
+  }
 });
 
 test('Codex MCP config resolves its server from the installed plugin root', () => {

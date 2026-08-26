@@ -90,13 +90,13 @@ Deterministic, no LLM calls, streams through unchanged. It dedupes and prunes re
 ## Telemetry
 
 Opt-in, off by default — no transcript, path, or session content ever leaves
-the machine, only bucketed counts. Currently only prompted when installing
-the `sandoichi` npm package directly; the Claude Code marketplace plugin
-doesn't ask yet. Enable manually any time:
+the machine, only bucketed counts. Installing the `sandoichi` npm package
+directly asks once during `postinstall`. Marketplace installs cannot run npm
+install scripts, so both the Claude Code and Codex plugins show a non-blocking
+notice at session start until you make a choice. Enable manually any time:
 
 ```sh
 node packages/sando/src/telemetry-cli.mjs enable
 ```
 
 See [TELEMETRY.md](TELEMETRY.md) for exactly what's collected.
-
