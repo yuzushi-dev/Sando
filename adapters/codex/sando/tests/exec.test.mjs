@@ -12,11 +12,22 @@ import { readCoverage } from '../lib/coverage.mjs';
 // `codex` dispatches to its Linux sandbox helper surface when invoked via a
 // symlink named `codex-linux-sandbox` (argv0-based dispatch) — there is no
 // separately installed binary to `which`, so we make our own shim.
-function codexLinuxSandboxShim(cwd) {
+// The sandbox self-dispatch trick below needs the real codex ELF binary --
+// on a machine where session-handoff has swapped `codex` on PATH for its own
+// active-session wrapper (a `python3 ... session-handoff run codex --executable
+// <real>` shim), that indirection breaks argv0-based dispatch. Follow through
+// to the real binary session-handoff records alongside its wrapper, if present.
+function realCodexBinary() {
   const codex = spawnSync('which', ['codex'], { encoding: 'utf8' });
   assert.equal(codex.status, 0, codex.stderr);
+  const resolved = codex.stdout.trim();
+  const original = `${resolved}.session-handoff-original`;
+  return fs.existsSync(original) ? fs.realpathSync(original) : resolved;
+}
+
+function codexLinuxSandboxShim(cwd) {
   const shimPath = path.join(cwd, 'codex-linux-sandbox');
-  fs.symlinkSync(codex.stdout.trim(), shimPath);
+  fs.symlinkSync(realCodexBinary(), shimPath);
   return shimPath;
 }
 
