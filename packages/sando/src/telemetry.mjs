@@ -81,7 +81,7 @@ export function serializeEvent(payload) {
 }
 
 export const TELEMETRY_CONFIG_VERSION = 1;
-const CONSENT_VERSION = 1;
+export const CONSENT_VERSION = 1;
 // Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
 // reachable from any of the owner's machines (see
 // session-handoff/deploy/telemetry/). Rate-limited at nginx (30 req/min/IP).
