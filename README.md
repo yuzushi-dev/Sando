@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/sando-mark.png" alt="Sando logo" width="96">
+</p>
+
 # Sando
 
 Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversized tool output under control, preserves complete artifacts when needed, and provides bounded local tool surfaces. It runs locally and makes no LLM calls.
