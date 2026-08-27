@@ -192,7 +192,7 @@ export function optimizeToolOutput({
       sourceBytes,
       truncated: false,
     };
-    const header = `artifact ${artifact.ref} ${artifact.bytes}B\n`;
+    const header = `[sando] artifact ${artifact.ref} ${artifact.bytes}B\n`;
     const viewBudget = Math.max(1, routePolicy.maxInlineBytes - Buffer.byteLength(header));
     inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
       modelText,

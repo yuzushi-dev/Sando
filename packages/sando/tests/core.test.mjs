@@ -56,7 +56,7 @@ test('large output keeps head and tail inline, elides middle, and caps columns',
   assert.match(result.inline, /ERROR: tail/);
   assert.match(result.inline, /middle elided/i);
   for (const line of result.inline.split('\n')) {
-    assert.ok(line.startsWith('artifact ') || Buffer.byteLength(line) <= 12 || /middle elided/i.test(line));
+    assert.ok(line.startsWith('[sando] artifact ') || Buffer.byteLength(line) <= 12 || /middle elided/i.test(line));
   }
   assert.equal(result.artifact.content.includes('HEAD-FACT'), true);
   assert.equal(result.artifact.content.includes('TAIL-FACT'), true);
