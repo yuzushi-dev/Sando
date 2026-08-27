@@ -1,6 +1,6 @@
 {
   "name": "sando",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Reduce repeated tool-output context in Claude Code.",
   "author": {
     "name": "Sando contributors"
