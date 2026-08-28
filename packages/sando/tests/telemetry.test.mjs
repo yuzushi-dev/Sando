@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { countBucket, byteBucket, serializeEvent, validateEvent } from '../src/telemetry.mjs';
+import { countBucket, byteBucket, FAILURE_STAGES, isDoNotTrack, serializeEvent, validateEvent } from '../src/telemetry.mjs';
 
 function hookEvent(overrides = {}) {
   return {
@@ -12,9 +12,9 @@ function hookEvent(overrides = {}) {
     host: 'claude',
     mode: 'enforce',
     tool_calls_bucket: '6_to_20',
-    redactions_bucket: 'one',
     capped_outputs_bucket: 'zero',
     bytes_saved_bucket: '16_to_64k',
+    input_tokens_saved_bucket: '4_to_16k',
     ...overrides,
   };
 }
@@ -25,11 +25,11 @@ function proxyEvent(overrides = {}) {
     event: 'proxy_summary',
     day_utc: '2026-08-25',
     plugin_version: '0.5',
-    host: 'claude',
+    provider: 'openai',
+    mode: 'enforce',
     rewrites_applied_bucket: '2_to_5',
     rewrites_skipped_cache_bucket: 'one',
     input_tokens_saved_bucket: '16_to_64k',
-    prompt_cache_hit: 'yes',
     ...overrides,
   };
 }
@@ -55,12 +55,38 @@ test('byteBucket maps byte counts to the fixed enum', () => {
   assert.throws(() => byteBucket(-1), /invalid/);
 });
 
+test('DO_NOT_TRACK treats only non-empty values other than 0 as enabled', () => {
+  assert.equal(isDoNotTrack({}), false);
+  assert.equal(isDoNotTrack({ DO_NOT_TRACK: '' }), false);
+  assert.equal(isDoNotTrack({ DO_NOT_TRACK: '0' }), false);
+  assert.equal(isDoNotTrack({ DO_NOT_TRACK: '1' }), true);
+});
+
 test('validateEvent accepts a well-formed hook_summary event', () => {
   assert.doesNotThrow(() => validateEvent(hookEvent()));
 });
 
 test('validateEvent accepts a well-formed proxy_summary event', () => {
   assert.doesNotThrow(() => validateEvent(proxyEvent()));
+});
+
+test('validateEvent accepts failure summaries and the dry_run mode', () => {
+  assert.equal(FAILURE_STAGES.length, 8);
+  assert.doesNotThrow(() => validateEvent({
+    schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5',
+    host: 'codex', failure_stage: 'input',
+  }));
+  assert.doesNotThrow(() => validateEvent({
+    schema_version: 1, event: 'proxy_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5',
+    provider: 'unknown', failure_stage: 'input',
+  }));
+  assert.doesNotThrow(() => validateEvent(hookEvent({ mode: 'dry_run' })));
+});
+
+test('validateEvent accepts the privacy-preserving active_day marker', () => {
+  assert.doesNotThrow(() => validateEvent({
+    schema_version: 1, event: 'active_day', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude',
+  }));
 });
 
 test('validateEvent rejects an unknown event type', () => {
@@ -70,8 +96,10 @@ test('validateEvent rejects an unknown event type', () => {
 test('validateEvent rejects an unknown enum value', () => {
   assert.throws(() => validateEvent(hookEvent({ host: 'gemini' })), /host/);
   assert.throws(() => validateEvent(hookEvent({ mode: 'apply' })), /mode/);
-  assert.throws(() => validateEvent(hookEvent({ redactions_bucket: 'many' })), /redactions_bucket/);
-  assert.throws(() => validateEvent(proxyEvent({ prompt_cache_hit: 'maybe' })), /prompt_cache_hit/);
+  assert.throws(() => validateEvent(hookEvent({ redactions_bucket: 'one' })), /unknown field/);
+  assert.throws(() => validateEvent(proxyEvent({ provider: 'claude' })), /provider/);
+  assert.throws(() => validateEvent(proxyEvent({ host: 'claude' })), /unknown field/);
+  assert.throws(() => validateEvent(proxyEvent({ prompt_cache_hit: 'yes' })), /unknown field/);
 });
 
 test('validateEvent rejects unknown fields', () => {
@@ -91,9 +119,10 @@ test('validateEvent rejects strings over 32 characters', () => {
   assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5'.padEnd(33, '0') })), /plugin_version/);
 });
 
-test('validateEvent rejects a prerelease or patch plugin_version', () => {
-  assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5.1' })), /plugin_version/);
+test('validateEvent accepts stable patch plugin versions and rejects prereleases', () => {
+  assert.doesNotThrow(() => validateEvent(hookEvent({ plugin_version: '0.5.1' })));
   assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5.0-rc1' })), /plugin_version/);
+  assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5.x' })), /plugin_version/);
 });
 
 test('validateEvent rejects a day_utc with a time component', () => {

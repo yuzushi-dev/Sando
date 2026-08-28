@@ -4,40 +4,53 @@ import { estimateTokens } from './core.mjs';
 import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './context-transform.mjs';
 import { recordProxyRequest } from './proxy-metrics.mjs';
 import {
-  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordFailure,
 } from './telemetry.mjs';
-
-const PLUGIN_VERSION = '0.1';
+import { PLUGIN_VERSION } from './version.mjs';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
 
-/** Only counts (never request/response content) — see docs/plans/2026-08-25-sando-telemetry-design.md.
- *  `host` here is the provider request shape (`anthropic`/`openai`), which does not map cleanly to
- *  Sando's `claude`/`codex` telemetry host enum; the proxy fronts both hosts equally, so it reports
- *  under a fixed `claude` label — this is the one place the design doc's host/provider split is
- *  approximate, flagged for the design doc rather than silently assumed. */
-function recordProxyTelemetry({ env, transformed, beforeText, afterText }) {
-  const configPath = defaultTelemetryConfigPath(env);
-  let config;
-  try { config = readTelemetryConfig(configPath); } catch { return; }
-  if (!config.enabled) return;
-  const cacheWarm = transformed.stats.cacheRewriteRatio !== null;
+function telemetryProvider(provider) {
+  if (provider === 'anthropic') return 'anthropic';
+  if (provider === 'openai-chat' || provider === 'openai-responses') return 'openai';
+  return 'unknown';
+}
+
+/** Only counts (never request/response content). */
+function recordProxyTelemetry({ env, provider, transformed, beforeText, afterText }) {
   try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
     const statePaths = defaultTelemetryStatePaths(env);
     incrementCounter({
       statePaths,
       day: todayUtc(),
       event: 'proxy_summary',
-      host: 'claude',
+      provider: telemetryProvider(provider),
+      mode: 'enforce',
       deltas: {
         rewritesApplied: transformed.changed ? 1 : 0,
         rewritesSkippedCache: transformed.stats.cacheProtectedSkips > 0 ? 1 : 0,
         inputTokensSaved: Math.max(0, estimateTokens(beforeText) - estimateTokens(afterText)),
-        cacheHitYes: cacheWarm ? 1 : 0,
-        cacheHitNo: cacheWarm ? 0 : 1,
       },
     });
     closeFinishedDays({ statePaths, configPath, day: todayUtc(), pluginVersion: PLUGIN_VERSION });
+  } catch { /* telemetry is best-effort and must never affect the proxied response */ }
+}
+
+function recordProxyFailure({ env, provider, failureStage }) {
+  try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
+    const statePaths = defaultTelemetryStatePaths(env);
+    const day = todayUtc();
+    recordFailure({
+      statePaths, day, event: 'proxy_failure_summary',
+      provider: telemetryProvider(provider), failureStage,
+    });
+    closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });
   } catch { /* telemetry is best-effort and must never affect the proxied response */ }
 }
 
@@ -176,53 +189,86 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
   let lastRequestAt = null;
 
   const server = http.createServer(async (request, outgoing) => {
+    let failureProvider = null;
     try {
       if (request.method === 'GET' && new URL(request.url, 'http://sando.invalid').pathname === '/health') {
         jsonResponse(outgoing, 200, { schema: 'sando-provider-proxy/v1', status: 'ok', lastStats });
         return;
       }
-      const rawBody = await readBody(request, maxBodyBytes);
+      let rawBody;
+      try {
+        rawBody = await readBody(request, maxBodyBytes);
+      } catch (error) {
+        recordProxyFailure({ env, provider: null, failureStage: 'input' });
+        if (!outgoing.headersSent) jsonResponse(outgoing, error.message === 'request body exceeds proxy limit' ? 413 : 502, { error: 'sando proxy upstream failure' });
+        else outgoing.destroy();
+        return;
+      }
       let body = rawBody;
       let recordProvider = null;
       let recordModel = null;
       let recordStats = null;
       if (rawBody.length > 0 && /application\/json/i.test(request.headers['content-type'] ?? '')) {
+        let parsed;
         try {
-          const parsed = JSON.parse(rawBody.toString('utf8'));
-          const provider = detectProviderBody(parsed, request.headers);
-          if (provider) {
-            const now = Date.now();
-            const idleMs = lastRequestAt === null ? null : now - lastRequestAt;
-            lastRequestAt = now;
-            const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
-            if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
-            recordProxyTelemetry({
-              env, transformed,
-              beforeText: rawBody.toString('utf8'), afterText: body.toString('utf8'),
-            });
-            lastStats = { provider, ...transformed.stats, changed: transformed.changed, reasons: transformed.reasons };
-            recordProvider = provider;
-            recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
-            recordStats = transformed.stats;
-            if (typeof semanticCompactor === 'function') {
-              const candidates = listSemanticCandidates({ provider, body: transformed.body });
-              const stats = createSemanticStats(candidates);
-              lastStats.semantic = stats;
-              setImmediate(() => observeSemanticCandidates({ provider, candidates, semanticCompactor, stats }));
-            }
-          }
+          parsed = JSON.parse(rawBody.toString('utf8'));
         } catch {
-          body = rawBody;
+          recordProxyFailure({ env, provider: null, failureStage: 'input' });
+        }
+        if (parsed) {
+          const provider = detectProviderBody(parsed, request.headers);
+          failureProvider = provider;
+          try {
+            if (provider) {
+              const now = Date.now();
+              const idleMs = lastRequestAt === null ? null : now - lastRequestAt;
+              lastRequestAt = now;
+              const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
+              if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
+              recordProxyTelemetry({
+                env, provider, transformed,
+                beforeText: rawBody.toString('utf8'), afterText: body.toString('utf8'),
+              });
+              lastStats = { provider, ...transformed.stats, changed: transformed.changed, reasons: transformed.reasons };
+              recordProvider = provider;
+              recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
+              recordStats = transformed.stats;
+              if (typeof semanticCompactor === 'function') {
+                const candidates = listSemanticCandidates({ provider, body: transformed.body });
+                const stats = createSemanticStats(candidates);
+                lastStats.semantic = stats;
+                setImmediate(() => observeSemanticCandidates({ provider, candidates, semanticCompactor, stats }));
+              }
+            }
+          } catch {
+            recordProxyFailure({ env, provider, failureStage: 'optimization' });
+            body = rawBody;
+          }
         }
       }
-      const response = await fetch(targetUrl(upstreamUrl, request.url), {
-        method: request.method,
-        headers: forwardedHeaders(request),
-        body: ['GET', 'HEAD'].includes(request.method) ? undefined : body,
-        redirect: 'manual',
-      });
+      let response;
+      try {
+        response = await fetch(targetUrl(upstreamUrl, request.url), {
+          method: request.method,
+          headers: forwardedHeaders(request),
+          body: ['GET', 'HEAD'].includes(request.method) ? undefined : body,
+          redirect: 'manual',
+        });
+      } catch {
+        recordProxyFailure({ env, provider: failureProvider, failureStage: 'upstream' });
+        if (!outgoing.headersSent) jsonResponse(outgoing, 502, { error: 'sando proxy upstream failure' });
+        else outgoing.destroy();
+        return;
+      }
       let responseText = '';
-      await pipeResponse(response, outgoing, metricsPath ? (chunk) => { responseText += chunk; } : undefined);
+      try {
+        await pipeResponse(response, outgoing, metricsPath ? (chunk) => { responseText += chunk; } : undefined);
+      } catch {
+        recordProxyFailure({ env, provider: failureProvider, failureStage: 'response' });
+        if (!outgoing.headersSent) jsonResponse(outgoing, 502, { error: 'sando proxy upstream failure' });
+        else outgoing.destroy();
+        return;
+      }
       if (metricsPath && recordProvider) {
         try {
           recordProxyRequest({
@@ -232,6 +278,7 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
         } catch { /* metrics are best-effort and must never affect the proxied response */ }
       }
     } catch (error) {
+      recordProxyFailure({ env, provider: failureProvider, failureStage: 'response' });
       if (!outgoing.headersSent) jsonResponse(outgoing, error.message === 'request body exceeds proxy limit' ? 413 : 502, { error: 'sando proxy upstream failure' });
       else outgoing.destroy();
     }

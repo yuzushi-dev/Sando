@@ -5,6 +5,47 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
+import {
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordActiveDay, recordFailure,
+} from './telemetry.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
+
+function todayUtc() { return new Date().toISOString().slice(0, 10); }
+
+function recordHookTelemetry({ host, env, policy, optimization }) {
+  try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
+    const statePaths = defaultTelemetryStatePaths(env);
+    const day = todayUtc();
+    recordActiveDay({ statePaths, day, pluginVersion: PLUGIN_VERSION, host });
+    incrementCounter({
+      statePaths, day, event: 'hook_summary', host,
+      mode: policy.mode === 'apply' ? 'enforce' : policy.mode === 'dry-run' ? 'dry_run' : 'observe',
+      deltas: {
+        toolCalls: 1, redactions: optimization.stats.redactions,
+        cappedOutputs: optimization.artifact ? 1 : 0,
+        bytesSaved: Math.max(0, optimization.stats.inputBytes - optimization.stats.inlineBytes),
+        inputTokensSaved: Math.max(0, optimization.stats.estimatedInputTokens - optimization.stats.estimatedInlineTokens),
+      },
+    });
+    closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });
+  } catch { /* telemetry is best-effort */ }
+}
+
+function recordHookFailure({ host, env, failureStage }) {
+  try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
+    const statePaths = defaultTelemetryStatePaths(env);
+    const day = todayUtc();
+    recordActiveDay({ statePaths, day, pluginVersion: PLUGIN_VERSION, host });
+    recordFailure({ statePaths, day, event: 'hook_failure_summary', host, failureStage });
+    closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });
+  } catch { /* telemetry is best-effort */ }
+}
 
 function hookPolicy(env) {
   const policy = env.SANDO_POLICY
@@ -45,20 +86,27 @@ export function runHookCli({ host, env = process.env } = {}) {
   try {
     policy = hookPolicy(env);
   } catch (error) {
+    recordHookFailure({ host, env, failureStage: 'policy' });
     process.stderr.write(`sando invalid policy: ${error instanceof Error ? error.message : 'invalid input'}\n`);
     process.exitCode = 2;
     return;
   }
+  let failureStage = 'input';
   try {
     const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
+      failureStage = 'redaction';
       const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
+      failureStage = 'optimization';
       const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile });
+      failureStage = 'output';
       const receipt = createReceipt({ host, event, optimization });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
+      recordHookTelemetry({ host, env, policy, optimization });
       if (host === 'claude' && policy.mode === 'apply') {
+        failureStage = 'artifact';
         const shaped = shapeForClaude({
           original: event.output,
           optimization,
@@ -77,6 +125,7 @@ export function runHookCli({ host, env = process.env } = {}) {
       }
     }
   } catch (error) {
+    recordHookFailure({ host, env, failureStage });
     if (error?.code === 'SANDO_REDACTION_CONFIG') {
       process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
       process.exitCode = 2;

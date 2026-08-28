@@ -8,7 +8,7 @@ import readline from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
-  CONSENT_VERSION, defaultTelemetryConfigPath, enableTelemetry, readTelemetryConfig, TELEMETRY_DETAILS_URL,
+  CONSENT_VERSION, defaultTelemetryConfigPath, enableTelemetry, isDoNotTrack, readTelemetryConfig, TELEMETRY_DETAILS_URL,
 } from './telemetry.mjs';
 
 const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/N] `;
@@ -19,6 +19,7 @@ export async function runPostinstall({
 } = {}) {
   try {
     if (env.SANDO_SKIP_TELEMETRY_PROMPT) return;
+    if (isDoNotTrack(env)) return;
     if (!stdin.isTTY || !stdout.isTTY) return; // CI, --ignore-scripts consumers, piped installs, etc.
 
     const configPath = defaultTelemetryConfigPath(env);

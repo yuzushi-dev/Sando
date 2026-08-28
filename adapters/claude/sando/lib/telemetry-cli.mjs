@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   defaultTelemetryConfigPath, defaultTelemetryStatePaths,
-  disableTelemetry, enableTelemetry, flushQueue, previewNextUpload, statusTelemetry, TELEMETRY_DETAILS_URL,
+  disableTelemetry, enableTelemetry, flushQueue, isDoNotTrack, previewNextUpload, statusTelemetry, TELEMETRY_DETAILS_URL,
 } from './telemetry.mjs';
 
 const USAGE = 'Usage: sando telemetry <status|enable|disable [--purge]|preview|flush>\n';
@@ -26,13 +26,26 @@ export async function runTelemetryCli({
   try {
     if (command === 'status') {
       const config = statusTelemetry(configPath);
+      if (isDoNotTrack(env)) {
+        stdout.write('telemetry: disabled by DO_NOT_TRACK\n');
+        return { ...config, enabled: false };
+      }
       stdout.write(`telemetry: ${config.enabled ? 'enabled' : 'disabled'}\n`);
       return config;
     }
     if (command === 'enable') {
+      if (isDoNotTrack(env)) {
+        stderr.write('sando telemetry: DO_NOT_TRACK is set; telemetry remains disabled\n');
+        return { ...statusTelemetry(configPath), enabled: false, exitCode: 1 };
+      }
       if (!interactive) {
         stderr.write('sando telemetry: enable requires an interactive session\n');
-        return enableTelemetry({ configPath, interactive: false });
+        return { ...statusTelemetry(configPath), exitCode: 1 };
+      }
+      const current = statusTelemetry(configPath);
+      if (current.enabled) {
+        stdout.write('telemetry already enabled.\n');
+        return current;
       }
       const answer = await prompt(CONSENT_PROMPT);
       const result = enableTelemetry({
@@ -54,6 +67,10 @@ export async function runTelemetryCli({
       return preview;
     }
     if (command === 'flush') {
+      if (isDoNotTrack(env)) {
+        stdout.write('telemetry disabled by DO_NOT_TRACK; nothing to flush.\n');
+        return { sent: 0 };
+      }
       const config = statusTelemetry(configPath);
       if (!config.enabled) {
         stdout.write('telemetry is disabled; nothing to flush.\n');
@@ -72,5 +89,6 @@ export async function runTelemetryCli({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await runTelemetryCli();
+  const result = await runTelemetryCli();
+  if (result?.exitCode) process.exitCode = result.exitCode;
 }

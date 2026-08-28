@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  ackBatch, closeDay, closeFinishedDays, flushQueue, incrementCounter, loadBatch, previewNextUpload, toOtlpLogs,
+  ackBatch, closeDay, closeFinishedDays, flushQueue, incrementCounter, loadBatch, previewNextUpload, recordActiveDay, recordFailure, toOtlpLogs,
 } from '../src/telemetry.mjs';
 import { runTelemetryFlushEntry } from '../src/telemetry-flush-entry.mjs';
+import { runSessionStart } from '../src/session-start.mjs';
 
 function tempStatePaths() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-telemetry-queue-'));
@@ -26,7 +27,7 @@ test('incrementCounter accumulates raw counts per day/host/mode and closeDay buc
   assert.deepEqual(closed[0], {
     schema_version: 1, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: '0.5',
     host: 'claude', mode: 'enforce',
-    tool_calls_bucket: '2_to_5', redactions_bucket: 'one', capped_outputs_bucket: 'one', bytes_saved_bucket: '4_to_16k',
+    tool_calls_bucket: '2_to_5', capped_outputs_bucket: 'one', bytes_saved_bucket: '4_to_16k', input_tokens_saved_bucket: 'lt_4k',
   });
 });
 
@@ -38,7 +39,15 @@ test('closeDay removes the closed day from raw counters so it is not double-coun
   assert.deepEqual(again, []);
 });
 
-test('closeFinishedDays closes old counters and launches a detached flush without provider env', () => {
+test('closeDay keeps counters when queue persistence fails', () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  fs.mkdirSync(statePaths.queue, { recursive: true });
+  assert.throws(() => closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' }));
+  assert.equal(JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).counters['2026-08-25|hook_summary|claude|enforce'].toolCalls, 1);
+});
+
+test('closeFinishedDays closes old counters and launches a detached flush with only network env', () => {
   const statePaths = tempStatePaths();
   const configPath = path.join(path.dirname(statePaths.counters), 'telemetry.json');
   incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
@@ -54,22 +63,37 @@ test('closeFinishedDays closes old counters and launches a detached flush withou
   assert.equal(invocation.args[0], process.execPath);
   assert.match(invocation.args[1][0], /telemetry-flush-entry\.mjs$/);
   assert.deepEqual(invocation.args[1].slice(1), ['--queue', statePaths.queue, '--config', configPath]);
-  assert.deepEqual(invocation.args[2].env, {});
+  assert.deepEqual(invocation.args[2].env, Object.fromEntries(
+    ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']
+      .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]),
+  ));
   assert.equal(invocation.args[2].detached, true);
   assert.deepEqual(invocation.args[2].stdio, 'ignore');
   assert.equal(invocation.unref, true);
-  assert.equal(loadBatch({ statePaths }).length, 1);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 1);
 });
 
-test('closeDay buckets proxy_summary with majority prompt_cache_hit', () => {
+test('closeDay buckets proxy_summary with provider and mode', () => {
   const statePaths = tempStatePaths();
-  incrementCounter({ statePaths, day: '2026-08-25', event: 'proxy_summary', host: 'codex', deltas: { rewritesApplied: 3, rewritesSkippedCache: 1, inputTokensSaved: 20000, cacheHitYes: 2, cacheHitNo: 1 } });
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'proxy_summary', provider: 'openai', mode: 'enforce', deltas: { rewritesApplied: 3, rewritesSkippedCache: 1, inputTokensSaved: 20000 } });
   const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   assert.deepEqual(closed[0], {
-    schema_version: 1, event: 'proxy_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'codex',
+    schema_version: 1, event: 'proxy_summary', day_utc: '2026-08-25', plugin_version: '0.5', provider: 'openai', mode: 'enforce',
     rewrites_applied_bucket: '2_to_5', rewrites_skipped_cache_bucket: 'one',
-    input_tokens_saved_bucket: '16_to_64k', prompt_cache_hit: 'yes',
+    input_tokens_saved_bucket: '16_to_64k',
   });
+});
+
+test('closeDay emits one failure row per host and failure stage without a raw count', () => {
+  const statePaths = tempStatePaths();
+  recordFailure({ statePaths, day: '2026-08-25', event: 'hook_failure_summary', host: 'claude', failureStage: 'optimization' });
+  recordFailure({ statePaths, day: '2026-08-25', event: 'hook_failure_summary', host: 'claude', failureStage: 'optimization' });
+  recordFailure({ statePaths, day: '2026-08-25', event: 'hook_failure_summary', host: 'claude', failureStage: 'input' });
+  const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  assert.deepEqual(closed, [
+    { schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude', failure_stage: 'optimization' },
+    { schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude', failure_stage: 'input' },
+  ]);
 });
 
 test('the queue file is created with mode 0600', () => {
@@ -84,16 +108,116 @@ function dayUtc(offset) {
   return new Date(Date.UTC(2026, 0, 1) + offset * 86_400_000).toISOString().slice(0, 10);
 }
 
-test('the queue keeps at most 256 rows, evicting the oldest first', () => {
+test('the queue keeps 4096 rows, evicting the oldest first', () => {
   const statePaths = tempStatePaths();
-  for (let day = 0; day < 260; day += 1) {
-    incrementCounter({ statePaths, day: dayUtc(day), event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
-    closeDay({ statePaths, day: dayUtc(day), pluginVersion: '0.5' });
-  }
-  const rows = loadBatch({ statePaths, max: 1000 });
-  assert.equal(rows.length, 256);
+  const seedRows = [];
+  for (let day = 0; day < 4099; day += 1) seedRows.push({
+    schema_version: 1, event: 'active_day', day_utc: dayUtc(day), plugin_version: '0.5', host: 'claude',
+  });
+  fs.mkdirSync(path.dirname(statePaths.queue), { recursive: true });
+  fs.writeFileSync(statePaths.queue, `${seedRows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+  incrementCounter({ statePaths, day: dayUtc(4099), event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: dayUtc(4099), pluginVersion: '0.5' });
+  const rows = loadBatch({ statePaths, max: 10000, lease: false });
+  assert.equal(rows.length, 4096);
   assert.equal(rows[0].day_utc, dayUtc(4));
-  assert.equal(rows[rows.length - 1].day_utc, dayUtc(259));
+  assert.equal(rows[rows.length - 1].day_utc, dayUtc(4099));
+});
+
+test('closeFinishedDays flushes an existing queue even without closing a new day', () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  let launches = 0;
+  closeFinishedDays({ statePaths, configPath: '/tmp/config', day: '2026-08-25', pluginVersion: '0.5', spawnImpl: () => { launches += 1; return { unref() {} }; } });
+  assert.equal(launches, 1);
+});
+
+test('session start launches a detached flush for a residual queue', () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  const configPath = path.join(path.dirname(statePaths.counters), 'telemetry.json');
+  fs.writeFileSync(configPath, JSON.stringify({ schema_version: 1, enabled: true, prompted_consent_version: 1, consent_version: 1, consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:1' }));
+  let launches = 0;
+  runSessionStart({ configPath, statePaths, stdout: { write() {} }, spawnImpl: () => { launches += 1; return { unref() {} }; } });
+  assert.equal(launches, 1);
+});
+
+test('recordActiveDay queues one marker per UTC day and host', () => {
+  const statePaths = tempStatePaths();
+  recordActiveDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5', host: 'claude' });
+  recordActiveDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5', host: 'claude' });
+  const rows = loadBatch({ statePaths, max: 100, lease: false });
+  assert.equal(rows.length, 1);
+  assert.deepEqual(toOtlpLogs(rows).resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map((a) => a.key).sort(), ['day_utc', 'event', 'host', 'plugin_version', 'schema_version']);
+  assert.equal(rows[0].event, 'active_day');
+});
+
+test('recordActiveDay stays idempotent after the queue is flushed', () => {
+  const statePaths = tempStatePaths();
+  const marker = { statePaths, day: '2026-08-28', pluginVersion: '0.1', host: 'claude' };
+  recordActiveDay(marker);
+  recordActiveDay(marker);
+  recordActiveDay(marker);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 1);
+
+  fs.writeFileSync(statePaths.queue, '');
+  recordActiveDay(marker);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
+});
+
+test('recordActiveDay queues a marker for a different day after a flush', () => {
+  const statePaths = tempStatePaths();
+  const marker = { statePaths, day: '2026-08-28', pluginVersion: '0.1', host: 'claude' };
+  recordActiveDay(marker);
+  fs.writeFileSync(statePaths.queue, '');
+
+  recordActiveDay({ ...marker, day: '2026-08-29' });
+  const rows = loadBatch({ statePaths, lease: false });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].day_utc, '2026-08-29');
+});
+
+test('loadBatch leases a batch so a second flush cannot claim it', () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  const first = loadBatch({ statePaths, lease: true });
+  const second = loadBatch({ statePaths, lease: true });
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 0);
+  ackBatch({ statePaths, count: 1, leaseId: first[0]._leaseId });
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
+});
+
+test('flushQueue persists retry backoff for retryable HTTP failures and honors Retry-After', async () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  const result = await flushQueue({
+    statePaths, fetchImpl: async () => new Response('', { status: 503, headers: { 'retry-after': '120' } }),
+    now: () => 1_000_000, random: () => 0, sleep: async () => {},
+  });
+  assert.equal(result.sent, 0);
+  const queued = JSON.parse(fs.readFileSync(statePaths.queue, 'utf8').trim().split('\n')[0]);
+  assert.equal(queued._attemptCount, 1);
+  assert.equal(queued._nextAttemptAt, 1_120_000);
+});
+
+test('flushQueue removes permanent failures without retrying and reports rejected records on 2xx', async () => {
+  const statePaths = tempStatePaths();
+  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
+  const permanent = await flushQueue({ statePaths, fetchImpl: async () => new Response('', { status: 400 }), sleep: async () => {} });
+  assert.equal(permanent.sent, 0);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
+
+  incrementCounter({ statePaths, day: '2026-08-26', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  closeDay({ statePaths, day: '2026-08-26', pluginVersion: '0.5' });
+  const accepted = await flushQueue({ statePaths, fetchImpl: async () => new Response(JSON.stringify({ partialSuccess: { rejectedLogRecords: 1 } }), { status: 200 }), sleep: async () => {} });
+  assert.equal(accepted.sent, 1);
+  assert.equal(accepted.rejectedLogRecords, 1);
 });
 
 test('loadBatch reads at most 32 rows by default', () => {
@@ -102,7 +226,7 @@ test('loadBatch reads at most 32 rows by default', () => {
     incrementCounter({ statePaths, day: dayUtc(day), event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
     closeDay({ statePaths, day: dayUtc(day), pluginVersion: '0.5' });
   }
-  const rows = loadBatch({ statePaths });
+  const rows = loadBatch({ statePaths, lease: false });
   assert.equal(rows.length, 32);
 });
 
@@ -114,6 +238,7 @@ test('toOtlpLogs maps rows to an OTLP/HTTP JSON body with service.name=sando', (
   const record = body.resourceLogs[0].scopeLogs[0].logRecords[0];
   assert.equal(record.body.stringValue, 'sando.daily_aggregate');
   assert.ok(record.attributes.some((a) => a.key === 'day_utc' && a.value.stringValue === '2026-08-25'));
+  assert.equal(record.attributes.some((a) => ['redactions_bucket', 'prompt_cache_hit'].includes(a.key)), false);
 });
 
 test('ackBatch removes only the acknowledged rows and keeps the rest', () => {
@@ -122,9 +247,9 @@ test('ackBatch removes only the acknowledged rows and keeps the rest', () => {
   closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   incrementCounter({ statePaths, day: '2026-08-26', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
   closeDay({ statePaths, day: '2026-08-26', pluginVersion: '0.5' });
-  const rows = loadBatch({ statePaths });
+  const rows = loadBatch({ statePaths, lease: false });
   ackBatch({ statePaths, count: 1 });
-  const remaining = loadBatch({ statePaths });
+  const remaining = loadBatch({ statePaths, lease: false });
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].day_utc, rows[1].day_utc);
 });
@@ -136,7 +261,7 @@ test('previewNextUpload renders the exact next OTLP body and header names withou
   const preview = previewNextUpload({ statePaths, endpoint: 'https://telemetry.example/v1/logs' });
   assert.deepEqual(Object.keys(preview.headers).sort(), ['content-type']);
   assert.equal(preview.headers['content-type'], 'application/json');
-  assert.deepEqual(preview.body, toOtlpLogs(loadBatch({ statePaths })));
+  assert.deepEqual(preview.body, toOtlpLogs(loadBatch({ statePaths, lease: false })));
   assert.equal(preview.url, 'https://telemetry.example/v1/logs');
 });
 
@@ -160,7 +285,7 @@ test('flushQueue posts the batch over HTTPS-shaped fetch and acks on success, le
     const result = await flushQueue({ statePaths, endpoint: `http://127.0.0.1:${port}/v1/logs`, timeoutMs: 3000 });
     assert.equal(result.sent, 1);
     assert.ok(received);
-    assert.equal(loadBatch({ statePaths }).length, 0);
+    assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -172,7 +297,7 @@ test('flushQueue leaves the queue intact when the upload fails', async () => {
   closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   const result = await flushQueue({ statePaths, endpoint: 'http://127.0.0.1:1/v1/logs', timeoutMs: 500 });
   assert.equal(result.sent, 0);
-  assert.equal(loadBatch({ statePaths }).length, 1);
+  assert.equal(fs.readFileSync(statePaths.queue, 'utf8').trim().length > 0, true);
 });
 
 test('flushQueue does nothing and never throws on an empty queue', async () => {
@@ -199,7 +324,7 @@ test('the detached flush entrypoint is a no-op when telemetry is disabled, with 
   const entryPath = fileURLToPath(new URL('../src/telemetry-flush-entry.mjs', import.meta.url));
   // Fully empty environment — no PATH, no HOME, no provider credentials. Only argv is read.
   execFileSync(process.execPath, [entryPath, '--queue', statePaths.queue, '--config', configPath], { env: {} });
-  assert.equal(loadBatch({ statePaths }).length, 1, 'disabled telemetry must not touch the queue');
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 1, 'disabled telemetry must not touch the queue');
 });
 
 test('the detached flush entrypoint flushes the queue in-process when telemetry is enabled', async () => {
@@ -224,5 +349,5 @@ test('the detached flush entrypoint flushes the queue in-process when telemetry 
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
-  assert.equal(loadBatch({ statePaths }).length, 0);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
 });

@@ -94,6 +94,63 @@ test('a non-interactive context cannot enable telemetry even with an explicit ye
   assert.match(h.errorOutput(), /interactive/i);
 });
 
+test('non-interactive enable leaves an existing enabled config byte-for-byte unchanged and fails', async () => {
+  const h = harness();
+  await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => 'yes',
+  });
+  const before = fs.readFileSync(h.configPath);
+  const result = await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: false,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(fs.readFileSync(h.configPath), before);
+});
+
+test('already enabled telemetry does not prompt or rewrite the config', async () => {
+  const h = harness();
+  await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => 'yes',
+  });
+  const before = fs.readFileSync(h.configPath);
+  let prompted = false;
+  const result = await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => { prompted = true; return ''; },
+  });
+  assert.equal(result.enabled, true);
+  assert.equal(prompted, false);
+  assert.match(h.output(), /already enabled/i);
+  assert.deepEqual(fs.readFileSync(h.configPath), before);
+});
+
+test('DO_NOT_TRACK prevents enable without rewriting config', async () => {
+  const h = harness();
+  let prompted = false;
+  const result = await runTelemetryCli({
+    argv: ['enable'], env: { DO_NOT_TRACK: '1' }, configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => { prompted = true; return 'yes'; },
+  });
+  assert.equal(prompted, false);
+  assert.equal(result.enabled, false);
+  assert.equal(fs.existsSync(h.configPath), false);
+  assert.match(h.errorOutput(), /DO_NOT_TRACK/);
+});
+
+test('DO_NOT_TRACK prevents flush even when config is enabled', async () => {
+  const h = harness();
+  await runTelemetryCli({ argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr, interactive: true, prompt: async () => 'yes' });
+  const result = await runTelemetryCli({
+    argv: ['flush'], env: { DO_NOT_TRACK: '1' }, configPath: h.configPath, statePaths: h.statePaths,
+    stdout: h.stdout, stderr: h.stderr,
+  });
+  assert.equal(result.sent, 0);
+  assert.match(h.output(), /DO_NOT_TRACK/);
+});
+
 test('disable --purge removes counters and queue but keeps the disabled prompt marker', async () => {
   const h = harness();
   fs.mkdirSync(path.dirname(h.statePaths.counters), { recursive: true });

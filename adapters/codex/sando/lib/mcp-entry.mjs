@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 
 import { callMcpToolAsync, MCP_TOOLS } from './mcp-tools.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
 
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
 function error(id, code, message) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }; }
@@ -13,7 +14,7 @@ async function dispatch(message, active) {
   }
   if (message.id === undefined) return null;
   if (message.method === 'initialize') return response(message.id, {
-    protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false }, experimental: { 'codex/sandbox-state-meta': {} } }, serverInfo: { name: 'sando', version: '0.1.0' },
+    protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false }, experimental: { 'codex/sandbox-state-meta': {} } }, serverInfo: { name: 'sando', version: PLUGIN_VERSION },
   });
   if (message.method === 'ping') return response(message.id, {});
   if (message.method === 'tools/list') return response(message.id, { tools: MCP_TOOLS });
