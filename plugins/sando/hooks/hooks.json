@@ -12,6 +12,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "^(Bash|exec_command|shell_command)$",

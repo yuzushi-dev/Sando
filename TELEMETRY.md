@@ -1,13 +1,19 @@
 # Sando telemetry
 
-Opt-in, off by default. Nothing is sent unless you run `telemetry-cli.mjs
-enable` (see "Controlling it" below for the exact path) and answer `yes`
-at the interactive prompt.
+Opt-in, off by default. Nothing is sent unless you explicitly answer the
+consent prompt with `y`, `yes`, `n`, or `no`, or use one of the controls below.
+Input is case-insensitive. An empty or unrecognized answer leaves telemetry off
+without recording a decline.
 
 If you installed via the Claude Code marketplace
 (`/plugin install sando@yuzushi`), a one-line reminder appears at the start
-of each session until you've made a decision. The reminder only informs you.
-It never blocks a session or prompts by itself.
+of the first session. It records that it was shown before displaying the
+reminder, so it is shown only once. The reminder only informs you. It never
+blocks a session or prompts by itself.
+
+The local consent state is explicit: `unasked`, `asked`, `enabled`, or
+`declined`. A decline is final for the first-use reminder. The state and any
+queued data stay on the local machine.
 
 If `DO_NOT_TRACK` is set to any non-empty value other than `0`, it is a
 runtime privacy override: Sando does not prompt, collect, queue, or upload
@@ -46,41 +52,49 @@ identifying field. Values are always bucketed, never a raw count or byte value.
 
 ## Where it goes
 
-The endpoint is `https://telemetry.yuzushi.party/v1/logs`. It uses a shared
-backend (OpenTelemetry Collector → Loki → Grafana) also used by the
-`session-handoff` project. Each project has its own closed schema. See
-`~/selfhosted/telemetry/docs/telemetry-privacy.md` (separate infra repo,
-shared with session-handoff) for the full data inventory,
-retention, and processor list, and
-`~/selfhosted/telemetry/docs/telemetry-canary-report.md` for the current
-release status. As of writing, the canary and independent privacy review
-remain open. The endpoint is live before those gates close. That is an
-explicit choice, not evidence that the gates are complete.
+The endpoint is `https://telemetry.yuzushi.party/v1/logs`. Data is sent over
+HTTPS to a shared backend: an OpenTelemetry Collector receives the validated
+JSON rows, Loki stores them, and Grafana is used for inspection. Sando rows
+use a closed schema separate from other projects. The collector receives only
+the application payload described here: Sando does not put transcript text,
+tool output, or identifiers into telemetry rows.
 
-Retention: 13 months, aggregate rows only.
+Server retention is 13 months for aggregate rows only. The local upload queue
+is bounded to approximately 30 days of daily rows (up to 4096 rows / 4 MiB);
+older unsent rows are evicted first during an outage.
 
-The local upload queue is bounded to approximately 30 days of daily rows (up to
-4096 rows / 4 MiB); older unsent rows are evicted first during an outage.
+The endpoint is live. This page does not claim that the canary rollout or an
+independent privacy review is complete; the independent review remains open.
 
 ## Controlling it
 
-There's no global `sando` command yet. Run `telemetry-cli.mjs` directly.
+When the SessionStart reminder is visible, reply with one exact full message:
+
+```text
+sando telemetry yes
+sando telemetry no
+```
+
+These commands are matched literally; natural-language variants and partial
+matches are ignored. `yes` enables collection and `no` declines or revokes it.
+
+There's no global shell `sando` command yet. Run `telemetry-cli.mjs` directly.
 The commands are the same either way, only the path to the script changes:
 
 **From a git checkout, or the `sandoichi` npm package:**
 
 ```sh
 node packages/sando/src/telemetry-cli.mjs status
-node packages/sando/src/telemetry-cli.mjs enable    # interactive only, asks yes/no
+node packages/sando/src/telemetry-cli.mjs enable    # interactive only, asks y/yes/n/no
 node packages/sando/src/telemetry-cli.mjs preview   # shows the exact next upload body, sends nothing
 node packages/sando/src/telemetry-cli.mjs flush
 node packages/sando/src/telemetry-cli.mjs disable --purge
 ```
 
 To disable telemetry persistently, run `disable` (optionally with `--purge` to
-remove queued local data). To disable it for a process or environment without
-changing the saved consent, set `DO_NOT_TRACK=1` (or any non-empty value other
-than `0`).
+remove queued local data), or reply `sando telemetry no` when the hook is
+installed. To disable it for a process or environment without changing the
+saved consent, set `DO_NOT_TRACK=1` (or any non-empty value other than `0`).
 
 **Installed via the Claude Code marketplace (`sando@yuzushi`):** the same
 script lives at `lib/telemetry-cli.mjs` inside the installed plugin

@@ -28,8 +28,11 @@ for (const bundle of bundles) {
       XDG_CONFIG_HOME: path.join(directory, '.config'),
     });
     assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
-    assert.match(output.hookSpecificOutput.systemMessage, /telemetry-cli\.mjs.*enable/);
-    assert.match(output.hookSpecificOutput.systemMessage, /anonymous aggregate telemetry/);
+    assert.equal(typeof output.systemMessage, 'string');
+    assert.equal(Object.hasOwn(output.hookSpecificOutput, 'systemMessage'), false);
+    assert.match(output.systemMessage, /sando telemetry yes/);
+    assert.match(output.systemMessage, /sando telemetry no/);
+    assert.match(output.systemMessage, /anonymous aggregate telemetry/);
   });
 
   test(`${path.basename(path.dirname(bundle))} Codex SessionStart stays silent after a decision`, (t) => {
@@ -38,7 +41,7 @@ for (const bundle of bundles) {
     const configDir = path.join(directory, '.config', 'sando');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'telemetry.json'), JSON.stringify({
-      schema_version: 1, enabled: false, prompted_consent_version: 1,
+      schema_version: 1, enabled: false, consent_state: 'declined', prompted_consent_version: 1,
     }));
     const output = run(path.join(bundle, 'hooks/session-start.mjs'), {
       XDG_CONFIG_HOME: path.join(directory, '.config'),

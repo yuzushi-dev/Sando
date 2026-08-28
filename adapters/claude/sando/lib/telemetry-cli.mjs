@@ -10,7 +10,7 @@ import {
 } from './telemetry.mjs';
 
 const USAGE = 'Usage: sando telemetry <status|enable|disable [--purge]|preview|flush>\n';
-const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/N] `;
+const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/yes/N/no] `;
 
 async function defaultPrompt(message) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -47,10 +47,13 @@ export async function runTelemetryCli({
         stdout.write('telemetry already enabled.\n');
         return current;
       }
+      if (current.consent_state === 'declined') {
+        stdout.write('telemetry not enabled.\n');
+        return current;
+      }
       const answer = await prompt(CONSENT_PROMPT);
       const result = enableTelemetry({
-        configPath, interactive: true,
-        answer: /^(y|yes)$/i.test((answer ?? '').trim()) ? 'yes' : answer,
+        configPath, interactive: true, answer,
       });
       stdout.write(result.enabled ? 'telemetry enabled.\n' : 'telemetry not enabled.\n');
       return result;

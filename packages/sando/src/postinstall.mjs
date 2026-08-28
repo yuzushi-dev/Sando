@@ -8,10 +8,10 @@ import readline from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
-  CONSENT_VERSION, defaultTelemetryConfigPath, enableTelemetry, isDoNotTrack, readTelemetryConfig, TELEMETRY_DETAILS_URL,
+  defaultTelemetryConfigPath, enableTelemetry, isDoNotTrack, readTelemetryConfig, TELEMETRY_DETAILS_URL,
 } from './telemetry.mjs';
 
-const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/N] `;
+const CONSENT_PROMPT = `Enable anonymous telemetry? Full details at: ${TELEMETRY_DETAILS_URL} [y/yes/N/no] `;
 
 export async function runPostinstall({
   env = process.env, stdin = process.stdin, stdout = process.stdout,
@@ -24,7 +24,7 @@ export async function runPostinstall({
 
     const configPath = defaultTelemetryConfigPath(env);
     const current = readTelemetryConfig(configPath);
-    if (current.prompted_consent_version >= CONSENT_VERSION) return; // never re-ask on reinstall/upgrade
+    if (current.consent_state !== 'unasked') return; // never re-ask on reinstall/upgrade
 
     const rl = readlineFactory();
     let answer;
