@@ -82,6 +82,21 @@ test('interactive install with an explicit yes enables telemetry and records the
   });
   assert.match(written, /telemetry enabled/);
   assert.match(prompt, /https:\/\/github\.com\/yuzushi-dev\/Sando\/blob\/main\/TELEMETRY\.md/);
+  assert.match(prompt, /\[y\/yes\/N\/no\]/);
+  assert.equal(readTelemetryConfig(configPath).enabled, true);
+  assert.equal(readTelemetryConfig(configPath).consent_state, 'enabled');
+});
+
+test('interactive install accepts the short yes answer', async () => {
+  const { xdgConfigHome, configPath } = tempConfigPath();
+  const env = { XDG_CONFIG_HOME: xdgConfigHome };
+  const rl = { question: async () => 'y', close: () => {} };
+  await runPostinstall({
+    env,
+    stdin: fakeStream({ isTTY: true }),
+    stdout: { ...fakeStream({ isTTY: true }), write: () => {} },
+    readlineFactory: () => rl,
+  });
   assert.equal(readTelemetryConfig(configPath).enabled, true);
 });
 
@@ -97,6 +112,7 @@ test('declined consent records the disabled marker, not a config write failure',
   });
   assert.equal(readTelemetryConfig(configPath).enabled, false);
   assert.equal(readTelemetryConfig(configPath).prompted_consent_version, 1);
+  assert.equal(readTelemetryConfig(configPath).consent_state, 'declined');
 });
 
 test('a second run never re-prompts once already prompted', async () => {

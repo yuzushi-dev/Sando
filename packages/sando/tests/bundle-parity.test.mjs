@@ -27,7 +27,7 @@ test('standalone bundles match canonical routing metadata and behavior', async (
 });
 
 test('generated bundle core, routing, session, statusline, and version files match canonical sources', async () => {
-  for (const file of ['core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'provider-usage.mjs', 'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs', 'version.mjs']) {
+  for (const file of ['core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'provider-usage.mjs', 'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs', 'user-prompt-submit.mjs', 'version.mjs']) {
     const expected = await fs.readFile(path.join(SOURCE, file), 'utf8');
     for (const directory of BUNDLES) assert.equal(await fs.readFile(path.join(directory, file), 'utf8'), expected);
   }

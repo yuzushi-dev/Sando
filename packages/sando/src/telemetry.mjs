@@ -105,6 +105,7 @@ export function serializeEvent(payload) {
 export const TELEMETRY_CONFIG_VERSION = 1;
 export const CONSENT_VERSION = 1;
 export const TELEMETRY_DETAILS_URL = 'https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md';
+export const CONSENT_STATES = ['unasked', 'asked', 'enabled', 'declined'];
 // Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
 // reachable from any of the owner's machines (see
 // session-handoff/deploy/telemetry/). Rate-limited at nginx (30 req/min/IP).
@@ -119,12 +120,15 @@ export function isDoNotTrack(env = process.env) {
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 function emptyTelemetryConfig() {
-  return { schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: 0 };
+  return {
+    schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: 0, consent_state: 'unasked',
+  };
 }
 
 function validateTelemetryConfig(value) {
   if (!record(value) || value.schema_version !== TELEMETRY_CONFIG_VERSION || typeof value.enabled !== 'boolean'
-    || !Number.isInteger(value.prompted_consent_version) || value.prompted_consent_version < 0) {
+    || !Number.isInteger(value.prompted_consent_version) || value.prompted_consent_version < 0
+    || !CONSENT_STATES.includes(value.consent_state)) {
     throw new Error('telemetry config is invalid');
   }
   if (value.enabled) {
@@ -150,7 +154,14 @@ export function defaultTelemetryStatePaths(env = process.env) {
 
 export function readTelemetryConfig(configPath = defaultTelemetryConfigPath()) {
   if (!fs.existsSync(configPath)) return emptyTelemetryConfig();
-  return validateTelemetryConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
+  const value = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  // Legacy files cannot distinguish an explicit no from blank input or the old
+  // y-as-no bug. Keep that ambiguous decision as asked, not as a decline.
+  const migrated = Object.hasOwn(value, 'consent_state') ? value : {
+    ...value,
+    consent_state: value.enabled ? 'enabled' : value.prompted_consent_version > 0 ? 'asked' : 'unasked',
+  };
+  return validateTelemetryConfig(migrated);
 }
 
 function writeTelemetryConfig(configPath, config) {
@@ -164,19 +175,48 @@ export function statusTelemetry(configPath = defaultTelemetryConfigPath()) {
   return readTelemetryConfig(configPath);
 }
 
-/** Only an explicit `yes` in an interactive session enables collection. */
+export function normalizeConsentAnswer(answer) {
+  if (typeof answer !== 'string') return undefined;
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === 'y' || normalized === 'yes') return 'yes';
+  if (normalized === 'n' || normalized === 'no') return 'no';
+  return undefined;
+}
+
+export function markTelemetryAsked(configPath = defaultTelemetryConfigPath()) {
+  ensureDirectory(path.dirname(configPath));
+  return withLock(`${configPath}.lock`, () => {
+    const current = readTelemetryConfig(configPath);
+    if (current.consent_state !== 'unasked') return false;
+    const next = {
+      ...current, enabled: false, prompted_consent_version: CONSENT_VERSION, consent_state: 'asked',
+    };
+    validateTelemetryConfig(next);
+    atomicWrite(configPath, next);
+    return true;
+  });
+}
+
+/** Only an explicit yes enables collection; explicit no declines, other input stays asked/off. */
 export function enableTelemetry({ configPath = defaultTelemetryConfigPath(), answer, interactive = true, now = () => new Date() } = {}) {
   if (!interactive) return { ...readTelemetryConfig(configPath), exitCode: 1 };
-  if (typeof answer !== 'string' || answer.trim().toLowerCase() !== 'yes') {
-    return writeTelemetryConfig(configPath, { schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: CONSENT_VERSION });
+  const normalized = normalizeConsentAnswer(answer);
+  if (normalized === 'yes') {
+    return writeTelemetryConfig(configPath, {
+      schema_version: TELEMETRY_CONFIG_VERSION,
+      enabled: true,
+      prompted_consent_version: CONSENT_VERSION,
+      consent_state: 'enabled',
+      consent_version: CONSENT_VERSION,
+      consented_at: now().toISOString(),
+      endpoint: TELEMETRY_ENDPOINT,
+    });
   }
   return writeTelemetryConfig(configPath, {
     schema_version: TELEMETRY_CONFIG_VERSION,
-    enabled: true,
+    enabled: false,
     prompted_consent_version: CONSENT_VERSION,
-    consent_version: CONSENT_VERSION,
-    consented_at: now().toISOString(),
-    endpoint: TELEMETRY_ENDPOINT,
+    consent_state: normalized === 'no' ? 'declined' : 'asked',
   });
 }
 
@@ -509,6 +549,7 @@ export function disableTelemetry({ configPath = defaultTelemetryConfigPath(), pu
     schema_version: TELEMETRY_CONFIG_VERSION,
     enabled: false,
     prompted_consent_version: previous.prompted_consent_version || CONSENT_VERSION,
+    consent_state: 'declined',
   });
   if (purge) {
     for (const target of [statePaths.counters, statePaths.queue]) fs.rmSync(target, { force: true });

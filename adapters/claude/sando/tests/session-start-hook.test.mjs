@@ -19,8 +19,11 @@ test('never prompted: shows a one-line, non-blocking telemetry notice', (t) => {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const output = run({ XDG_CONFIG_HOME: path.join(directory, '.config') });
   assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
-  assert.match(output.hookSpecificOutput.systemMessage, /telemetry-cli\.mjs" enable/);
-  assert.match(output.hookSpecificOutput.systemMessage, /TELEMETRY\.md/);
+  assert.equal(typeof output.systemMessage, 'string');
+  assert.equal(Object.hasOwn(output.hookSpecificOutput, 'systemMessage'), false);
+  assert.match(output.systemMessage, /sando telemetry yes/);
+  assert.match(output.systemMessage, /sando telemetry no/);
+  assert.match(output.systemMessage, /TELEMETRY\.md/);
 });
 
 test('already answered (enabled): stays silent', (t) => {
@@ -29,7 +32,7 @@ test('already answered (enabled): stays silent', (t) => {
   const configDir = path.join(directory, '.config', 'sando');
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'telemetry.json'), JSON.stringify({
-    schema_version: 1, enabled: true, prompted_consent_version: 1,
+    schema_version: 1, enabled: true, consent_state: 'enabled', prompted_consent_version: 1,
     consent_version: 1, consented_at: new Date().toISOString(), endpoint: 'https://example/v1/logs',
   }));
   const output = run({ XDG_CONFIG_HOME: path.join(directory, '.config') });
@@ -42,7 +45,7 @@ test('already answered (declined): stays silent', (t) => {
   const configDir = path.join(directory, '.config', 'sando');
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'telemetry.json'), JSON.stringify({
-    schema_version: 1, enabled: false, prompted_consent_version: 1,
+    schema_version: 1, enabled: false, consent_state: 'declined', prompted_consent_version: 1,
   }));
   const output = run({ XDG_CONFIG_HOME: path.join(directory, '.config') });
   assert.deepEqual(output, {});

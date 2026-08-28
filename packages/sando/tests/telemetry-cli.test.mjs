@@ -64,7 +64,7 @@ test('enable points to the disclosure instead of printing it inline', async () =
   assert.doesNotMatch(h.output(), /Retention:/);
 });
 
-test('declined consent (blank answer) writes the disabled marker', async () => {
+test('ambiguous consent stays off without recording a decline', async () => {
   const h = harness();
   const result = await runTelemetryCli({
     argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
@@ -73,6 +73,21 @@ test('declined consent (blank answer) writes the disabled marker', async () => {
   assert.equal(result.enabled, false);
   assert.equal(fs.existsSync(h.configPath), true);
   assert.equal(readTelemetryConfig(h.configPath).enabled, false);
+  assert.equal(readTelemetryConfig(h.configPath).consent_state, 'asked');
+});
+
+test('an explicit CLI enable can resolve an unanswered consent state', async () => {
+  const h = harness();
+  await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => 'maybe',
+  });
+  const result = await runTelemetryCli({
+    argv: ['enable'], configPath: h.configPath, stdout: h.stdout, stderr: h.stderr,
+    interactive: true, prompt: async () => 'yes',
+  });
+  assert.equal(result.enabled, true);
+  assert.equal(readTelemetryConfig(h.configPath).consent_state, 'enabled');
 });
 
 test('declined consent ("no") writes the disabled marker', async () => {
