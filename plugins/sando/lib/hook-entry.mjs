@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
+import { loadProjectRedactionProfile } from './redaction-config.mjs';
 
 function hookPolicy(env) {
   const policy = env.SANDO_POLICY
@@ -53,7 +54,8 @@ export function runHookCli({ host, env = process.env } = {}) {
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
-      const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy });
+      const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
+      const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile });
       const receipt = createReceipt({ host, event, optimization });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
       if (host === 'claude' && policy.mode === 'apply') {
@@ -64,6 +66,7 @@ export function runHookCli({ host, env = process.env } = {}) {
           toolInput: event.toolInput,
           cwd: event.cwd,
           policy,
+          redactionProfile,
         });
         if (shaped !== undefined) {
           process.stdout.write(`${JSON.stringify({ hookSpecificOutput: {
@@ -73,7 +76,12 @@ export function runHookCli({ host, env = process.env } = {}) {
         }
       }
     }
-  } catch {}
+  } catch (error) {
+    if (error?.code === 'SANDO_REDACTION_CONFIG') {
+      process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
+      process.exitCode = 2;
+    }
+  }
   process.stdout.write('{}\n');
 }
 
@@ -82,16 +90,16 @@ function materialize(optimization, cwd) {
   return optimization.inline.replace(optimization.artifact.ref, artifactPath(cwd, optimization.artifact));
 }
 
-function shapeForClaude({ original, optimization, toolName, toolInput, cwd, policy }) {
+function shapeForClaude({ original, optimization, toolName, toolInput, cwd, policy, redactionProfile }) {
   if (typeof original === 'string') return materialize(optimization, cwd);
   if (!original || typeof original !== 'object' || Array.isArray(original)
     || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')) return undefined;
-  const result = { ...original };
+  const result = policy.redact ? redactionProfile.redactStructured(original).value : { ...original };
   if (typeof original.stdout === 'string') {
-    result.stdout = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy }), cwd);
+    result.stdout = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy, redactionProfile }), cwd);
   }
   if (typeof original.stderr === 'string') {
-    result.stderr = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy }), cwd);
+    result.stderr = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy, redactionProfile }), cwd);
   }
   return result;
 }

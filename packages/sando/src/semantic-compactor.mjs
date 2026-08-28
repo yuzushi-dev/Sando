@@ -60,7 +60,9 @@ export function buildSemanticPrompt({ provider, model, toolName, text, requiredF
   ].join('\n');
 }
 
-export function validateSemanticSummary({ originalText, summary, requiredFacts = [], maxSummaryRatio = DEFAULT_POLICY.maxSummaryRatio } = {}) {
+export function validateSemanticSummary({
+  originalText, summary, requiredFacts = [], maxSummaryRatio = DEFAULT_POLICY.maxSummaryRatio, redactionProfile,
+} = {}) {
   if (typeof originalText !== 'string' || typeof summary !== 'string') {
     return { valid: false, reason: 'invalid-text' };
   }
@@ -77,7 +79,9 @@ export function validateSemanticSummary({ originalText, summary, requiredFacts =
   }
   const missing = required.find((fact) => !summary.includes(fact));
   if (missing) return { valid: false, reason: 'missing-required-fact', missing, inputTokens, outputTokens };
-  if (hasSecret(summary)) return { valid: false, reason: 'secret-detected', inputTokens, outputTokens };
+  if ((redactionProfile ? redactionProfile.hasSecret(summary) : hasSecret(summary))) {
+    return { valid: false, reason: 'secret-detected', inputTokens, outputTokens };
+  }
   return { valid: true, inputTokens, outputTokens };
 }
 
@@ -111,12 +115,15 @@ async function withTimeout(complete, request, timeoutMs) {
   }
 }
 
-export function createSemanticCompactor({ complete, cache = new Map(), policy } = {}) {
+export function createSemanticCompactor({ complete, cache = new Map(), policy, redactionProfile } = {}) {
   if (typeof complete !== 'function') throw new TypeError('semantic compactor complete callback is required');
   if (!cache || typeof cache.get !== 'function' || typeof cache.set !== 'function') {
     throw new TypeError('semantic compactor cache must implement get and set');
   }
   const options = validatePolicy(policy);
+  if (redactionProfile && (typeof redactionProfile.redact !== 'function' || typeof redactionProfile.hasSecret !== 'function')) {
+    throw new TypeError('redactionProfile is invalid');
+  }
 
   return async function compact({ provider, model, toolName, text, historical = true, isError = false, requiredFacts = [] } = {}) {
     if (typeof text !== 'string') throw new TypeError('semantic compactor text must be a string');
@@ -136,8 +143,8 @@ export function createSemanticCompactor({ complete, cache = new Map(), policy } 
     if (isError) return { ...base, status: 'skipped', reason: 'error-result' };
     if (inputTokens < options.minInputTokens) return { ...base, status: 'skipped', reason: 'below-threshold' };
 
-    const safe = redact(text);
-    const safeFacts = required.map((fact) => redact(fact).text);
+    const safe = redactionProfile ? redactionProfile.redact(text) : redact(text);
+    const safeFacts = required.map((fact) => (redactionProfile ? redactionProfile.redact(fact) : redact(fact)).text);
     const prompt = buildSemanticPrompt({ provider, model, toolName, text: safe.text, requiredFacts: safeFacts });
     const key = cacheKey({ provider, model, toolName, text: safe.text, requiredFacts: safeFacts });
     const started = Date.now();
@@ -147,6 +154,7 @@ export function createSemanticCompactor({ complete, cache = new Map(), policy } 
       const validation = validateSemanticSummary({
         originalText: text, summary: cached.summary, requiredFacts: required,
         maxSummaryRatio: options.maxSummaryRatio,
+        redactionProfile,
       });
       if (validation.valid) {
         const grossSavedTokens = inputTokens - validation.outputTokens;
@@ -191,6 +199,7 @@ export function createSemanticCompactor({ complete, cache = new Map(), policy } 
     const validation = validateSemanticSummary({
       originalText: text, summary, requiredFacts: required,
       maxSummaryRatio: options.maxSummaryRatio,
+      redactionProfile,
     });
     if (!validation.valid) return { ...base, reason: validation.reason, latencyMs: Date.now() - started };
 

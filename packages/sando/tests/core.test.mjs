@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 async function core() {
@@ -99,6 +102,33 @@ test('optimizeToolOutput preserves small output and rejects invalid policy', asy
   assert.throws(() => optimizeToolOutput({
     toolName: 'Read', output: 'ok', cwd: '/work', policy: { mode: 'unsafe' },
   }), /invalid policy/);
+});
+
+test('optimizeToolOutput loads project redaction rules and records the profile digest', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-project-redaction-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, '.sando'));
+  fs.writeFileSync(path.join(cwd, '.sando', 'redaction.json'), JSON.stringify({
+    schema: 'sando-redaction/v1',
+    rules: [{ type: 'assignment-key', key: 'TEAM_DB_URL' }],
+  }));
+
+  const { createReceipt, normalizeEvent, optimizeToolOutput } = await core();
+  const result = optimizeToolOutput({
+    toolName: 'Bash', output: `TEAM_DB_URL=postgres://fixture-secret\n${'x'.repeat(600)}`, cwd,
+    policy: { mode: 'apply', maxInlineBytes: 256, redact: true },
+  });
+
+  assert.ok(result.artifact);
+  assert.ok(!result.inline.includes('fixture-secret'));
+  assert.ok(!result.artifact.content.includes('fixture-secret'));
+  assert.equal(result.artifact.content, `TEAM_DB_URL=[REDACTED]\n${'x'.repeat(600)}`);
+  assert.match(result.redactionProfileDigest, /^sha256:[a-f0-9]{64}$/);
+  const event = normalizeEvent({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: `TEAM_DB_URL=postgres://fixture-secret\n${'x'.repeat(600)}`, cwd,
+  });
+  const receipt = createReceipt({ host: 'claude', event, optimization: result });
+  assert.equal(receipt.redactionProfileDigest, result.redactionProfileDigest);
 });
 
 test('event normalization and receipts are deterministic across host aliases', async () => {

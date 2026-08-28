@@ -6,6 +6,7 @@ import {
   createSemanticCompactor,
   validateSemanticSummary,
 } from '../src/semantic-compactor.mjs';
+import { createRedactionProfile } from '../src/redaction-profile.mjs';
 
 const longText = [
   'READ_HEAD_FACT /workspace/src/app.mjs',
@@ -92,6 +93,27 @@ test('redacts PEM and token-shaped secrets before the adapter boundary', async (
   await compact({ provider: 'openai-responses', model: 'gpt', toolName: 'Bash', text: `${longText}\n${pem}\n${token}` });
 
   assert.doesNotMatch(request.prompt, /secret-material|sk-example-secret-token-123456/);
+});
+
+test('uses project-defined redaction rules before the adapter boundary', async () => {
+  let request;
+  const compact = createSemanticCompactor({
+    redactionProfile: createRedactionProfile([{ type: 'assignment-key', key: 'TEAM_DB_URL' }]),
+    complete: async (value) => { request = value; return validResponse(); },
+    policy: { minInputTokens: 1 },
+  });
+
+  const result = await compact({
+    provider: 'openai-responses',
+    model: 'gpt',
+    toolName: 'Bash',
+    text: `${longText}\nTEAM_DB_URL=fixture-team-secret`,
+  });
+
+  assert.equal(result.status, 'candidate');
+  assert.equal(result.redactions, 1);
+  assert.doesNotMatch(request.prompt, /fixture-team-secret/);
+  assert.match(request.prompt, /TEAM_DB_URL=\[REDACTED\]/);
 });
 
 test('rejects model facts that are not grounded in the redacted tool result', async () => {

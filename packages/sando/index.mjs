@@ -5,6 +5,8 @@ export {
   normalizePolicy,
   optimizeToolOutput,
 } from './src/core.mjs';
+export { createRedactionProfile } from './src/redaction-profile.mjs';
+export { loadProjectRedactionProfile } from './src/redaction-config.mjs';
 export { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './src/context-transform.mjs';
 export {
   buildSemanticPrompt,

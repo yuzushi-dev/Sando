@@ -42,6 +42,22 @@ Then open `/plugins`, select `sando`, and install/enable it. Start a new session
 
 After installation, Sando's hooks, MCP server, bounded tool commands, artifacts, and status reporting are available through the host.
 
+## Project redaction rules
+
+Teams can add project-local detectors in `.sando/redaction.json`:
+
+```json
+{
+  "schema": "sando-redaction/v1",
+  "rules": [
+    { "type": "assignment-key", "key": "DATABASE_URL" },
+    { "type": "token-prefix", "prefix": "acme_", "minLength": 24, "maxLength": 128 }
+  ]
+}
+```
+
+Built-in detectors remain enabled. The supported declarative rules are `assignment-key` and `token-prefix`; both use the fixed `[REDACTED]` placeholder. The profile is loaded from the current project only, and its digest is recorded in receipts. Invalid profiles are reported instead of silently ignored.
+
 ## Telemetry
 
 Telemetry is off by default. The plugin shows a non-blocking reminder until you make a choice. The optional npm library asks once during an interactive install. See the [full disclosure](TELEMETRY.md).

@@ -123,6 +123,64 @@ test('Claude receipt hashes the exact structured replacement payload', (t) => {
   assert.equal(metrics.records[0].receiptDigest, receipt.digest);
 });
 
+test('Claude apply redacts secrets in preserved structured string fields', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-structured-redaction-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { output } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd,
+    tool_response: {
+      stdout: 'ok', stderr: '', interrupted: false, isImage: false,
+      extra: 'password=fixture-extra-secret',
+    },
+  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true });
+
+  const replacement = output.hookSpecificOutput.updatedToolOutput;
+  assert.equal(replacement.extra, 'password=[REDACTED]');
+  assert.doesNotMatch(JSON.stringify(replacement), /fixture-extra-secret/);
+});
+
+test('Claude applies project redaction rules to inline output and the complete artifact', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-project-redaction-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, '.sando'));
+  fs.writeFileSync(path.join(cwd, '.sando', 'redaction.json'), JSON.stringify({
+    schema: 'sando-redaction/v1',
+    rules: [{ type: 'assignment-key', key: 'TEAM_DB_URL' }],
+  }));
+
+  const { output, metrics } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd,
+    tool_response: `TEAM_DB_URL=fixture-team-secret\n${'x'.repeat(6000)}`,
+  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true });
+
+  const replacement = output.hookSpecificOutput.updatedToolOutput;
+  assert.doesNotMatch(replacement, /fixture-team-secret/);
+  assert.match(replacement, /\[sando\] artifact/);
+  const artifactReference = replacement.match(/(\.sando\/sando\/artifacts\/[^\s]+)/)?.[1];
+  assert.ok(artifactReference);
+  const artifact = fs.readFileSync(path.join(cwd, artifactReference), 'utf8');
+  assert.equal(artifact.includes('fixture-team-secret'), false);
+  assert.match(artifact, /TEAM_DB_URL=\[REDACTED\]/);
+  assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
+});
+
+test('Claude surfaces an invalid project redaction profile', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-invalid-redaction-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, '.sando'));
+  fs.writeFileSync(path.join(cwd, '.sando', 'redaction.json'), '{');
+
+  const result = spawnSync(process.execPath, [hook], {
+    input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd, tool_response: 'ok' }),
+    encoding: 'utf8',
+    env: { ...process.env, SANDO_POLICY: JSON.stringify({ mode: 'apply', redact: true }) },
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /invalid redaction config/i);
+  assert.deepEqual(JSON.parse(result.stdout), {});
+});
+
 test('fixture probe validates replacement, artifact resolution, and receipt alignment', () => {
   const probe = path.join(root, 'tests/e2e-probe.mjs');
   const result = spawnSync(process.execPath, [probe], { encoding: 'utf8' });

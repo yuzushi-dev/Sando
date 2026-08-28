@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
-import { redact } from './secret-redaction.mjs';
+import { loadProjectRedactionProfile } from './redaction-config.mjs';
 
 const DEFAULT_POLICY = Object.freeze({
   mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 65536, headBytes: undefined, tailBytes: undefined,
@@ -29,6 +29,14 @@ function textOutput(output) {
   const value = stableJson(output);
   if (value === undefined) throw new Error('output must be a string or JSON value');
   return value;
+}
+
+function resolveRedactionProfile(cwd, candidate) {
+  const profile = candidate ?? loadProjectRedactionProfile(cwd).profile;
+  if (!profile || typeof profile.redact !== 'function' || typeof profile.digest !== 'string') {
+    throw new TypeError('redactionProfile is invalid');
+  }
+  return profile;
 }
 
 function truncateUtf8(text, maxBytes) {
@@ -140,7 +148,7 @@ export function normalizePolicy(policy = {}) {
 
 export function optimizeToolOutput({
   toolName, output, cwd, policy, selector, raw, lineCount, fileBytes, prose, summarizeProse,
-  summarizeEnabled, grepScope, outputBytes, toolInput,
+  summarizeEnabled, grepScope, outputBytes, toolInput, redactionProfile,
 } = {}) {
   if (typeof toolName !== 'string' || !toolName.trim() || toolName.length > 128) throw new Error('toolName is invalid');
   if (typeof cwd !== 'string' || !cwd) throw new Error('cwd is invalid');
@@ -154,7 +162,8 @@ export function optimizeToolOutput({
     lineCount: derivedLineCount, fileBytes: derivedFileBytes, prose, summarizeProse, summarizeEnabled, grepScope,
     outputBytes: outputBytes ?? Buffer.byteLength(input),
   });
-  const redacted = normalizedPolicy.redact ? redact(input) : { text: input, count: 0 };
+  const profile = normalizedPolicy.redact ? resolveRedactionProfile(cwd, redactionProfile) : null;
+  const redacted = profile ? profile.redact(input) : { text: input, count: 0 };
   let modelText = name === 'bash' && normalizedPolicy.maxColumns >= 32
     ? collapseRepeatedLines(redacted.text)
     : redacted.text;
@@ -214,7 +223,10 @@ export function optimizeToolOutput({
     redactions: redacted.count,
     artifactTruncated: artifact?.truncated ?? false,
   };
-  const result = { inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION, stats };
+  const result = {
+    inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION,
+    redactionProfileDigest: profile?.digest ?? null, stats,
+  };
   if (artifact) result.artifact = artifact;
   return result;
 }
@@ -252,7 +264,8 @@ export function createReceipt({ host, event, optimization, replacement } = {}) {
     sessionId: event.sessionId ?? null, inputDigest: sha256(textOutput(event.output)),
     inlineDigest: sha256(textOutput(replacement === undefined ? optimization.inline : replacement)), artifactRef: optimization.artifact?.ref ?? null,
     route: optimization.route ?? 'passthrough', reason: optimization.reason ?? 'spike-default',
-    policyVersion: optimization.policyVersion ?? ROUTING_POLICY_VERSION, stats: optimization.stats,
+    policyVersion: optimization.policyVersion ?? ROUTING_POLICY_VERSION,
+    redactionProfileDigest: optimization.redactionProfileDigest ?? null, stats: optimization.stats,
   };
   return { ...body, digest: sha256(stableJson(body)) };
 }
