@@ -60,7 +60,7 @@ Complete the next Sando refinement against the external review: make every insta
 ## Critical Context
 
 - Repository: `/home/cristina/Projects/Sando`.
-- Current branch: `main`; current commit: `2460c45` (handoff commit; implementation baseline: `9c4b34d`); worktree is clean.
+- Current branch: `main`; implementation baseline: `9c4b34d`; the handoff commits follow it; worktree is clean.
 - Canonical sources are under `packages/sando/src`; generated standalone copies are under `plugins/sando/lib`, `adapters/codex/sando/lib`, and `adapters/claude/sando/lib`. Run `rtk proxy npm run sync:bundles` after canonical changes.
 - Relevant existing entrypoints: `plugins/sando/bin/sando`, `plugins/sando/cli.mjs`, `plugins/sando/mcp/server.mjs`, `plugins/sando/proxy.mjs`, `adapters/claude/sando/statusline.mjs`, `adapters/codex/sando/statusline.mjs`, `packages/sando/src/metrics-cli.mjs`.
 - Relevant existing tests: `packages/sando/tests/provider-usage.test.mjs`, `packages/sando/tests/statusline.test.mjs`, `packages/sando/tests/adaptive-control.test.mjs`, `packages/sando/tests/bundle-parity.test.mjs`, `packages/sando/tests/surfaces.test.mjs`, `benchmarks/tests/metrics.test.mjs`, `plugins/sando/tests/adaptive-routing.test.mjs`, `plugins/sando/tests/cli.test.mjs`, `plugins/sando/tests/exec.test.mjs`, and Codex exec/enforcement tests.
