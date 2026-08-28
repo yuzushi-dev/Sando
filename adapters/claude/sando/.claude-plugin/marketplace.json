@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "sando",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "source": "./",
       "description": "Reduce repeated tool-output context in Claude Code."
     }
