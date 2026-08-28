@@ -1,15 +1,27 @@
 import path from 'node:path';
 
-import { defaultTelemetryConfigPath, readTelemetryConfig, TELEMETRY_DETAILS_URL } from './telemetry.mjs';
+import {
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, isDoNotTrack, readTelemetryConfig, TELEMETRY_DETAILS_URL,
+} from './telemetry.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
 
 export function runSessionStart({
   env = process.env,
   stdout = process.stdout,
   rootEnv = 'PLUGIN_ROOT',
+  spawnImpl,
+  configPath = defaultTelemetryConfigPath(env),
+  statePaths = defaultTelemetryStatePaths(env),
 } = {}) {
   try {
-    const config = readTelemetryConfig(defaultTelemetryConfigPath(env));
-    if (config.prompted_consent_version > 0) {
+    const config = readTelemetryConfig(configPath);
+    if (config.enabled && !isDoNotTrack(env)) {
+      closeFinishedDays({
+        statePaths, configPath, day: new Date().toISOString().slice(0, 10),
+        pluginVersion: PLUGIN_VERSION, ...(spawnImpl ? { spawnImpl } : {}),
+      });
+    }
+    if (isDoNotTrack(env) || config.prompted_consent_version > 0) {
       stdout.write('{}\n');
       return;
     }

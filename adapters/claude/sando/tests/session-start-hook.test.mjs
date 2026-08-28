@@ -57,3 +57,10 @@ test('a corrupt config file never crashes the hook or blocks the session', (t) =
   const output = run({ XDG_CONFIG_HOME: path.join(directory, '.config') });
   assert.deepEqual(output, {});
 });
+
+test('DO_NOT_TRACK suppresses the first-use telemetry notice', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-session-start-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const output = run({ XDG_CONFIG_HOME: path.join(directory, '.config'), DO_NOT_TRACK: '1' });
+  assert.deepEqual(output, {});
+});

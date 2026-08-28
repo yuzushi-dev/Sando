@@ -13,34 +13,54 @@ const MAX_EVENT_BYTES = 2048;
 const COUNT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', 'gt_20'];
 const BYTE_BUCKETS = ['lt_4k', '4_to_16k', '16_to_64k', 'gte_64k'];
 const HOSTS = ['claude', 'codex'];
-const MODES = ['enforce', 'observe'];
-const YES_NO_UNKNOWN = ['yes', 'no', 'unknown'];
+const PROVIDERS = ['anthropic', 'openai', 'unknown'];
+const MODES = ['enforce', 'observe', 'dry_run'];
+export const FAILURE_STAGES = [
+  'policy', 'input', 'redaction', 'optimization', 'artifact', 'output', 'upstream', 'response',
+];
 
 const SHARED_FIELDS = {
   schema_version: (value) => value === SCHEMA_VERSION,
-  event: (value) => value === 'hook_summary' || value === 'proxy_summary',
+  event: (value) => [
+    'hook_summary', 'proxy_summary', 'active_day', 'hook_failure_summary', 'proxy_failure_summary',
+  ].includes(value),
   day_utc: (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
-  plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+$/.test(value) && value.length <= MAX_STRING_LENGTH,
-  host: (value) => HOSTS.includes(value),
+  plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
 };
 
 const HOOK_FIELDS = {
+  host: (value) => HOSTS.includes(value),
   mode: (value) => MODES.includes(value),
   tool_calls_bucket: (value) => COUNT_BUCKETS.includes(value),
-  redactions_bucket: (value) => COUNT_BUCKETS.includes(value),
   capped_outputs_bucket: (value) => COUNT_BUCKETS.includes(value),
   bytes_saved_bucket: (value) => BYTE_BUCKETS.includes(value),
+  input_tokens_saved_bucket: (value) => BYTE_BUCKETS.includes(value),
 };
 
 const PROXY_FIELDS = {
+  provider: (value) => PROVIDERS.includes(value),
+  mode: (value) => MODES.includes(value),
   rewrites_applied_bucket: (value) => COUNT_BUCKETS.includes(value),
   rewrites_skipped_cache_bucket: (value) => COUNT_BUCKETS.includes(value),
   input_tokens_saved_bucket: (value) => BYTE_BUCKETS.includes(value),
-  prompt_cache_hit: (value) => YES_NO_UNKNOWN.includes(value),
+};
+
+const ACTIVE_DAY_FIELDS = { host: (value) => HOSTS.includes(value) };
+const HOOK_FAILURE_FIELDS = {
+  host: (value) => HOSTS.includes(value),
+  failure_stage: (value) => FAILURE_STAGES.includes(value),
+};
+const PROXY_FAILURE_FIELDS = {
+  provider: (value) => PROVIDERS.includes(value),
+  failure_stage: (value) => FAILURE_STAGES.includes(value),
 };
 
 function fieldsForEvent(eventType) {
-  return eventType === 'hook_summary' ? HOOK_FIELDS : PROXY_FIELDS;
+  if (eventType === 'hook_summary') return HOOK_FIELDS;
+  if (eventType === 'proxy_summary') return PROXY_FIELDS;
+  if (eventType === 'active_day') return ACTIVE_DAY_FIELDS;
+  if (eventType === 'hook_failure_summary') return HOOK_FAILURE_FIELDS;
+  return PROXY_FAILURE_FIELDS;
 }
 
 export function countBucket(count) {
@@ -92,6 +112,10 @@ export const TELEMETRY_DETAILS_URL = 'https://github.com/yuzushi-dev/Sando/blob/
 // session-handoff/docs/telemetry-canary-report.md.
 export const TELEMETRY_ENDPOINT = 'https://telemetry.yuzushi.party/v1/logs';
 
+export function isDoNotTrack(env = process.env) {
+  return env.DO_NOT_TRACK !== undefined && env.DO_NOT_TRACK !== '' && env.DO_NOT_TRACK !== '0';
+}
+
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 function emptyTelemetryConfig() {
@@ -140,11 +164,10 @@ export function statusTelemetry(configPath = defaultTelemetryConfigPath()) {
   return readTelemetryConfig(configPath);
 }
 
-/** Only an explicit `yes` in an interactive session enables collection; anything else
- *  (blank, `no`, EOF, or a non-interactive caller) writes the disabled prompt marker so
- *  upgrades and reinstalls never re-prompt or silently opt a user in. */
+/** Only an explicit `yes` in an interactive session enables collection. */
 export function enableTelemetry({ configPath = defaultTelemetryConfigPath(), answer, interactive = true, now = () => new Date() } = {}) {
-  if (!interactive || typeof answer !== 'string' || answer.trim().toLowerCase() !== 'yes') {
+  if (!interactive) return { ...readTelemetryConfig(configPath), exitCode: 1 };
+  if (typeof answer !== 'string' || answer.trim().toLowerCase() !== 'yes') {
     return writeTelemetryConfig(configPath, { schema_version: TELEMETRY_CONFIG_VERSION, enabled: false, prompted_consent_version: CONSENT_VERSION });
   }
   return writeTelemetryConfig(configPath, {
@@ -157,14 +180,21 @@ export function enableTelemetry({ configPath = defaultTelemetryConfigPath(), ans
   });
 }
 
-const QUEUE_MAX_ROWS = 256;
-const QUEUE_MAX_BYTES = 256 * 1024;
+// 30 days of daily aggregates plus activity markers for both supported hosts,
+// with headroom for concurrent event dimensions and temporary outages.
+const QUEUE_MAX_ROWS = 4096;
+const QUEUE_MAX_BYTES = 4 * 1024 * 1024;
+const ACTIVE_DAY_RETENTION_DAYS = 30;
 const DEFAULT_BATCH_MAX = 32;
+const LEASE_MS = 5 * 60 * 1000;
+const RETRY_DELAYS_MS = [60_000, 300_000, 1_800_000, 7_200_000, 21_600_000];
+const CHILD_ENV_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'];
 
-function emptyCounters() { return { schema_version: TELEMETRY_CONFIG_VERSION, counters: {} }; }
+function emptyCounters() { return { schema_version: TELEMETRY_CONFIG_VERSION, counters: {}, active_days: {} }; }
 function readCounters(countersPath) {
   if (!fs.existsSync(countersPath)) return emptyCounters();
-  return JSON.parse(fs.readFileSync(countersPath, 'utf8'));
+  const state = JSON.parse(fs.readFileSync(countersPath, 'utf8'));
+  return { ...state, counters: state.counters ?? {}, active_days: state.active_days ?? {} };
 }
 
 function readQueueRows(queuePath) {
@@ -181,24 +211,29 @@ function writeQueueRows(queuePath, rows) {
   fs.chmodSync(queuePath, 0o600);
 }
 
-/** Enforces the bounded queue (256 rows / 256 KiB), dropping the oldest rows first —
+/** Enforces the bounded queue (4096 rows / 4 MiB), dropping the oldest rows first —
  *  a telemetry backlog must never grow without bound or block product behavior. */
 function appendQueueRows(queuePath, newRows) {
+  ensureDirectory(path.dirname(queuePath));
   withLock(`${queuePath}.lock`, () => {
-    let rows = [...readQueueRows(queuePath), ...newRows];
+    let rows = readQueueRows(queuePath);
+    const keys = new Set(rows.map((row) => queueKey(row)));
+    for (const row of newRows) {
+      if (!keys.has(queueKey(row))) { rows.push(row); keys.add(queueKey(row)); }
+    }
     if (rows.length > QUEUE_MAX_ROWS) rows = rows.slice(rows.length - QUEUE_MAX_ROWS);
     while (rows.length > 0 && Buffer.byteLength(rows.map((row) => JSON.stringify(row)).join('\n')) > QUEUE_MAX_BYTES) rows.shift();
     writeQueueRows(queuePath, rows);
   });
 }
 
-function majorityCacheHit(entry) {
-  const yes = entry.cacheHitYes ?? 0;
-  const no = entry.cacheHitNo ?? 0;
-  const unknown = entry.cacheHitUnknown ?? 0;
-  if (yes > no && yes >= unknown) return 'yes';
-  if (no > yes && no >= unknown) return 'no';
-  return 'unknown';
+function queueKey(row) {
+  return [row.event, row.day_utc, row.plugin_version, row.host ?? row.provider ?? '', row.mode ?? '', row.failureStage ?? row.failure_stage ?? ''].join('|');
+}
+
+function publicRow(row) {
+  const allowed = { ...SHARED_FIELDS, ...fieldsForEvent(row.event) };
+  return Object.fromEntries(Object.entries(row).filter(([key]) => Object.hasOwn(allowed, key)));
 }
 
 function bucketEntry(entry, pluginVersion) {
@@ -207,35 +242,83 @@ function bucketEntry(entry, pluginVersion) {
       schema_version: TELEMETRY_CONFIG_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: pluginVersion,
       host: entry.host, mode: entry.mode,
       tool_calls_bucket: countBucket(entry.toolCalls ?? 0),
-      redactions_bucket: countBucket(entry.redactions ?? 0),
       capped_outputs_bucket: countBucket(entry.cappedOutputs ?? 0),
       bytes_saved_bucket: byteBucket(entry.bytesSaved ?? 0),
+      input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
     };
   }
-  return {
+  if (entry.event === 'proxy_summary') return {
     schema_version: TELEMETRY_CONFIG_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: pluginVersion,
-    host: entry.host,
+    provider: entry.provider ?? 'unknown', mode: entry.mode ?? 'enforce',
     rewrites_applied_bucket: countBucket(entry.rewritesApplied ?? 0),
     rewrites_skipped_cache_bucket: countBucket(entry.rewritesSkippedCache ?? 0),
     input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
-    prompt_cache_hit: majorityCacheHit(entry),
+  };
+  if (entry.event === 'hook_failure_summary') return {
+    schema_version: TELEMETRY_CONFIG_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    host: entry.host, failure_stage: entry.failureStage,
+  };
+  return {
+    schema_version: TELEMETRY_CONFIG_VERSION, event: 'proxy_failure_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    provider: entry.provider, failure_stage: entry.failureStage,
   };
 }
 
 /** Accumulates raw per-day counts in memory/on disk; values are only bucketed (and thus
  *  only ever leave the machine) once `closeDay` closes a finished UTC day. */
-export function incrementCounter({ statePaths, day, event, host, mode, deltas = {} }) {
-  if (!['hook_summary', 'proxy_summary'].includes(event)) throw new Error('incrementCounter: invalid event');
-  const key = `${day}|${event}|${host}|${mode ?? ''}`;
+export function incrementCounter({ statePaths, day, event, host, provider, mode, failureStage, deltas = {} }) {
+  if (!['hook_summary', 'proxy_summary', 'hook_failure_summary', 'proxy_failure_summary'].includes(event)) {
+    throw new Error('incrementCounter: invalid event');
+  }
+  const isProxy = event.startsWith('proxy_');
+  const dimension = isProxy ? provider : host;
+  const key = event.includes('failure')
+    ? [day, event, dimension, failureStage ?? ''].join('|')
+    : [day, event, dimension, mode ?? ''].join('|');
   ensureDirectory(path.dirname(statePaths.counters));
   withLock(`${statePaths.counters}.lock`, () => {
     const state = readCounters(statePaths.counters);
-    const existing = state.counters[key] ?? { day, event, host, mode: mode ?? null };
+    const existing = state.counters[key] ?? {
+      day, event, ...(isProxy ? { provider: dimension } : { host: dimension }),
+      ...(event.endsWith('_summary') && !event.includes('failure') ? { mode: mode ?? null } : {}),
+      ...(event.includes('failure') ? { failureStage } : {}),
+    };
     for (const [field, value] of Object.entries(deltas)) {
       if (!Number.isInteger(value) || value < 0) throw new Error(`incrementCounter: invalid delta ${field}`);
       existing[field] = (existing[field] ?? 0) + value;
     }
     state.counters[key] = existing;
+    atomicWrite(statePaths.counters, state);
+  });
+}
+
+export function recordFailure({ statePaths, day, event, host, provider, failureStage }) {
+  incrementCounter({
+    statePaths, day, event, host, provider, failureStage, deltas: { count: 1 },
+  });
+}
+
+/** Queues a single non-aggregate activity marker for this UTC day and host. */
+export function recordActiveDay({ statePaths, day, pluginVersion, host }) {
+  const marker = {
+    schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: pluginVersion, host,
+  };
+  const validatedMarker = validateEvent(marker);
+  const activeDayKey = `${day}|${host}`;
+  ensureDirectory(path.dirname(statePaths.counters));
+  withLock(`${statePaths.counters}.lock`, () => {
+    const state = readCounters(statePaths.counters);
+    const activeDays = state.active_days;
+    const cutoff = Date.parse(`${day}T00:00:00Z`) - (ACTIVE_DAY_RETENTION_DAYS - 1) * 86_400_000;
+    for (const [key, recordedDay] of Object.entries(activeDays)) {
+      if (Date.parse(`${recordedDay}T00:00:00Z`) < cutoff) delete activeDays[key];
+    }
+    if (Object.hasOwn(activeDays, activeDayKey)) {
+      atomicWrite(statePaths.counters, state);
+      return;
+    }
+    appendQueueRows(statePaths.queue, [validatedMarker]);
+    activeDays[activeDayKey] = day;
     atomicWrite(statePaths.counters, state);
   });
 }
@@ -252,11 +335,11 @@ export function closeDay({ statePaths, day, pluginVersion }) {
       if (entry.day !== day) { remaining[key] = entry; continue; }
       closedRows.push(validateEvent(bucketEntry(entry, pluginVersion)));
     }
+    if (closedRows.length) appendQueueRows(statePaths.queue, closedRows);
     state.counters = remaining;
     ensureDirectory(path.dirname(statePaths.counters));
     atomicWrite(statePaths.counters, state);
   });
-  if (closedRows.length) appendQueueRows(statePaths.queue, closedRows);
   return closedRows;
 }
 
@@ -264,14 +347,16 @@ function launchDetachedFlush({ statePaths, configPath, spawnImpl }) {
   try {
     const entryPath = fileURLToPath(new URL('./telemetry-flush-entry.mjs', import.meta.url));
     const child = spawnImpl(process.execPath, [entryPath, '--queue', statePaths.queue, '--config', configPath], {
-      detached: true, env: {}, stdio: 'ignore', windowsHide: true,
+      detached: true,
+      env: Object.fromEntries(CHILD_ENV_KEYS.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]])),
+      stdio: 'ignore', windowsHide: true,
     });
     child.unref();
   } catch { /* telemetry must never affect the caller */ }
 }
 
-/** Closes every raw counter day before `day` and starts one detached uploader.
- * The child receives only local state paths and an empty environment. */
+/** Closes every raw counter day before `day` and starts one detached uploader
+ * whenever any queue row remains, including a queue from a previous session. */
 export function closeFinishedDays({
   statePaths, configPath = defaultTelemetryConfigPath(), day, pluginVersion,
   spawnImpl = spawn,
@@ -287,18 +372,44 @@ export function closeFinishedDays({
   for (const closedDay of [...days].sort()) {
     closedRows.push(...closeDay({ statePaths, day: closedDay, pluginVersion }));
   }
-  if (closedRows.length) launchDetachedFlush({ statePaths, configPath, spawnImpl });
+  if (fs.existsSync(statePaths.queue) && readQueueRows(statePaths.queue).length) {
+    launchDetachedFlush({ statePaths, configPath, spawnImpl });
+  }
   return closedRows;
 }
 
-export function loadBatch({ statePaths, max = DEFAULT_BATCH_MAX } = {}) {
-  return readQueueRows(statePaths.queue).slice(0, max);
-}
-
-export function ackBatch({ statePaths, count }) {
+function claimBatch({ statePaths, max, now = Date.now, leaseMs = LEASE_MS }) {
+  let claimed = [];
   withLock(`${statePaths.queue}.lock`, () => {
     const rows = readQueueRows(statePaths.queue);
-    writeQueueRows(statePaths.queue, rows.slice(count));
+    const timestamp = now();
+    const available = rows.filter((row) => !row._permanent && (!row._nextAttemptAt || row._nextAttemptAt <= timestamp));
+    if (!available.length) return;
+    if (available.some((row) => row._leaseUntil > timestamp)) return;
+    const leaseId = `${process.pid}-${timestamp}-${Math.random().toString(36).slice(2)}`;
+    const selected = available.slice(0, max);
+    const selectedKeys = new Set(selected.map(queueKey));
+    for (const row of rows) {
+      if (selectedKeys.has(queueKey(row))) { row._leaseId = leaseId; row._leaseUntil = timestamp + leaseMs; }
+    }
+    writeQueueRows(statePaths.queue, rows);
+    claimed = selected.map((row) => ({ ...row, _leaseId: leaseId, _leaseUntil: timestamp + leaseMs }));
+  });
+  return claimed;
+}
+
+export function loadBatch({ statePaths, max = DEFAULT_BATCH_MAX, lease = true, now = Date.now } = {}) {
+  if (lease) return claimBatch({ statePaths, max, now });
+  return readQueueRows(statePaths.queue).filter((row) => !row._permanent && (!row._nextAttemptAt || row._nextAttemptAt <= now())).slice(0, max).map(publicRow);
+}
+
+export function ackBatch({ statePaths, count, leaseId } = {}) {
+  withLock(`${statePaths.queue}.lock`, () => {
+    const rows = readQueueRows(statePaths.queue);
+    if (!leaseId) { writeQueueRows(statePaths.queue, rows.slice(count)); return; }
+    const leased = rows.filter((row) => row._leaseId === leaseId).slice(0, count);
+    const keys = new Set(leased.map(queueKey));
+    writeQueueRows(statePaths.queue, rows.filter((row) => !keys.has(queueKey(row))));
   });
 }
 
@@ -309,7 +420,7 @@ export function toOtlpLogs(rows) {
       scopeLogs: [{
         logRecords: rows.map((row) => ({
           body: { stringValue: 'sando.daily_aggregate' },
-          attributes: Object.entries(row).map(([key, value]) => ({ key, value: { stringValue: String(value) } })),
+          attributes: Object.entries(publicRow(row)).map(([key, value]) => ({ key, value: { stringValue: String(value) } })),
         })),
       }],
     }],
@@ -317,30 +428,78 @@ export function toOtlpLogs(rows) {
 }
 
 export function previewNextUpload({ statePaths, endpoint = TELEMETRY_ENDPOINT, max = DEFAULT_BATCH_MAX } = {}) {
-  const rows = loadBatch({ statePaths, max });
+  const rows = loadBatch({ statePaths, max, lease: false });
   return { url: endpoint, headers: { 'content-type': 'application/json' }, body: toOtlpLogs(rows) };
 }
 
-/** Uploads at most one batch. Every failure mode (timeout, network error, non-2xx) is
- *  swallowed and reported as `sent: 0` — telemetry must never throw into, or change the
- *  outcome of, the hook or proxy call that triggered a day close. */
-export async function flushQueue({ statePaths, endpoint = TELEMETRY_ENDPOINT, max = DEFAULT_BATCH_MAX, timeoutMs = 3000 } = {}) {
-  const rows = loadBatch({ statePaths, max });
-  if (rows.length === 0) return { sent: 0 };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(toOtlpLogs(rows)), signal: controller.signal,
-    });
-    if (!response.ok) return { sent: 0 };
-    ackBatch({ statePaths, count: rows.length });
-    return { sent: rows.length };
-  } catch {
-    return { sent: 0 };
-  } finally {
-    clearTimeout(timer);
+/** Drains eligible batches. Every failure mode is swallowed and reported without
+ * changing the outcome of the hook or proxy call that triggered the flush. */
+function retryAfterMs(response, now) {
+  const value = response.headers?.get?.('retry-after');
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : Math.max(0, timestamp - now);
+}
+
+function updateClaimedRows({ statePaths, leaseId, update }) {
+  withLock(`${statePaths.queue}.lock`, () => {
+    const rows = readQueueRows(statePaths.queue);
+    for (const row of rows) if (row._leaseId === leaseId) update(row);
+    writeQueueRows(statePaths.queue, rows);
+  });
+}
+
+function isRetryableStatus(status) { return [429, 502, 503, 504].includes(status); }
+
+export async function flushQueue({
+  statePaths, endpoint = TELEMETRY_ENDPOINT, max = DEFAULT_BATCH_MAX, timeoutMs = 3000,
+  fetchImpl = fetch, now = Date.now, random = Math.random, sleep = async () => {},
+} = {}) {
+  const result = { sent: 0, rejectedLogRecords: 0 };
+  while (true) {
+    const rows = claimBatch({ statePaths, max, now });
+    if (rows.length === 0) return result;
+    const leaseId = rows[0]._leaseId;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(toOtlpLogs(rows)), signal: controller.signal,
+      });
+      if (response.ok) {
+        let body = {};
+        try { body = await response.json(); } catch { /* empty 2xx body */ }
+        result.rejectedLogRecords += Number(body?.partialSuccess?.rejectedLogRecords || 0);
+        ackBatch({ statePaths, count: rows.length, leaseId });
+        result.sent += rows.length;
+      } else if (isRetryableStatus(response.status)) {
+        updateClaimedRows({ statePaths, leaseId, update: (row) => {
+          const attempt = (row._attemptCount ?? 0) + 1;
+          const base = RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)];
+          row._attemptCount = attempt;
+          row._nextAttemptAt = now() + Math.max(base * random(), retryAfterMs(response, now()));
+          delete row._leaseId; delete row._leaseUntil;
+        }});
+        return result;
+      } else {
+        ackBatch({ statePaths, count: rows.length, leaseId });
+      }
+    } catch {
+      updateClaimedRows({ statePaths, leaseId, update: (row) => {
+        const attempt = (row._attemptCount ?? 0) + 1;
+        const base = RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)];
+        row._attemptCount = attempt;
+        row._nextAttemptAt = now() + base * random();
+        delete row._leaseId; delete row._leaseUntil;
+      }});
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
+    await sleep(0);
   }
 }
 

@@ -28,12 +28,42 @@ test('non-interactive install (no TTY) never prompts or writes a config', async 
   assert.equal(fs.existsSync(configPath), false);
 });
 
+test('non-interactive install leaves an already decided config byte-for-byte unchanged', async () => {
+  const { xdgConfigHome, configPath } = tempConfigPath();
+  const env = { XDG_CONFIG_HOME: xdgConfigHome };
+  const rl = { question: async () => 'yes', close: () => {} };
+  await runPostinstall({
+    env,
+    stdin: fakeStream({ isTTY: true }),
+    stdout: { ...fakeStream({ isTTY: true }), write: () => {} },
+    readlineFactory: () => rl,
+  });
+  const before = fs.readFileSync(configPath);
+  await runPostinstall({
+    env,
+    stdin: fakeStream({ isTTY: false }),
+    stdout: fakeStream({ isTTY: true }),
+  });
+  assert.deepEqual(fs.readFileSync(configPath), before);
+});
+
 test('SANDO_SKIP_TELEMETRY_PROMPT short-circuits even with a real TTY', async () => {
   const { xdgConfigHome, configPath } = tempConfigPath();
   await runPostinstall({
     env: { SANDO_SKIP_TELEMETRY_PROMPT: '1', XDG_CONFIG_HOME: xdgConfigHome },
     stdin: fakeStream({ isTTY: true }),
     stdout: fakeStream({ isTTY: true }),
+  });
+  assert.equal(fs.existsSync(configPath), false);
+});
+
+test('DO_NOT_TRACK skips the postinstall prompt and does not write config', async () => {
+  const { xdgConfigHome, configPath } = tempConfigPath();
+  await runPostinstall({
+    env: { DO_NOT_TRACK: '1', XDG_CONFIG_HOME: xdgConfigHome },
+    stdin: fakeStream({ isTTY: true }),
+    stdout: fakeStream({ isTTY: true }),
+    readlineFactory: () => { throw new Error('must not prompt'); },
   });
   assert.equal(fs.existsSync(configPath), false);
 });

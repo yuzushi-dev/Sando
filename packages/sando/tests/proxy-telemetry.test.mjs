@@ -102,9 +102,72 @@ test('telemetry enabled: a rewrite increments rewritesApplied and inputTokensSav
 
   const counter = firstCounter(statePaths.counters);
   assert.equal(counter.event, 'proxy_summary');
-  assert.equal(counter.host, 'claude');
+  assert.equal(counter.provider, 'anthropic');
+  assert.equal(counter.mode, 'enforce');
   assert.equal(counter.rewritesApplied, 1);
   assert.ok(counter.inputTokensSaved > 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).active_days, {});
+});
+
+test('telemetry enabled: an OpenAI Responses request is attributed to openai', async (t) => {
+  const { env, statePaths } = tempTelemetryEnv({ enabled: true });
+  const upstream = http.createServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  t.after(async () => { await proxy.close(); await close(upstream); });
+  await fetch(`${proxy.url}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'fixture', input: [
+        { type: 'function_call', call_id: 'call-1', name: 'Read', arguments: '{"file_path":"src/app.ts"}' },
+        { type: 'function_call_output', call_id: 'call-1', output: 'file body' },
+      ],
+    }),
+  });
+  const counter = firstCounter(statePaths.counters);
+  assert.equal(counter.provider, 'openai');
+  assert.equal(counter.mode, 'enforce');
+});
+
+test('malformed proxy JSON records an unknown input failure', async (t) => {
+  const { env, statePaths } = tempTelemetryEnv({ enabled: true });
+  const upstream = http.createServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  t.after(async () => { await proxy.close(); await close(upstream); });
+  await fetch(`${proxy.url}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
+  });
+  const state = JSON.parse(fs.readFileSync(statePaths.counters, 'utf8'));
+  assert.equal(Object.values(state.counters)[0].event, 'proxy_failure_summary');
+  assert.equal(Object.values(state.counters)[0].provider, 'unknown');
+  assert.equal(Object.values(state.counters)[0].failureStage, 'input');
+});
+
+test('an upstream failure records the detected provider and upstream stage', async () => {
+  const { env, statePaths } = tempTelemetryEnv({ enabled: true });
+  const proxy = await createProviderProxy({ upstream: 'http://127.0.0.1:1', env });
+  try {
+    const response = await fetch(`${proxy.url}/v1/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(noChangeFixtureBody()),
+    });
+    assert.equal(response.status, 502);
+  } finally {
+    await proxy.close();
+  }
+  const state = JSON.parse(fs.readFileSync(statePaths.counters, 'utf8'));
+  const failure = Object.values(state.counters).find((row) => row.event === 'proxy_failure_summary');
+  assert.deepEqual(failure, {
+    day: failure.day, event: 'proxy_failure_summary', provider: 'anthropic', failureStage: 'upstream', count: 1,
+  });
 });
 
 test('a recognized request with nothing to rewrite still records a proxy_summary row with zero rewrites', async (t) => {
@@ -170,4 +233,21 @@ test('telemetry failure never affects the proxied response', async (t) => {
 test('readTelemetryConfig sanity: disabled state has enabled === false', () => {
   const { env } = tempTelemetryEnv({ enabled: false });
   assert.equal(readTelemetryConfig(path.join(env.XDG_CONFIG_HOME, 'sando', 'telemetry.json')).enabled, false);
+});
+
+test('DO_NOT_TRACK prevents proxy telemetry despite enabled config', async (t) => {
+  const { env, statePaths } = tempTelemetryEnv({ enabled: true });
+  env.DO_NOT_TRACK = 'true';
+  const upstream = http.createServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  t.after(async () => { await proxy.close(); await close(upstream); });
+  await fetch(`${proxy.url}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(rewriteFixtureBody()),
+  });
+  assert.equal(fs.existsSync(statePaths.counters), false);
 });

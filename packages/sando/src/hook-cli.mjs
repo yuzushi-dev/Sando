@@ -6,37 +6,48 @@ import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } fr
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import {
-  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, readTelemetryConfig,
+  closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordActiveDay, recordFailure,
 } from './telemetry.mjs';
-
-const PLUGIN_VERSION = '0.1';
+import { PLUGIN_VERSION } from './version.mjs';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
 
-/** Only counts (never content, paths, or IDs) — see docs/plans/2026-08-25-sando-telemetry-design.md.
- *  `enforce` covers both `apply` and `dry-run`: both walk the real rewrite path, only
- *  `observe` collects without deciding anything. */
+/** Only counts (never content, paths, or IDs). */
 function recordHookTelemetry({ host, env, policy, optimization }) {
-  const configPath = defaultTelemetryConfigPath(env);
-  let config;
-  try { config = readTelemetryConfig(configPath); } catch { return; }
-  if (!config.enabled) return;
   try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
     const statePaths = defaultTelemetryStatePaths(env);
+    recordActiveDay({ statePaths, day: todayUtc(), pluginVersion: PLUGIN_VERSION, host });
     incrementCounter({
       statePaths,
       day: todayUtc(),
       event: 'hook_summary',
       host,
-      mode: policy.mode === 'observe' ? 'observe' : 'enforce',
+      mode: policy.mode === 'apply' ? 'enforce' : policy.mode === 'dry-run' ? 'dry_run' : 'observe',
       deltas: {
         toolCalls: 1,
         redactions: optimization.stats.redactions,
         cappedOutputs: optimization.artifact ? 1 : 0,
         bytesSaved: Math.max(0, optimization.stats.inputBytes - optimization.stats.inlineBytes),
+        inputTokensSaved: Math.max(0, optimization.stats.estimatedInputTokens - optimization.stats.estimatedInlineTokens),
       },
     });
     closeFinishedDays({ statePaths, configPath, day: todayUtc(), pluginVersion: PLUGIN_VERSION });
+  } catch { /* telemetry is best-effort and must never affect hook output */ }
+}
+
+function recordHookFailure({ host, env, failureStage }) {
+  try {
+    const configPath = defaultTelemetryConfigPath(env);
+    const config = readTelemetryConfig(configPath);
+    if (!config.enabled || isDoNotTrack(env)) return;
+    const statePaths = defaultTelemetryStatePaths(env);
+    const day = todayUtc();
+    recordActiveDay({ statePaths, day, pluginVersion: PLUGIN_VERSION, host });
+    recordFailure({ statePaths, day, event: 'hook_failure_summary', host, failureStage });
+    closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });
   } catch { /* telemetry is best-effort and must never affect hook output */ }
 }
 
@@ -79,18 +90,23 @@ export function runHookCli({ host, env = process.env } = {}) {
   try {
     policy = hookPolicy(env, host);
   } catch (error) {
+    recordHookFailure({ host, env, failureStage: 'policy' });
     process.stderr.write(`sando invalid policy: ${error instanceof Error ? error.message : 'invalid input'}\n`);
     process.exitCode = 2;
     return;
   }
+  let failureStage = 'input';
   try {
     const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
+      failureStage = 'redaction';
       const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
+      failureStage = 'optimization';
       const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile });
       let shaped;
+      failureStage = 'artifact';
       if (host === 'claude' && policy.mode === 'apply') {
         shaped = shapeForClaude({
           original: event.output,
@@ -101,6 +117,7 @@ export function runHookCli({ host, env = process.env } = {}) {
           policy,
         });
       }
+      failureStage = 'output';
       const receipt = createReceipt({ host, event, optimization, replacement: shaped });
       try {
         recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt });
@@ -120,6 +137,7 @@ export function runHookCli({ host, env = process.env } = {}) {
       }
     }
   } catch (error) {
+    recordHookFailure({ host, env, failureStage });
     if (error?.code === 'SANDO_REDACTION_CONFIG') {
       process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
       process.exitCode = 2;

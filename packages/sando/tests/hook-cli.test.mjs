@@ -97,6 +97,32 @@ test('observe mode maps to the observe telemetry bucket', () => {
   assert.equal(counter.redactions, 0);
 });
 
+test('dry-run mode maps to the dry_run telemetry bucket', () => {
+  const { dir, env, configPath, countersPath } = tempEnv();
+  enableTelemetry(configPath);
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'plain output', cwd: dir,
+  });
+  execFileSync(process.execPath, [script], {
+    input, env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_MODE: 'dry-run' },
+  });
+  assert.equal(firstCounter(countersPath).mode, 'dry_run');
+});
+
+test('invalid hook input records an input failure summary without raw error data', () => {
+  const { dir, env, configPath, countersPath } = tempEnv();
+  enableTelemetry(configPath);
+  const script = runnerScript(dir);
+  execFileSync(process.execPath, [script], {
+    input: '{', env: { ...env, SANDO_TEST_HOST: 'claude' },
+  });
+  const state = JSON.parse(fs.readFileSync(countersPath, 'utf8'));
+  assert.deepEqual(Object.values(state.counters), [{
+    day: Object.values(state.counters)[0].day, event: 'hook_failure_summary', host: 'claude', failureStage: 'input', count: 1,
+  }]);
+});
+
 test('a large output that gets artifacted increments cappedOutputs', () => {
   const { dir, env, configPath, countersPath } = tempEnv();
   enableTelemetry(configPath);
@@ -111,6 +137,18 @@ test('a large output that gets artifacted increments cappedOutputs', () => {
   const counter = firstCounter(countersPath);
   assert.equal(counter.cappedOutputs, 1);
   assert.ok(counter.bytesSaved > 0);
+  assert.ok(counter.inputTokensSaved > 0);
+});
+
+test('invalid hook policy records a policy failure summary', () => {
+  const { dir, env, configPath, countersPath } = tempEnv();
+  enableTelemetry(configPath);
+  const script = runnerScript(dir);
+  assert.throws(() => execFileSync(process.execPath, [script], {
+    input: '{}', env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_POLICY: '{' }, stderr: 'ignore',
+  }));
+  const state = JSON.parse(fs.readFileSync(countersPath, 'utf8'));
+  assert.equal(Object.values(state.counters)[0].failureStage, 'policy');
 });
 
 test('telemetry failure never changes the hook exit code or stdout contract', () => {
@@ -134,5 +172,18 @@ test('a non-PostToolUse event never writes telemetry counters', () => {
   const script = runnerScript(dir);
   const input = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_response: 'x', cwd: dir });
   execFileSync(process.execPath, [script], { input, env: { ...env, SANDO_TEST_HOST: 'claude' } });
+  assert.equal(fs.existsSync(countersPath), false);
+});
+
+test('DO_NOT_TRACK prevents hook telemetry despite enabled config', () => {
+  const { dir, env, configPath, countersPath } = tempEnv();
+  enableTelemetry(configPath);
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'plain output', cwd: dir,
+  });
+  execFileSync(process.execPath, [script], {
+    input, env: { ...env, SANDO_TEST_HOST: 'claude', DO_NOT_TRACK: '1' },
+  });
   assert.equal(fs.existsSync(countersPath), false);
 });

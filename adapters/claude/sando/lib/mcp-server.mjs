@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 
 import { optimizeToolOutput } from './core.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
 
 const TOOL = {
   name: 'prepare_tool_output',
@@ -13,7 +14,7 @@ function error(id, code, message) { return { jsonrpc: '2.0', id: id ?? null, err
 function dispatch(message) {
   if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return error(message?.id, -32600, 'Invalid Request');
   if (message.id === undefined) return null;
-  if (message.method === 'initialize') return response(message.id, { protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'sando', version: '0.1.0' } });
+  if (message.method === 'initialize') return response(message.id, { protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'sando', version: PLUGIN_VERSION } });
   if (message.method === 'ping') return response(message.id, {});
   if (message.method === 'tools/list') return response(message.id, { tools: [TOOL] });
   if (message.method === 'tools/call') {
