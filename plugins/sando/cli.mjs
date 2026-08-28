@@ -5,8 +5,10 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import { materializeArtifact } from './lib/artifacts.mjs';
+import { adaptiveExperimentFromEnv, adaptiveWorkloadFromEnv, decideAdaptiveRouting } from './lib/adaptive-control.mjs';
 import { normalizePolicy, optimizeToolOutput } from './lib/core.mjs';
 import { callMcpTool } from './lib/mcp-tools.mjs';
+import { defaultProviderUsagePath, readProviderUsage } from './lib/provider-usage.mjs';
 
 const MAX_CAPTURE_BYTES = 16_777_216;
 const EXEC_TIMEOUT_MS = 120_000;
@@ -31,7 +33,32 @@ function commandArgs(args) {
   return args[0] === '--' ? args.slice(1) : args;
 }
 
-function captureChild(command, args, cwd) {
+function adaptiveOptions(env) {
+  const minValue = Number(env.SANDO_ADAPTIVE_MIN_SESSIONS ?? 3);
+  const toleranceValue = Number(env.SANDO_ADAPTIVE_TOLERANCE ?? 0.05);
+  return {
+    experimentId: adaptiveExperimentFromEnv(env),
+    workloadId: adaptiveWorkloadFromEnv(env),
+    minSessions: Number.isSafeInteger(minValue) && minValue >= 1 && minValue <= 1000 ? minValue : 3,
+    tolerance: Number.isFinite(toleranceValue) && toleranceValue >= 0 && toleranceValue <= 1 ? toleranceValue : 0.05,
+  };
+}
+
+function runAdaptive(args, env) {
+  if (args.includes('--help')) {
+    process.stdout.write('Usage: sando adaptive [--json]\n');
+    return;
+  }
+  const options = adaptiveOptions(env);
+  const decision = decideAdaptiveRouting({
+    records: readProviderUsage(defaultProviderUsagePath(env)).records,
+    host: 'codex', ...options,
+  });
+  if (args.includes('--json')) process.stdout.write(`${JSON.stringify(decision, null, 2)}\n`);
+  else process.stdout.write(`adaptive routing: ${decision.enabled ? 'enabled' : 'backoff'} (${decision.reason})\n`);
+}
+
+function captureChild(command, args, cwd, maxBytes) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env: process.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const stdout = [];
@@ -41,12 +68,14 @@ function captureChild(command, args, cwd) {
     let timedOut = false;
     const collect = (bucket, chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = Math.max(0, MAX_CAPTURE_BYTES - captured);
+      const remaining = Math.max(0, maxBytes - captured);
       if (remaining) {
         bucket.push(buffer.subarray(0, remaining));
         captured += Math.min(buffer.length, remaining);
       }
-      if (buffer.length > remaining) truncated = true;
+      if (buffer.length > remaining) {
+        truncated = true;
+      }
     };
     const terminate = (signal) => {
       try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch {}
@@ -74,14 +103,16 @@ function textOrBinary(buffer) {
 async function runExec(args, cwd, policy) {
   const command = commandArgs(args);
   if (!command.length) throw new Error('exec requires a command');
-  const result = await captureChild(command[0], command.slice(1), cwd);
+  const maxBytes = Math.min(policy.maxArtifactBytes, MAX_CAPTURE_BYTES);
+  const result = await captureChild(command[0], command.slice(1), cwd, maxBytes);
   const stdout = textOrBinary(result.stdout);
   const stderr = textOrBinary(result.stderr);
   const binary = stdout.binary || stderr.binary;
   const status = `[sando exec exit_code=${result.exitCode ?? 'null'} signal=${result.signal || 'none'} timed_out=${result.timedOut} tty=false]`;
+  const boundary = result.truncated ? `[sando exec output bounded at ${maxBytes} bytes]\n` : '';
   const output = binary
-    ? `${status}\n[binary output withheld]`
-    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${result.truncated ? `\n[sando exec output bounded at ${MAX_CAPTURE_BYTES} bytes]` : ''}`;
+    ? `${boundary}${status}\n[binary output withheld]`
+    : `${boundary}${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}`;
   const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy });
   writeResult(prepared, cwd);
   if (result.exitCode !== 0 || result.signal || result.timedOut) process.exitCode = result.exitCode || 1;
@@ -99,14 +130,15 @@ function runGrep(args, cwd, policy) {
   writeResult(callMcpTool('sando_grep', { pattern: values[0], path: values[1], cwd, policy }), cwd);
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), env = process.env) {
   const [command, ...args] = argv;
   const cwd = cwdRoot();
-  const policy = policyFromEnv();
+  const policy = policyFromEnv(env);
   if (command === 'read') runRead(args, cwd, policy);
   else if (command === 'grep') runGrep(args, cwd, policy);
   else if (command === 'exec') await runExec(args, cwd, policy);
-  else throw new Error('usage: sando {read|grep|exec} ...');
+  else if (command === 'adaptive') runAdaptive(args, env);
+  else throw new Error('usage: sando {read|grep|exec|adaptive} ...');
 }
 
 main().catch((error) => {

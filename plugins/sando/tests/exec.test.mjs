@@ -58,6 +58,19 @@ test('plugin sando_exec executes only through the Codex sandbox', async (t) => {
   assert.equal(fs.readFileSync(path.join(cwd, 'marker.txt'), 'utf8'), 'ok');
 });
 
+test('plugin sando_exec retains its cap without terminating the command', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-cap-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = await callMcpToolAsync('sando_exec', {
+    command: "head -c 100000 /dev/zero | tr '\\0' x; printf ok > after.txt",
+    policy: { maxInlineBytes: 128, maxArtifactBytes: 256 },
+  }, {}, sandboxMeta(cwd));
+
+  assert.equal(result.execution.exitCode, 0);
+  assert.equal(result.execution.outputTruncated, true);
+  assert.equal(fs.readFileSync(path.join(cwd, 'after.txt'), 'utf8'), 'ok');
+});
+
 test('plugin MCP advertises the sandbox metadata capability and sando_exec', () => {
   assert.ok(MCP_TOOLS.some((tool) => tool.name === 'sando_exec'));
   const result = spawnSync(process.execPath, [path.join(import.meta.dirname, '../mcp/server.mjs')], {
@@ -67,4 +80,23 @@ test('plugin MCP advertises the sandbox metadata capability and sando_exec', () 
   assert.equal(result.status, 0, result.stderr);
   const message = JSON.parse(result.stdout);
   assert.deepEqual(message.result.capabilities.experimental, { 'codex/sandbox-state-meta': {} });
+});
+
+test('plugin MCP keeps read-only artifact handling read-only', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-mcp-artifact-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'secret=hidden\n' + 'x'.repeat(2_000));
+  const result = spawnSync(process.execPath, [path.join(import.meta.dirname, '../mcp/server.mjs')], {
+    input: `${JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'sando_read', arguments: { path: 'fixture.txt', cwd, policy: { maxInlineBytes: 128, maxArtifactBytes: 4096 } } },
+    })}\n`,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const message = JSON.parse(result.stdout);
+  assert.equal(Object.hasOwn(message.result.structuredContent.artifact, 'content'), true);
+  assert.equal(fs.existsSync(path.join(cwd, '.sando')), false);
+  assert.match(message.result.content[0].text, /sando:/);
 });

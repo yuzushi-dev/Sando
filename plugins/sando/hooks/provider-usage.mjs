@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 
+import { adaptiveArmFromEnv, adaptiveExperimentFromEnv, adaptiveWorkloadFromEnv } from '../lib/adaptive-control.mjs';
 import { currentTmuxPanePid, defaultActiveSessionPath, recordActiveSession } from '../lib/active-session.mjs';
 import { collectProviderUsage, defaultProviderUsagePath } from '../lib/provider-usage.mjs';
 
@@ -19,7 +20,8 @@ try {
     collectProviderUsage({
       host: 'codex', transcriptPath: input.transcript_path,
       sessionId: input.session_id ?? null, turnId: input.turn_id ?? null,
-      storagePath: defaultProviderUsagePath(),
+      storagePath: defaultProviderUsagePath(), arm: adaptiveArmFromEnv(process.env),
+      experimentId: adaptiveExperimentFromEnv(process.env), workloadId: adaptiveWorkloadFromEnv(process.env),
     });
   }
 } catch {

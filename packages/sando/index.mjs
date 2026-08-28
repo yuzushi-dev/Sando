@@ -9,6 +9,16 @@ export { createRedactionProfile } from './src/redaction-profile.mjs';
 export { loadProjectRedactionProfile } from './src/redaction-config.mjs';
 export { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './src/context-transform.mjs';
 export {
+  ADAPTIVE_ARMS,
+  DEFAULT_ADAPTIVE_WEIGHTS,
+  adaptiveArmFromEnv,
+  adaptiveExperimentFromEnv,
+  adaptiveWorkloadFromEnv,
+  computeUsageCost,
+  decideAdaptiveRouting,
+  summarizeAdaptiveSessions,
+} from './src/adaptive-control.mjs';
+export {
   buildSemanticPrompt,
   createSemanticCompactor,
   SEMANTIC_SUMMARY_SCHEMA,

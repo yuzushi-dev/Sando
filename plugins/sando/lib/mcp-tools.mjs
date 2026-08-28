@@ -330,7 +330,6 @@ async function runSandboxedCommand({ state, root, workdir, command, timeoutMs, m
       captured += part.length;
     }
     if (buffer.length > remaining) truncated = true;
-    if (truncated) stop('SIGTERM');
   };
   let timedOut = false;
   let cancelled = false;

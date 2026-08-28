@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Weekly Sando savings report: local metrics + honest tool comparison.
+"""Weekly Sando measurement report.
 
 The report is written locally first, then sent through direct SMTP. n8n is
 intentionally not read or called.
@@ -11,12 +11,10 @@ import argparse
 import html
 import json
 import os
-import shutil
 import smtplib
 import ssl
-import subprocess
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -102,76 +100,7 @@ def sando_summary(state: dict, start: datetime, end: datetime) -> dict:
         "known_sessions": len(known),
         "unknown_session_events": unknown,
         "average_per_known_session": (sum(known.values()) / len(known)) if known else None,
-        "provider_saved_tokens": (
-            sum(int(r["providerReportedSavingsTokens"]) for r in records
-                if r.get("providerReportedSavingsTokens") is not None)
-            if any(r.get("providerReportedSavingsTokens") is not None for r in records) else None
-        ),
     }
-
-
-def _rtk_bin() -> str | None:
-    configured = os.environ.get("SANDO_RTK_BIN")
-    if configured:
-        return configured
-    local = Path.home() / ".local/bin/rtk"
-    return str(local) if local.exists() else shutil.which("rtk")
-
-
-def rtk_summary(week_start: date) -> dict:
-    binary = _rtk_bin()
-    if not binary:
-        return {"saved_tokens": None, "saved_pct": None, "status": "rtk non trovato"}
-    try:
-        result = subprocess.run(
-            [binary, "gain", "-w", "-f", "json"],
-            check=False, capture_output=True, text=True, timeout=20,
-        )
-        payload = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return {"saved_tokens": None, "saved_pct": None, "status": "dati RTK non disponibili"}
-    row = next((item for item in payload.get("weekly", [])
-                if item.get("week_start") == week_start.isoformat()), None)
-    if not row:
-        return {"saved_tokens": None, "saved_pct": None, "status": "nessun dato RTK per la settimana"}
-    return {
-        "saved_tokens": int(row.get("saved_tokens", 0)),
-        "saved_pct": float(row.get("savings_pct", 0)),
-        "status": "stima del ledger RTK; non sommata a Sando",
-    }
-
-
-def _claude_enabled(plugin: str, settings_path: Path) -> bool:
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    enabled = settings.get("enabledPlugins", {})
-    return any(key.startswith(f"{plugin}@") and value is True for key, value in enabled.items())
-
-
-def tool_comparison(sando: dict, start: datetime, home: Path | None = None) -> list[dict]:
-    home = home or Path.home()
-    claude_settings = home / ".claude/settings.json"
-    honey_active = (home / ".claude/.honey-active").exists() or (home / ".codex/.honey-active").exists()
-    caveman_active = _claude_enabled("caveman", claude_settings)
-    ponytail_active = _claude_enabled("ponytail", claude_settings)
-    rtk = rtk_summary(start.date())
-    return [
-        {"tool": "Sando", "saved": sando["saved_tokens"], "pct": sando["saved_pct"],
-         "status": "stima osservazionale locale", "evidence": "metrics.json"},
-        {"tool": "RTK", "saved": rtk["saved_tokens"], "pct": rtk["saved_pct"],
-         "status": rtk["status"], "evidence": "rtk gain -w"},
-        {"tool": "Honey", "saved": None, "pct": None,
-         "status": "attivo; ledger settimanale non disponibile" if honey_active else "non attivo",
-         "evidence": "nessun contatore settimanale locale"},
-        {"tool": "Caveman", "saved": None, "pct": None,
-         "status": "attivo ma senza ledger Sando" if caveman_active else "disattivato",
-         "evidence": "stato plugin Claude"},
-        {"tool": "Ponytail", "saved": None, "pct": None,
-         "status": "attivo ma senza ledger Sando" if ponytail_active else "disattivato",
-         "evidence": "stato plugin Claude"},
-    ]
 
 
 def _fmt_tokens(value: int | float | None) -> str:
@@ -196,7 +125,6 @@ def build_report(state: dict, now: datetime) -> dict:
         "end_local": end.isoformat(),
         "timezone": str(zone),
         "sando": sando,
-        "comparison": tool_comparison(sando, start),
     }
 
 
@@ -216,28 +144,28 @@ def _row(cells: list[str], header: bool = False) -> str:
 
 def render_html(report: dict, host: str) -> str:
     sando = report["sando"]
-    rows = [_row(["TOOL", "SAVED TOKENS", "RATE", "EVIDENCE / STATUS"], True)]
-    for item in report["comparison"]:
-        rows.append(_row([_esc(item["tool"]), _fmt_tokens(item["saved"]), _fmt_pct(item["pct"]),
-                          _esc(f'{item["evidence"]} · {item["status"]}')]))
+    rows = [_row(["MEASURE", "VALUE", "INTERPRETATION"], True)]
+    rows.append(_row(["Mechanical reduction", _fmt_tokens(sando["saved_tokens"]), "diagnostic only; not provider cost"]))
+    rows.append(_row(["Reduction ratio", _fmt_pct(sando["saved_pct"]), "diagnostic only; not a savings claim"]))
+    rows.append(_row(["Observed events", _fmt_tokens(sando["events"]), "PostToolUse observations"]))
     note = (
-        "Media per sessione: " + _fmt_tokens(sando["average_per_known_session"])
+        "Media meccanica per sessione: " + _fmt_tokens(sando["average_per_known_session"])
         + " (solo sessioni con sessionId; eventi senza sessionId: "
-        + _fmt_tokens(sando["unknown_session_events"]) + ")."
+        + _fmt_tokens(sando["unknown_session_events"]) + "). Il costo provider e i turni si leggono dal ledger provider/adaptive."
     )
     return f'''<!doctype html><html><head><meta charset="utf-8"><title>Sando weekly</title></head>
 <body data-skin="cyber77" style="margin:0;background:{VOID};color:{FG1};font-family:{FONT_BODY};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{BG};">
 <tr><td align="center" style="padding:30px 12px"><table role="presentation" width="680" cellpadding="0" cellspacing="0" style="max-width:680px;background:{S1};border:1px solid {LINE}">
-<tr><td style="padding:22px 24px;border-bottom:2px solid {CYAN}"><div style="font-family:{FONT_MONO};font-size:11px;letter-spacing:.2em;color:{CYAN}">PROTOCOL TOKEN-SAVINGS · {_esc(host)}</div><div style="margin-top:10px;font-family:{FONT_MONO};font-size:22px;font-weight:700;color:{FG1}">SANDO / WEEKLY REPORT</div><div style="margin-top:8px;font-family:{FONT_MONO};font-size:11px;color:{FG3}">WINDOW {_esc(report["start"])} → {_esc(report["end"])} · {_esc(report["timezone"])}</div></td></tr>
+<tr><td style="padding:22px 24px;border-bottom:2px solid {CYAN}"><div style="font-family:{FONT_MONO};font-size:11px;letter-spacing:.2em;color:{CYAN}">LOCAL MEASUREMENT · {_esc(host)}</div><div style="margin-top:10px;font-family:{FONT_MONO};font-size:22px;font-weight:700;color:{FG1}">SANDO / WEEKLY REPORT</div><div style="margin-top:8px;font-family:{FONT_MONO};font-size:11px;color:{FG3}">WINDOW {_esc(report["start"])} → {_esc(report["end"])} · {_esc(report["timezone"])}</div></td></tr>
 <tr><td style="padding:22px 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-<td style="width:33%;padding:14px;background:{CYAN_DIM};border:1px solid {CYAN}"><div style="font-family:{FONT_MONO};font-size:10px;color:{CYAN}">SANDO SAVED</div><div style="margin-top:7px;font-family:{FONT_MONO};font-size:22px;color:{FG1}">{_fmt_tokens(sando["saved_tokens"])}</div></td>
+<td style="width:33%;padding:14px;background:{CYAN_DIM};border:1px solid {CYAN}"><div style="font-family:{FONT_MONO};font-size:10px;color:{CYAN}">MECHANICAL REDUCTION</div><div style="margin-top:7px;font-family:{FONT_MONO};font-size:22px;color:{FG1}">{_fmt_tokens(sando["saved_tokens"])}</div></td>
 <td style="width:33%;padding:14px;background:{S2};border-top:1px solid {LINE};border-bottom:1px solid {LINE}"><div style="font-family:{FONT_MONO};font-size:10px;color:{FG3}">RATE</div><div style="margin-top:7px;font-family:{FONT_MONO};font-size:22px;color:{FG1}">{_fmt_pct(sando["saved_pct"])}</div></td>
 <td style="width:33%;padding:14px;background:{S2};border:1px solid {LINE}"><div style="font-family:{FONT_MONO};font-size:10px;color:{FG3}">OBSERVED EVENTS</div><div style="margin-top:7px;font-family:{FONT_MONO};font-size:22px;color:{FG1}">{_fmt_tokens(sando["events"])}</div></td>
 </tr></table></td></tr>
 <tr><td style="padding:0 24px 16px"><div style="padding:12px 14px;background:{S2};border-left:2px solid {CYAN};font-family:{FONT_MONO};font-size:11px;line-height:1.7;color:{FG2}">{_esc(note)}</div></td></tr>
-<tr><td style="padding:0 24px 24px"><div style="margin-bottom:9px;font-family:{FONT_MONO};font-size:11px;letter-spacing:.18em;color:{CYAN}">COMPARISON / LOCAL EVIDENCE</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{"".join(rows)}</table></td></tr>
-<tr><td style="padding:14px 24px;border-top:1px solid {LINE};font-family:{FONT_MONO};font-size:10px;line-height:1.6;color:{FG4}">Sando e RTK usano contatori diversi: le percentuali non sono sommabili. N/D significa che non esiste un ledger locale affidabile per quella settimana. Generated locally; direct SMTP only.</td></tr>
+<tr><td style="padding:0 24px 24px"><div style="margin-bottom:9px;font-family:{FONT_MONO};font-size:11px;letter-spacing:.18em;color:{CYAN}">MECHANICAL DIAGNOSTIC</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{"".join(rows)}</table></td></tr>
+<tr><td style="padding:14px 24px;border-top:1px solid {LINE};font-family:{FONT_MONO};font-size:10px;line-height:1.6;color:{FG4}">La riduzione meccanica non è una misura di costo. Per un confronto servono contatori provider, classi cache, turni e sessioni control/apply. Generated locally; direct SMTP only.</td></tr>
 </table></td></tr></table></body></html>'''
 
 
@@ -245,13 +173,10 @@ def render_text(report: dict) -> str:
     sando = report["sando"]
     lines = [
         f"SANDO / WEEKLY REPORT — {report['start']} → {report['end']} ({report['timezone']})",
-        f"Sando: {_fmt_tokens(sando['saved_tokens'])} saved · {_fmt_pct(sando['saved_pct'])} · {sando['events']} events",
+        f"Sando mechanical reduction: {_fmt_tokens(sando['saved_tokens'])} · {_fmt_pct(sando['saved_pct'])} · {sando['events']} events",
         f"Average known session: {_fmt_tokens(sando['average_per_known_session'])}; unknown-session events: {sando['unknown_session_events']}",
-        "",
-        "TOOL COMPARISON",
+        "Provider cost and turn comparison: see the adaptive/provider ledger.",
     ]
-    for item in report["comparison"]:
-        lines.append(f"- {item['tool']}: {_fmt_tokens(item['saved'])} · {_fmt_pct(item['pct'])} · {item['status']}")
     return "\n".join(lines) + "\n"
 
 
@@ -261,7 +186,7 @@ def _smtp_message(report: dict, text: str, html_body: str, values: dict[str, str
     if not recipient or not sender:
         raise RuntimeError("SMTP recipient/sender missing in debrief.env")
     message = EmailMessage()
-    message["Subject"] = f"[SANDO] Weekly token savings · {report['start']} → {report['end']}"
+    message["Subject"] = f"[SANDO] Weekly measurement · {report['start']} → {report['end']}"
     message["From"] = sender
     message["To"] = recipient
     message.set_content(text)

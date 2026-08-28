@@ -36,7 +36,7 @@ Implement validated numeric cost units, session cohorts, and a conservative `dec
 - Test: `plugins/sando/tests/provider-usage-hook.test.mjs`
 - Test: `adapters/codex/sando/tests/enforcement.test.mjs`
 
-Add optional arm/experiment/workload metadata, refresh transcript usage before routing, and bypass only when the adaptive controller has enough evidence that apply is worse. Keep all existing allowlists and fail-open behavior.
+Add optional arm/experiment/workload metadata, record final transcript usage at Stop, and bypass only when the adaptive controller has enough completed evidence that apply is worse or the evidence is unavailable. Keep all existing allowlists and fail-open host behavior.
 
 ### Task 4: Bundle the plugin runtime
 

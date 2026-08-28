@@ -375,15 +375,15 @@ function tokenLine(value) {
 
 export function formatMetricsReport(report) {
   const lines = [
-    `Sando savings (timezone: ${report.timezone})`,
+    `Sando mechanical measurement (timezone: ${report.timezone})`,
     `Current session: ${report.currentSession ? report.currentSession.id ?? 'unknown' : 'none'}`,
-    `Current session estimated transform savings: ${tokenLine(report.currentSession?.estimatedTransformSavingsTokens ?? 0)}`,
-    `Average estimated transform savings per session: ${tokenLine(report.averagePerSession.estimatedTransformSavingsTokens)} (${report.averagePerSession.sessionCount} sessions)`,
-    `Cumulative estimated transform savings: ${tokenLine(report.cumulative.estimatedTransformSavingsTokens)}`,
-    `Cumulative provider-reported savings: ${tokenLine(report.cumulative.providerReportedSavingsTokens)}`,
-    `Daily (${report.periods.daily.current.period}) estimated transform savings: ${tokenLine(report.periods.daily.current.estimatedTransformSavingsTokens)}`,
-    `ISO week (${report.periods.weekly.current.period}) estimated transform savings: ${tokenLine(report.periods.weekly.current.estimatedTransformSavingsTokens)}`,
-    `Monthly (${report.periods.monthly.current.period}) estimated transform savings: ${tokenLine(report.periods.monthly.current.estimatedTransformSavingsTokens)}`,
+    `Current session mechanical reduction: ${tokenLine(report.currentSession?.estimatedTransformSavingsTokens ?? 0)}`,
+    `Average mechanical reduction per session: ${tokenLine(report.averagePerSession.estimatedTransformSavingsTokens)} (${report.averagePerSession.sessionCount} sessions)`,
+    `Cumulative mechanical reduction: ${tokenLine(report.cumulative.estimatedTransformSavingsTokens)}`,
+    `Provider cost: unavailable here; use paired control/apply ledger evidence`,
+    `Daily (${report.periods.daily.current.period}) mechanical reduction: ${tokenLine(report.periods.daily.current.estimatedTransformSavingsTokens)}`,
+    `ISO week (${report.periods.weekly.current.period}) mechanical reduction: ${tokenLine(report.periods.weekly.current.estimatedTransformSavingsTokens)}`,
+    `Monthly (${report.periods.monthly.current.period}) mechanical reduction: ${tokenLine(report.periods.monthly.current.estimatedTransformSavingsTokens)}`,
   ];
   if (!report.cumulative.eventCount) lines.push('No Sando events recorded.');
   return `${lines.join('\n')}\n`;

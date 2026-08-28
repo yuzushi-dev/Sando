@@ -80,21 +80,23 @@ function compactTokens(value) {
   return `${Number((value / 1_000_000).toFixed(2))}M`;
 }
 
-// The rate is the session's own blended $/token (totalCostUsd / totalTokens),
-// so cache reads (0.1x) and cache writes (1.25x/2x) are already folded in:
-// it's the harness's real billed rate, not a reconstructed list price.
-function compactCost(tokens, effectiveRate) {
-  return `$${(tokens * effectiveRate).toFixed(2)}`;
+function compactTurns(value) {
+  return `${value} ${value === 1 ? 'turn' : 'turns'}`;
 }
 
 export function renderStatusLine({ metrics, providerUsage, totalCostUsd } = {}, _now = Date.now()) {
-  if (!metrics || !['estimate', 'provider-reported'].includes(metrics.source)
-    || !Number.isSafeInteger(metrics.savedTokens) || metrics.savedTokens <= 0) return '🥪 —';
-  const estimated = metrics.source === 'estimate';
-  const savings = `${estimated ? '~' : ''}${compactTokens(metrics.savedTokens)} token saved`;
-  const effectiveRate = Number.isFinite(totalCostUsd) && totalCostUsd > 0
-    && Number.isSafeInteger(providerUsage?.totalTokens) && providerUsage.totalTokens > 0
-    ? totalCostUsd / providerUsage.totalTokens : undefined;
-  void effectiveRate; // computed for downstream cost tracking, intentionally not shown in the status bar
-  return `🥪 ${savings}`;
+  if (!Number.isSafeInteger(providerUsage?.totalTokens) || providerUsage.totalTokens <= 0
+    || !Number.isSafeInteger(providerUsage?.turnCount) || providerUsage.turnCount <= 0) return '🥪 —';
+  const parts = [
+    `${compactTokens(providerUsage.totalTokens)} provider tokens`,
+    compactTurns(providerUsage.turnCount),
+  ];
+  if (Number.isFinite(providerUsage.weightedCostUnits) && providerUsage.weightedCostUnits >= 0) {
+    parts.push(`${compactTokens(Math.round(providerUsage.weightedCostUnits))} cost units`);
+  }
+  if (Number.isFinite(totalCostUsd) && totalCostUsd >= 0) {
+    const effectiveRate = totalCostUsd / providerUsage.totalTokens;
+    parts.push(`$${totalCostUsd.toFixed(2)}`, `$${(effectiveRate * 1_000_000).toFixed(2)}/M`);
+  }
+  return `🥪 ${parts.join(' · ')}`;
 }

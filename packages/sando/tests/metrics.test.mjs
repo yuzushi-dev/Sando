@@ -105,8 +105,8 @@ test('repeated receipts are counted once and savings aggregate by session', () =
   assert.equal(report.periods.daily.history.length, 3);
   assert.equal(report.periods.weekly.history.length, 2);
   assert.equal(report.periods.monthly.history.length, 2);
-  assert.match(formatMetricsReport(report), /estimated transform savings/);
-  assert.match(formatMetricsReport(report), /provider-reported savings/);
+  assert.match(formatMetricsReport(report), /mechanical reduction/);
+  assert.doesNotMatch(formatMetricsReport(report), /provider-reported savings/);
 });
 
 test('distinct event ids are recorded despite identical receipt digests', () => {

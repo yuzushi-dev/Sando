@@ -10,6 +10,7 @@ test('Sando surfaces use the renamed package and plugin paths', () => {
   const packageJson = json('packages/sando/package.json');
   assert.equal(packageJson.name, 'sandoichi');
   assert.ok(fs.existsSync(path.join(root, 'plugins/sando/.codex-plugin/plugin.json')));
+  assert.ok(fs.existsSync(path.join(root, 'plugins/sando/README.md')));
   assert.ok(fs.existsSync(path.join(root, 'adapters/claude/sando/.claude-plugin/plugin.json')));
   assert.ok(fs.existsSync(path.join(root, 'adapters/codex/sando/.mcp.json')));
 });

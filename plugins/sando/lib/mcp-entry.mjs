@@ -1,10 +1,29 @@
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
+import { persistArtifact } from './artifacts.mjs';
 import { callMcpToolAsync, MCP_TOOLS } from './mcp-tools.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
 
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
 function error(id, code, message) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }; }
+
+function artifactCwd(name, args, meta) {
+  if (name !== 'sando_exec') return args?.cwd;
+  const value = meta?.['codex/sandbox-state-meta']?.sandboxCwd;
+  if (typeof value !== 'string' || !value) return undefined;
+  try { return value.startsWith('file:') ? fileURLToPath(value) : value; } catch { return undefined; }
+}
+
+function publicResult(name, args, meta, result) {
+  if (name !== 'sando_exec' || !result.artifact) return result;
+  const cwd = artifactCwd(name, args, meta);
+  if (!cwd) throw new Error('artifact cwd is unavailable');
+  const ref = persistArtifact(cwd, result.artifact);
+  const inline = result.inline.replace(result.artifact.ref, ref);
+  const { content: _content, ...artifact } = result.artifact;
+  return { ...result, inline, artifact };
+}
 
 async function dispatch(message, active) {
   if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return error(message?.id, -32600, 'Invalid Request');
@@ -24,7 +43,8 @@ async function dispatch(message, active) {
     active.set(String(message.id), controller);
     try {
       const result = await callMcpToolAsync(message.params.name, message.params.arguments, process.env, message.params?._meta, controller.signal);
-      return response(message.id, { content: [{ type: 'text', text: result.inline }], structuredContent: result, isError: false });
+      const exposed = publicResult(message.params.name, message.params.arguments, message.params?._meta, result);
+      return response(message.id, { content: [{ type: 'text', text: exposed.inline }], structuredContent: exposed, isError: false });
     } catch (cause) {
       return response(message.id, { content: [{ type: 'text', text: cause instanceof Error ? cause.message : 'invalid tool input' }], isError: true });
     } finally { active.delete(String(message.id)); }
