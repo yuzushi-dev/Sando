@@ -1,6 +1,6 @@
 {
   "name": "sandoichi",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Reduce repeated tool-output context in Claude Code and Codex.",
   "license": "MIT",
   "author": "yuzushi",
