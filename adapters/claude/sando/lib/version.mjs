@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const VERSION_PATTERN = /^\d+\.\d+(?:\.\d+)?$/;
-const STANDALONE_VERSION = '0.2.0';
+const STANDALONE_VERSION = '0.3.0';
 const METADATA_FILES = ['package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'];
 
 function findMetadataFile() {
