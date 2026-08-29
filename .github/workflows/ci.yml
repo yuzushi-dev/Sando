@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify Sando
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.22.0'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Check JavaScript
+        run: npm run check
+
+      - name: Check Python report
+        run: python -m unittest scripts/test_weekly_report.py
+
+      - name: Check public tree
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files 'handoffs/**')" ]; then
+            echo "::error::Internal handoffs must not be tracked in the public repository."
+            exit 1
+          fi
+
+      - name: Check npm package contents
+        working-directory: packages/sando
+        run: npm pack --dry-run
