@@ -38,6 +38,23 @@ jobs:
           curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_RELEASE=0.151.0 CODEX_NON_INTERACTIVE=1 sh
           test "$(codex --version)" = "codex-cli 0.151.0"
 
+      - name: Install Bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+
+      - name: Allow Bubblewrap user namespaces
+        run: |
+          if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sudo sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+      - name: Check Bubblewrap sandbox
+        run: bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc -- true
+
       - name: Run test suite
         run: npm test
 
