@@ -8,6 +8,9 @@ import test from 'node:test';
 
 import { callMcpToolAsync, MCP_TOOLS } from '../lib/mcp-tools.mjs';
 
+const CODEX_HOST_AVAILABLE = spawnSync('which', ['codex']).status === 0;
+const CODEX_HOST_SKIP = CODEX_HOST_AVAILABLE ? false : 'requires the Codex host binary';
+
 // `codex` dispatches to its Linux sandbox helper surface when invoked via a
 // symlink named `codex-linux-sandbox` (argv0-based dispatch) — there is no
 // separately installed binary to `which`, so we make our own shim.
@@ -46,7 +49,7 @@ function sandboxMeta(cwd) {
   } };
 }
 
-test('plugin sando_exec executes only through the Codex sandbox', async (t) => {
+test('plugin sando_exec executes only through the Codex sandbox', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const result = await callMcpToolAsync('sando_exec', {
@@ -58,7 +61,7 @@ test('plugin sando_exec executes only through the Codex sandbox', async (t) => {
   assert.equal(fs.readFileSync(path.join(cwd, 'marker.txt'), 'utf8'), 'ok');
 });
 
-test('plugin sando_exec retains its cap without terminating the command', async (t) => {
+test('plugin sando_exec retains its cap without terminating the command', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-cap-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const result = await callMcpToolAsync('sando_exec', {
@@ -71,7 +74,7 @@ test('plugin sando_exec retains its cap without terminating the command', async 
   assert.equal(fs.readFileSync(path.join(cwd, 'after.txt'), 'utf8'), 'ok');
 });
 
-test('plugin sando_exec keeps stderr visible when stdout reaches its cap', async (t) => {
+test('plugin sando_exec keeps stderr visible when stdout reaches its cap', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-stderr-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const result = await callMcpToolAsync('sando_exec', {
@@ -84,7 +87,7 @@ test('plugin sando_exec keeps stderr visible when stdout reaches its cap', async
   assert.equal(result.execution.outputTruncated, true);
 });
 
-test('plugin sando_exec preserves a valid UTF-8 prefix when the cap cuts a multibyte character', async (t) => {
+test('plugin sando_exec preserves a valid UTF-8 prefix when the cap cuts a multibyte character', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-utf8-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const result = await callMcpToolAsync('sando_exec', {

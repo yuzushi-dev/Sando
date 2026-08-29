@@ -30,10 +30,11 @@ test('bundled capability probes report the same truthful boundary', () => {
     const result = spawnSync(process.execPath, [fileURLToPath(new URL(file, import.meta.url))], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const probe = JSON.parse(result.stdout);
+    const hooksAvailable = probe.preToolUse.available;
     assert.equal(probe.preModelToolOutputReplacement, false);
     assert.equal(probe.providerSavings, false);
-    assert.equal(probe.status, 'partial');
-    assert.deepEqual(probe.cliRouting, { available: true, routes: ['literal-read', 'literal-grep'], transparent: true });
+    assert.equal(probe.status, hooksAvailable ? 'partial' : 'unavailable');
+    assert.deepEqual(probe.cliRouting, { available: hooksAvailable, routes: ['literal-read', 'literal-grep'], transparent: hooksAvailable });
     assert.deepEqual(probe.wrapperMcpTools, { Read: 'impossible', Grep: 'impossible', Bash: 'impossible' });
   }
 });

@@ -9,6 +9,9 @@ import test from 'node:test';
 import { callMcpTool, callMcpToolAsync, MCP_TOOLS, resolveCodexCommand } from '../lib/mcp-tools.mjs';
 import { readCoverage } from '../lib/coverage.mjs';
 
+const CODEX_HOST_AVAILABLE = spawnSync('which', ['codex']).status === 0;
+const CODEX_HOST_SKIP = CODEX_HOST_AVAILABLE ? false : 'requires the Codex host binary';
+
 // `codex` dispatches to its Linux sandbox helper surface when invoked via a
 // symlink named `codex-linux-sandbox` (argv0-based dispatch) — there is no
 // separately installed binary to `which`, so we make our own shim.
@@ -82,7 +85,7 @@ test('sando_exec fails closed without Codex sandbox metadata', (t) => {
   assert.equal(readCoverage(coveragePath).counts.bypassed, 1);
 });
 
-test('sando_exec runs inside the supplied Codex sandbox and redacts output', async (t) => {
+test('sando_exec runs inside the supplied Codex sandbox and redacts output', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-run-'));
   const nested = path.join(cwd, 'nested');
   fs.mkdirSync(nested);
@@ -105,7 +108,7 @@ test('sando_exec runs inside the supplied Codex sandbox and redacts output', asy
   assert.equal(readCoverage(coveragePath).counts.transformed, 1);
 });
 
-test('sando_exec bounds text into an artifact', async (t) => {
+test('sando_exec bounds text into an artifact', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-artifact-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const result = await callMcpToolAsync('sando_exec', {
@@ -118,7 +121,7 @@ test('sando_exec bounds text into an artifact', async (t) => {
   assert.equal(result.inline.length <= 128, true);
 });
 
-test('sando_exec reports timeout, cancellation, binary output, and nonzero status', async (t) => {
+test('sando_exec reports timeout, cancellation, binary output, and nonzero status', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-control-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const meta = sandboxMeta(cwd);
@@ -139,7 +142,7 @@ test('sando_exec reports timeout, cancellation, binary output, and nonzero statu
   assert.match(binary.inline, /binary output withheld/);
 });
 
-test('sando_exec rejects interactive and unsafe workdirs before execution', async (t) => {
+test('sando_exec rejects interactive and unsafe workdirs before execution', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-invalid-'));
   const coveragePath = path.join(cwd, 'coverage.json');
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
@@ -150,7 +153,7 @@ test('sando_exec rejects interactive and unsafe workdirs before execution', asyn
   assert.equal(readCoverage(coveragePath).counts.bypassed, 2);
 });
 
-test('sando_exec rejects an unsandboxed Codex state', async (t) => {
+test('sando_exec rejects an unsandboxed Codex state', { skip: CODEX_HOST_SKIP }, async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-unsafe-state-'));
   const coveragePath = path.join(cwd, 'coverage.json');
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
