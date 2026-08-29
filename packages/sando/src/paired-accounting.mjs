@@ -32,6 +32,12 @@ function add(left, right, message = 'accounting aggregate overflow') {
   return total;
 }
 
+function addCostUnits(left, right) {
+  const total = left + right;
+  if (!Number.isFinite(total)) throw new RangeError('accounting cost overflow');
+  return total;
+}
+
 function armValue(env) {
   return env.SANDO_EXPERIMENT_ARM ?? env.SANDO_ADAPTIVE_ARM ?? 'apply';
 }
@@ -59,20 +65,23 @@ export function computeWeightedUsage(record, pricing) {
   const outputTokens = record.outputTokens;
   const reasoningOutputTokens = record.reasoningOutputTokens ?? 0;
   if (![inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens].every(counter)
-    || cachedInputTokens + cacheWriteInputTokens > inputTokens) throw new TypeError('usage counters are invalid');
+    || cachedInputTokens + cacheWriteInputTokens > inputTokens
+    || reasoningOutputTokens > outputTokens) throw new TypeError('usage counters are invalid');
+  const nonReasoningOutputTokens = outputTokens - reasoningOutputTokens;
   const parts = {
     inputTokens,
     freshInputTokens: inputTokens - cachedInputTokens - cacheWriteInputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
     outputTokens,
+    nonReasoningOutputTokens,
     reasoningOutputTokens,
   };
   const prices = weights(pricing);
   const costUnits = parts.freshInputTokens * prices.freshInput
     + parts.cachedInputTokens * prices.cacheRead
     + parts.cacheWriteInputTokens * prices.cacheWrite
-    + parts.outputTokens * prices.output
+    + parts.nonReasoningOutputTokens * prices.output
     + parts.reasoningOutputTokens * prices.reasoningOutput;
   if (!Number.isFinite(costUnits)) throw new RangeError('accounting cost overflow');
   return { ...parts, costUnits };
@@ -116,7 +125,8 @@ export function summarizePairedSessions(records, { host, experimentId, workloadI
       });
       return;
     }
-    for (const field of Object.keys(fields)) current[field] = add(current[field], fields[field]);
+    for (const field of Object.keys(fields)) current[field] = field === 'costUnits'
+      ? addCostUnits(current[field], fields[field]) : add(current[field], fields[field]);
     current.turnIds.add(text(item.turnId) ? item.turnId : `record:${index}`);
     for (const field of ['totalToolCalls', 'nativeToolCalls', 'sandoMcpCalls', 'mechanicalContextTrimmedBytes']) {
       if (current[field] !== null) {

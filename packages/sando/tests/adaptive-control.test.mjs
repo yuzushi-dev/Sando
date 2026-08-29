@@ -27,9 +27,19 @@ test('computes cache-aware weighted usage without calling it dollars', () => {
     cachedInputTokens: 40,
     cacheWriteInputTokens: 20,
     outputTokens: 10,
+    nonReasoningOutputTokens: 10,
     reasoningOutputTokens: 0,
     costUnits: 79,
   });
+});
+
+test('keeps reasoning tokens disjoint from visible output in weighted units', () => {
+  const result = computeWeightedUsage(usage({
+    sessionId: 's1', arm: 'apply', turnId: 't1', inputTokens: 10, outputTokens: 4, reasoningOutputTokens: 2,
+  }));
+
+  assert.equal(result.nonReasoningOutputTokens, 2);
+  assert.equal(result.costUnits, 14);
 });
 
 test('rejects cache counters that exceed provider input', () => {
@@ -62,6 +72,15 @@ test('keeps interaction counters unavailable when a host did not measure them', 
   assert.equal(session.nativeToolCalls, null);
   assert.equal(session.sandoMcpCalls, null);
   assert.equal(session.mechanicalContextTrimmedBytes, null);
+});
+
+test('aggregates fractional weighted units across multiple turns', () => {
+  const [session] = summarizePairedSessions([
+    usage({ sessionId: 's1', arm: 'apply', turnId: 't1', inputTokens: 10, cachedInputTokens: 1 }),
+    usage({ sessionId: 's1', arm: 'apply', turnId: 't2', inputTokens: 10, cachedInputTokens: 1 }),
+  ], { host: 'codex', experimentId: 'fixture' });
+
+  assert.equal(session.costUnits, 18.2);
 });
 
 test('applies explicit provider-relative weights to session summaries', () => {

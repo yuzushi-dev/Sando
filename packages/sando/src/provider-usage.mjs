@@ -10,6 +10,7 @@ const VERSION = 1;
 const LOCK_WAIT_MS = 10;
 const LOCK_ATTEMPTS = 250;
 const STALE_LOCK_MS = 30_000;
+const COST_SCOPES = new Set(['session', 'event']);
 
 export const PROVIDER_USAGE_SCHEMA = SCHEMA;
 export const PROVIDER_USAGE_VERSION = VERSION;
@@ -69,7 +70,8 @@ function reportedCost(value) {
 
 function attachReportedCost(records, totalCostUsd) {
   if (!records.length || !usd(totalCostUsd)) return records;
-  return records.map((item, index) => index === records.length - 1 ? { ...item, totalCostUsd } : item);
+  return records.map((item, index) => index === records.length - 1
+    ? { ...item, totalCostUsd, costScope: 'session' } : item);
 }
 
 function usageRecord({ host, source, sourceKey, sessionId, turnId, at, inputTokens, cachedInputTokens = 0,
@@ -78,7 +80,7 @@ function usageRecord({ host, source, sourceKey, sessionId, turnId, at, inputToke
     || (sessionId !== null && !text(sessionId)) || (turnId !== null && !text(turnId))
     || !text(at) || !counter(inputTokens) || !counter(cachedInputTokens)
     || !counter(cacheWriteInputTokens) || !cacheFits(inputTokens, cachedInputTokens, cacheWriteInputTokens)
-    || !counter(outputTokens) || !counter(reasoningOutputTokens)) return null;
+    || !counter(outputTokens) || !counter(reasoningOutputTokens) || reasoningOutputTokens > outputTokens) return null;
   const totalTokens = safeSum(inputTokens, outputTokens);
   if (totalTokens === null) return null;
   const identity = JSON.stringify({ host, source, sourceKey, at, inputTokens, cachedInputTokens,
@@ -179,12 +181,16 @@ function validateUsage(value) {
     || (value.sessionId !== null && !text(value.sessionId)) || (value.turnId !== null && !text(value.turnId))
     || !counter(value.inputTokens) || !counter(value.cachedInputTokens) || !counter(value.cacheWriteInputTokens)
     || !cacheFits(value.inputTokens, value.cachedInputTokens, value.cacheWriteInputTokens)
-    || !counter(value.outputTokens) || !counter(value.reasoningOutputTokens) || !counter(value.totalTokens)
+    || !counter(value.outputTokens) || !counter(value.reasoningOutputTokens) || value.reasoningOutputTokens > value.outputTokens
+    || !counter(value.totalTokens)
     || value.totalTokens !== value.inputTokens + value.outputTokens
     || (value.arm !== undefined && !['apply', 'control'].includes(value.arm))
     || (value.experimentId !== undefined && !text(value.experimentId))
     || (value.workloadId !== undefined && !text(value.workloadId))
-    || (value.totalCostUsd !== undefined && value.totalCostUsd !== null && !usd(value.totalCostUsd))) throw new Error('provider usage record is invalid');
+    || (value.totalCostUsd !== undefined && !usd(value.totalCostUsd))
+    || (value.costScope !== undefined && (!COST_SCOPES.has(value.costScope) || value.totalCostUsd === undefined))) {
+    throw new Error('provider usage record is invalid');
+  }
 }
 
 function validateState(value) {
@@ -243,8 +249,16 @@ export function appendProviderUsage({ storagePath = defaultProviderUsagePath(), 
   ensureDirectory(path.dirname(filePath));
   return withLock(`${filePath}.lock`, () => {
     const state = readProviderUsage(filePath);
-    const existing = new Set(state.records.map((item) => item.eventKey));
-    for (const item of records) if (!existing.has(item.eventKey)) { state.records.push(item); existing.add(item.eventKey); }
+    const existing = new Map(state.records.map((item, index) => [item.eventKey, index]));
+    for (const item of records) {
+      const index = existing.get(item.eventKey);
+      if (index === undefined) {
+        existing.set(item.eventKey, state.records.length);
+        state.records.push(item);
+      } else if (item.costScope === 'session') {
+        state.records[index] = item;
+      }
+    }
     atomicWrite(filePath, state);
     return state;
   });
@@ -270,15 +284,13 @@ export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
   const sum = (field) => records.reduce((total, item) => total + item[field], 0);
   const weightedCostUnits = records.reduce((total, item) => total + computeWeightedUsage(item, pricing).costUnits, 0);
   const freshInputTokens = records.reduce((total, item) => total + item.inputTokens - item.cachedInputTokens - item.cacheWriteInputTokens, 0);
-  const reportedCosts = records.map((item) => item.totalCostUsd).filter(usd);
-  const completeCost = records.length > 0 && reportedCosts.length === records.length;
-  const partialCost = reportedCosts.length > 0 && !completeCost;
-  const totalCostUsd = completeCost ? sumUsd(reportedCosts) : null;
+  const billing = reportedCostSummary(records);
+  const totalCostUsd = billing.complete ? billing.totalCostUsd : null;
   const effectiveRate = totalCostUsd !== null && totalTokens(records) > 0
     ? totalCostUsd / totalTokens(records) * 1_000_000 : null;
   const cost = {
-    status: completeCost ? 'provider-reported' : 'unavailable',
-    coverage: completeCost ? 'complete' : partialCost ? 'partial' : 'none',
+    status: billing.complete ? 'provider-reported' : 'unavailable',
+    coverage: billing.complete ? 'complete' : billing.partial ? 'partial' : 'none',
     totalCostUsd,
     effectiveRateUsdPerMillionTokens: effectiveRate,
   };
@@ -295,6 +307,32 @@ export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
     sessionBlendedEffectiveRateUsdPerMillionTokens: effectiveRate,
     costSource: cost.status,
   };
+}
+
+function billingKey(item) {
+  return `${item.host}\0${item.sessionId ?? '<unknown>'}`;
+}
+
+function reportedCostSummary(records) {
+  const groups = new Map();
+  records.forEach((item) => {
+    const entries = groups.get(billingKey(item)) ?? [];
+    entries.push(item);
+    groups.set(billingKey(item), entries);
+  });
+  const totals = [];
+  for (const entries of groups.values()) {
+    const sessionCosts = entries.filter((item) => item.costScope === 'session' && usd(item.totalCostUsd));
+    if (sessionCosts.length) {
+      const latest = sessionCosts.reduce((left, right) => right.at >= left.at ? right : left);
+      totals.push(latest.totalCostUsd);
+      continue;
+    }
+    if (entries.every((item) => usd(item.totalCostUsd))) totals.push(sumUsd(entries.map((item) => item.totalCostUsd)));
+  }
+  const complete = groups.size > 0 && totals.length === groups.size && !totals.includes(null);
+  const totalCostUsd = complete ? sumUsd(totals) : null;
+  return { complete: complete && totalCostUsd !== null, partial: totals.length > 0, totalCostUsd };
 }
 
 function totalTokens(records) {
