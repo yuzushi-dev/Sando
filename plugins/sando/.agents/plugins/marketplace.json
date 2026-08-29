@@ -2,13 +2,13 @@
   "name": "sando-local",
   "interface": { "displayName": "Sando" },
   "metadata": {
-    "description": "Reduce repeated tool-output context in Codex.",
-    "version": "0.3.0"
+    "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "sando",
-      "description": "Reduce repeated tool-output context in Codex.",
+      "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
       "source": { "source": "local", "path": "./" },
       "policy": { "installation": "AVAILABLE" },
       "category": "Developer Tools",
