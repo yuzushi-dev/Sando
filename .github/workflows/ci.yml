@@ -33,6 +33,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Smoke Codex 0.151.0
+        run: |
+          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_RELEASE=0.151.0 CODEX_NON_INTERACTIVE=1 sh
+          test "$(codex --version)" = "codex-cli 0.151.0"
+
       - name: Run test suite
         run: npm test
 
