@@ -40,29 +40,29 @@ codex plugin marketplace add yuzushi-dev/yuzushi-plugins
 
 Then open `/plugins`, select `sando`, and install/enable it. Start a new session if Codex was already open.
 
-After installation, Sando's hooks, MCP server, bounded tool commands, artifacts, adaptive provider ledger, and status reporting are available through the host. The plugin bundle is self-contained; the optional npm package is not required.
+After installation, the host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, proxy, statusline, metrics, and accounting launchers are manual entrypoints; see the [shipping matrix](docs/shipping-matrix.md). The bundle is self-contained; the optional npm package is not required.
 
-## Adaptive cost control
+## Provider accounting and paired controls
 
-The normal arm is `apply`. Sando records provider-reported input, cache-read, cache-write, output, and turn counts at session stop. It keeps literal CLI routing enabled until both arms have enough evidence, then backs off automatically when the `apply` median cost or turn count exceeds `control` by the configured tolerance.
+Sando records provider-reported input, cache-read, cache-write, output, reasoning, and turn counts at session stop. It also records mechanical context trimming separately. A weighted token estimate is diagnostic; provider cost and blended rates are shown only when the provider or host reports them.
 
-Run a control session with the plugin still installed but routing disabled:
+Run an explicit control session with the plugin still installed:
 
 ```bash
-SANDO_ADAPTIVE_EXPERIMENT=read-heavy \
-SANDO_ADAPTIVE_ARM=control \
+SANDO_EXPERIMENT=read-heavy \
+SANDO_EXPERIMENT_ARM=control \
 codex
 ```
 
-Normal sessions use `SANDO_ADAPTIVE_ARM=apply` (the default). Use the same `SANDO_ADAPTIVE_EXPERIMENT` and workload when comparing arms. Inspect the current decision with the installed plugin's `bin/sando` launcher:
+Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` (the default). Use the same experiment and optional `SANDO_EXPERIMENT_WORKLOAD` for both arms. Generate the accounting report from the installed Codex plugin:
 
 ```bash
-/path/to/installed/sando/bin/sando adaptive --json
+/path/to/installed/sando/bin/sando accounting --json
 ```
 
-The decision is based on provider usage and turns, not on estimated bytes or tokens removed from a tool result. With incomplete evidence it remains enabled but reports `insufficient-evidence`; it never claims savings from that state. Override the defaults with `SANDO_ADAPTIVE_MIN_SESSIONS` and `SANDO_ADAPTIVE_TOLERANCE`.
+The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and billed cost when available. It marks replay results as counterfactual and never turns mechanical reduction into a provider-billing claim.
 
-The statusline shows provider tokens, turns, cache-aware cost units, and—when the host supplies a real session cost—the effective `$ / M` rate. It does not present mechanical reduction as provider savings.
+The statusline shows provider tokens, turns, and cache-aware weighted units. It does not present mechanical reduction as provider savings.
 
 ## Optional provider proxy
 
@@ -74,7 +74,7 @@ SANDO_CONTEXT_POLICY='{"maxHistoryTokens":1000}' \
 /path/to/installed/sando/bin/sando-proxy
 ```
 
-Point the provider client at the printed local URL. The proxy records request-level mechanical metrics; provider cost and turn comparisons still come from paired `apply`/`control` ledger sessions.
+Point the provider client at the printed local URL. The proxy records request-level mechanical metrics; provider cost and turn comparisons still come from paired `apply`/`control` runs.
 
 ## Project redaction rules
 

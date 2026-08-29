@@ -37,3 +37,8 @@ pnpm-debug.log*
 
 .DS_Store
 Thumbs.db
+
+# Keep the public install-surface matrix versioned while internal docs stay ignored.
+!docs/
+docs/*
+!docs/shipping-matrix.md

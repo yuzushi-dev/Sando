@@ -9,15 +9,15 @@ export { createRedactionProfile } from './src/redaction-profile.mjs';
 export { loadProjectRedactionProfile } from './src/redaction-config.mjs';
 export { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './src/context-transform.mjs';
 export {
-  ADAPTIVE_ARMS,
-  DEFAULT_ADAPTIVE_WEIGHTS,
-  adaptiveArmFromEnv,
-  adaptiveExperimentFromEnv,
-  adaptiveWorkloadFromEnv,
-  computeUsageCost,
-  decideAdaptiveRouting,
-  summarizeAdaptiveSessions,
-} from './src/adaptive-control.mjs';
+  DEFAULT_ACCOUNTING_WEIGHTS,
+  PAIRED_ARMS,
+  computeWeightedUsage,
+  pairedArmFromEnv,
+  pairedExperimentFromEnv,
+  pairedWorkloadFromEnv,
+  summarizePairedSessions,
+} from './src/paired-accounting.mjs';
+export { formatAccountingReport, runAccountingCli } from './src/accounting-cli.mjs';
 export {
   buildSemanticPrompt,
   createSemanticCompactor,

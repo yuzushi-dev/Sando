@@ -22,6 +22,8 @@ function nullableText(value) { return value === null || (typeof value === 'strin
 
 function safeCounter(value) { return Number.isSafeInteger(value) && value >= 0; }
 
+function safeUsd(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+
 function safeSum(...values) {
   const sum = values.reduce((total, value) => total + value, 0);
   return Number.isSafeInteger(sum) ? sum : null;
@@ -95,13 +97,17 @@ function validateProviderEvidence(run) {
     if (!record(providerUsage) || !safeCounter(providerUsage.inputTokens)) {
       throw new TypeError('provider-reported accounting requires provider usage evidence');
     }
-    for (const field of ['uncachedInputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens', 'outputTokens', 'totalTokens']) {
+    for (const field of ['uncachedInputTokens', 'cacheCreationInputTokens', 'cacheWriteInputTokens', 'cacheReadInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens']) {
       if (providerUsage[field] !== undefined && !safeCounter(providerUsage[field])) {
         throw new TypeError('provider usage evidence contains invalid token counts');
       }
     }
-    if (['uncachedInputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens'].every((field) => Object.hasOwn(providerUsage, field))) {
-      const inputTokens = safeSum(providerUsage.uncachedInputTokens, providerUsage.cacheCreationInputTokens, providerUsage.cacheReadInputTokens);
+    if (providerUsage.totalCostUsd !== undefined && providerUsage.totalCostUsd !== null && !safeUsd(providerUsage.totalCostUsd)) {
+      throw new TypeError('provider usage evidence contains invalid cost');
+    }
+    const cacheWriteField = Object.hasOwn(providerUsage, 'cacheCreationInputTokens') ? 'cacheCreationInputTokens' : 'cacheWriteInputTokens';
+    if (['uncachedInputTokens', cacheWriteField, 'cacheReadInputTokens'].every((field) => Object.hasOwn(providerUsage, field))) {
+      const inputTokens = safeSum(providerUsage.uncachedInputTokens, providerUsage[cacheWriteField], providerUsage.cacheReadInputTokens);
       if (inputTokens === null || inputTokens !== providerUsage.inputTokens) throw new TypeError('provider usage evidence contains invalid token sums');
     }
     if (Object.hasOwn(providerUsage, 'outputTokens') && Object.hasOwn(providerUsage, 'totalTokens')) {
@@ -183,6 +189,110 @@ export function pairDelta(runs) {
   };
 }
 
+function pairedRunPair(runs) {
+  pairDelta(runs);
+  const pair = new Map();
+  for (const run of runs) {
+    const key = keyOf(run);
+    const current = pair.get(key) ?? {};
+    current[run.variant] = run;
+    pair.set(key, current);
+  }
+  return [...pair.values()][0];
+}
+
+function runCounter(run, names) {
+  const values = [run, run.providerUsage].filter(record);
+  for (const source of values) {
+    for (const name of names) if (source[name] !== undefined) return safeCounter(source[name]) ? source[name] : null;
+  }
+  return null;
+}
+
+function runSide(run) {
+  const inputTokens = runCounter(run, ['inputTokens']);
+  const cacheReadInputTokens = runCounter(run, ['cacheReadInputTokens', 'cachedInputTokens']);
+  const observedCacheWriteInputTokens = runCounter(run, ['cacheCreationInputTokens', 'cacheWriteInputTokens']);
+  const cacheWriteInputTokens = observedCacheWriteInputTokens ?? (inputTokens === null ? null : 0);
+  const uncachedInputTokens = runCounter(run, ['uncachedInputTokens'])
+    ?? (inputTokens !== null && cacheReadInputTokens !== null && cacheWriteInputTokens !== null
+      ? inputTokens - cacheReadInputTokens - cacheWriteInputTokens : null);
+  const outputTokens = runCounter(run, ['outputTokens']);
+  const reasoningOutputTokens = runCounter(run, ['reasoningOutputTokens']);
+  const totalTokens = runCounter(run, ['totalTokens'])
+    ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+  const modelTurns = runCounter(run, ['modelTurns', 'turns', 'turnCount']);
+  const totalToolCalls = runCounter(run, ['totalToolCalls', 'toolCalls']);
+  const nativeToolCalls = runCounter(run, ['nativeToolCalls']);
+  const sandoMcpCalls = runCounter(run, ['sandoMcpCalls']);
+  const mechanicalContextTrimmedBytes = runCounter(run, ['mechanicalContextTrimmedBytes']);
+  const billedCostUsd = [run.totalCostUsd, run.providerUsage?.totalCostUsd]
+    .find((value) => safeUsd(value)) ?? null;
+  return {
+    variant: run.variant,
+    inputTokens, uncachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens,
+    cacheCreationInputTokens: cacheWriteInputTokens,
+    outputTokens, reasoningOutputTokens, totalTokens,
+    modelTurns, turns: modelTurns,
+    totalToolCalls, toolCalls: totalToolCalls, nativeToolCalls, sandoMcpCalls,
+    mechanicalContextTrimmedBytes, billedCostUsd: safeUsd(billedCostUsd) ? billedCostUsd : null,
+  };
+}
+
+function difference(control, treatment, field) {
+  if (control[field] === null || treatment[field] === null) return null;
+  const value = control[field] - treatment[field];
+  return field === 'billedCostUsd' ? Number(value.toFixed(12)) : value;
+}
+
+export function buildPairedAccounting(runs) {
+  const pair = pairedRunPair(runs);
+  const control = runSide(pair.baseline);
+  const treatment = runSide(pair.optimized);
+  const counterfactual = [pair.baseline, pair.optimized].some((run) =>
+    run.measurement === 'local-replay' || run.tokenAccounting === 'estimate');
+  const costAvailable = !counterfactual && control.billedCostUsd !== null && treatment.billedCostUsd !== null;
+  const billedCostUsd = costAvailable ? Number((control.billedCostUsd - treatment.billedCostUsd).toFixed(12)) : null;
+  return {
+    schema: 'sando-paired-accounting/v1',
+    scenario: pair.baseline.scenario,
+    repetition: pair.baseline.repetition,
+    control,
+    treatment,
+    delta: {
+      uncachedInputTokens: difference(control, treatment, 'uncachedInputTokens'),
+      cacheReadInputTokens: difference(control, treatment, 'cacheReadInputTokens'),
+      cacheWriteInputTokens: difference(control, treatment, 'cacheWriteInputTokens'),
+      outputTokens: difference(control, treatment, 'outputTokens'),
+      reasoningOutputTokens: difference(control, treatment, 'reasoningOutputTokens'),
+      totalTokens: difference(control, treatment, 'totalTokens'),
+      modelTurns: difference(control, treatment, 'modelTurns'),
+      totalToolCalls: difference(control, treatment, 'totalToolCalls'),
+      nativeToolCalls: difference(control, treatment, 'nativeToolCalls'),
+      sandoMcpCalls: difference(control, treatment, 'sandoMcpCalls'),
+      mechanicalContextTrimmedBytes: control.mechanicalContextTrimmedBytes !== null && treatment.mechanicalContextTrimmedBytes !== null
+        ? treatment.mechanicalContextTrimmedBytes - control.mechanicalContextTrimmedBytes : null,
+      billedCostUsd,
+    },
+    mechanical: {
+      contextTrimmedBytes: treatment.mechanicalContextTrimmedBytes,
+      controlContextTrimmedBytes: control.mechanicalContextTrimmedBytes,
+      treatmentContextTrimmedBytes: treatment.mechanicalContextTrimmedBytes,
+    },
+    cost: {
+      status: costAvailable ? 'provider-reported' : 'unavailable',
+      controlUsd: costAvailable ? control.billedCostUsd : null,
+      treatmentUsd: costAvailable ? treatment.billedCostUsd : null,
+      billedCostUsd,
+    },
+    replay: {
+      counterfactual,
+      providerBilledCost: costAvailable ? 'observed' : 'unavailable',
+      providerUsage: counterfactual ? 'not-a-live-billing-comparison' : 'observed-or-unavailable',
+    },
+  };
+}
+
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -250,6 +360,7 @@ export function summarizeRuns(runs) {
       };
     }),
     pairedRuns: deltas.length,
+    pairedAccounting: [...pairs.values()].map((pair) => buildPairedAccounting(pair)),
   };
 }
 

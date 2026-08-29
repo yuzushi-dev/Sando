@@ -78,26 +78,25 @@ test('CLI exec stops capture at the configured artifact limit', (t) => {
   assert.equal(fs.readFileSync(path.join(cwd, 'after.txt'), 'utf8'), 'ok');
 });
 
-test('CLI exposes the adaptive decision from provider ledger evidence', (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-adaptive-'));
+test('CLI exposes provider accounting without a routing decision', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-accounting-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const records = [
-    ['control-1', 'control', 100], ['control-2', 'control', 100], ['control-3', 'control', 100],
-    ['apply-1', 'apply', 160], ['apply-2', 'apply', 160], ['apply-3', 'apply', 160],
-  ].map(([sessionId, arm, inputTokens]) => ({
-    eventKey: `usage:${sessionId}`, schema: 'sando-provider-usage/v1', version: 1,
-    host: 'codex', source: 'test', sessionId, turnId: 'turn-1', at: '2026-08-28T10:00:00.000Z',
-    inputTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0,
-    reasoningOutputTokens: 0, totalTokens: inputTokens, arm, experimentId: 'fixture',
-  }));
   const providerPath = path.join(cwd, 'provider-usage.json');
-  fs.writeFileSync(providerPath, JSON.stringify({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records }));
+  fs.writeFileSync(providerPath, JSON.stringify({
+    schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records: [{
+      eventKey: 'usage:1', schema: 'sando-provider-usage/v1', version: 1,
+      host: 'codex', source: 'test', sessionId: 'session-1', turnId: 'turn-1',
+      at: '2026-08-28T10:00:00.000Z', inputTokens: 100, cachedInputTokens: 20,
+      cacheWriteInputTokens: 10, outputTokens: 5, reasoningOutputTokens: 2,
+      totalTokens: 105, totalCostUsd: 0.02,
+    }],
+  }));
 
-  const result = run(cwd, ['adaptive', '--json'], {
+  const result = run(cwd, ['accounting', '--json'], {
     SANDO_PROVIDER_USAGE_PATH: providerPath,
-    SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).enabled, false);
-  assert.equal(JSON.parse(result.stdout).reason, 'cost-backoff');
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.cost.status, 'provider-reported');
+  assert.equal(report.totalCostUsd, 0.02);
 });

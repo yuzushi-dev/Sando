@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { auditMetadata, digestPrompt } from '../lib/audit.mjs';
 import { assertQualityGate, summarizeRuns } from '../lib/metrics.mjs';
 import { parseClaudeUsage } from './adapters.mjs';
+import { countInteractions } from './interaction-counts.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const EVIDENCE_ROOT = path.join(ROOT, 'benchmarks/live/evidence');
@@ -245,18 +246,21 @@ export async function runDeterministicProbe({ outputPath = path.join(EVIDENCE_RO
     const replacementText = textFromValue(replacement);
     const references = artifactReferences(replacement);
     const artifacts = await readArtifacts(cwd, references);
+    const baselineText = textFromValue(toolResponse);
     const optimized = {
       variant: 'optimized', replacementCaptured: Boolean(replacement), probeVisibleQuality: REQUIRED_FACTS.every((fact) => replacementText.includes(fact)) ? 'pass' : 'fail',
       modelVisibleQuality: 'unverified', artifactResolvable: artifacts.contents.length > 0 && ARTIFACT_FACTS.every((fact) => artifacts.contents.some((content) => content.includes(fact))),
       secretLeak: secretLeak(`${replacementText}\n${artifacts.contents.join('\n')}`), artifactReferences: references, resolvedArtifacts: artifacts.resolved,
-      inputTokens: Math.ceil(Buffer.byteLength(replacementText) / 4), quality: 'pass',
+      inputTokens: Math.ceil(Buffer.byteLength(replacementText) / 4), modelTurns: 0, totalToolCalls: 0,
+      nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: Math.max(0,
+        Buffer.byteLength(baselineText ?? '', 'utf8') - Buffer.byteLength(replacementText, 'utf8')), quality: 'pass',
       audit: { measurement: { mode: 'deterministic-hook-probe', hookEndToEnd: false, providerObserved: false }, tokenAccounting: { source: 'estimate', providerObserved: false } },
     };
     optimized.quality = optimized.probeVisibleQuality === 'pass' && optimized.artifactResolvable && !optimized.secretLeak ? 'pass' : 'fail';
-    const baselineText = textFromValue(toolResponse);
     const baseline = {
       variant: 'baseline', replacementCaptured: false, probeVisibleQuality: 'pass', modelVisibleQuality: 'unverified', artifactResolvable: true,
-      secretLeak: secretLeak(baselineText), artifactReferences: [], resolvedArtifacts: [], inputTokens: Math.ceil(Buffer.byteLength(baselineText) / 4), quality: 'pass',
+      secretLeak: secretLeak(baselineText), artifactReferences: [], resolvedArtifacts: [], inputTokens: Math.ceil(Buffer.byteLength(baselineText) / 4),
+      modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0, quality: 'pass',
       audit: { ...optimized.audit },
     };
     const report = {
@@ -311,9 +315,9 @@ async function runVariant({ variant, workspace, script, pluginDir, capturePath, 
   const args = buildClaudeE2EArgs({ prompt, pluginDir, model, maxBudgetUsd });
   const result = await runCommand('claude', args, { cwd: workspace, timeoutMs, env: buildClaudeE2EEnv({ variant, workspace }) });
   const audit = auditMetadata({ host: 'claude', variant, prompt, args, result, cwd: ROOT, clientVersion, scenarioDigest: SCENARIO_DIGEST, resolvedModel: null, measurement: { mode: 'end-to-end', hookEndToEnd: true } });
-  if (result.code !== 0) return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: `Claude ${variant} failed` };
+  if (result.code !== 0) return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: `Claude ${variant} failed` };
   let probe;
-  try { probe = parseModelProbeResult(result.stdout); } catch (error) { return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: error.message }; }
+  try { probe = parseModelProbeResult(result.stdout); } catch (error) { return { variant, measurement: 'end-to-end', tokenAccounting: 'provider-reported', inputTokens: 0, modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0, quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolResultObserved: false, postToolUseCaptured: false, audit, error: error.message }; }
   const documents = jsonDocuments(result.stdout);
   const initModel = documents.slice().reverse().find((document) => document?.type === 'system' && document.subtype === 'init')?.model;
   const providerUsage = initModel ? { ...probe.usage, resolvedModel: initModel } : probe.usage;
@@ -324,11 +328,15 @@ async function runVariant({ variant, workspace, script, pluginDir, capturePath, 
     catch { replacement = updatedToolOutputFromStream(result.stdout); }
   }
   else replacement = toolResultText(documents);
+  const interactions = countInteractions(documents, 'claude');
+  const sourceToolText = toolResultText(documents);
+  const mechanicalContextTrimmedBytes = variant === 'optimized'
+    ? Math.max(0, Buffer.byteLength(sourceToolText, 'utf8') - Buffer.byteLength(textFromValue(replacement), 'utf8')) : 0;
   const visibleEvidence = await analyzeProbeEvidence({ replacement: toolResultText(documents), modelResult: probe, requiredFacts: REQUIRED_FACTS, artifactFacts: [], cwd: workspace });
   const replacementEvidence = await analyzeProbeEvidence({ replacement: replacement ?? '', modelResult: probe, requiredFacts: REQUIRED_FACTS, artifactFacts: variant === 'optimized' ? ARTIFACT_FACTS : [], cwd: workspace });
   audit.resolvedModel = providerUsage.resolvedModel ?? model ?? null;
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
-  return { host: 'claude', scenario: SCENARIO, repetition: 0, variant, resolvedModel: audit.resolvedModel, clientVersion, measurement: 'end-to-end', tokenAccounting: 'provider-reported', providerUsage, inputTokens: providerUsage.inputTokens, outputTokens: providerUsage.outputTokens, totalTokens: providerUsage.totalTokens, quality: observed && probe.status === 'ok' ? 'pass' : 'fail', modelVisibleQuality: visibleEvidence.modelVisibleQuality, artifactResolvable: variant === 'baseline' || replacementEvidence.artifactResolvable, secretLeak: visibleEvidence.secretLeak || replacementEvidence.secretLeak, toolResultObserved: observed, postToolUseCaptured: variant === 'optimized' && Boolean(replacement), promptDigest: audit.promptDigest, audit };
+  return { host: 'claude', scenario: SCENARIO, repetition: 0, variant, resolvedModel: audit.resolvedModel, clientVersion, measurement: 'end-to-end', tokenAccounting: 'provider-reported', providerUsage, inputTokens: providerUsage.inputTokens, outputTokens: providerUsage.outputTokens, totalTokens: providerUsage.totalTokens, ...interactions, mechanicalContextTrimmedBytes, quality: observed && probe.status === 'ok' ? 'pass' : 'fail', modelVisibleQuality: visibleEvidence.modelVisibleQuality, artifactResolvable: variant === 'baseline' || replacementEvidence.artifactResolvable, secretLeak: visibleEvidence.secretLeak || replacementEvidence.secretLeak, toolResultObserved: observed, postToolUseCaptured: variant === 'optimized' && Boolean(replacement), promptDigest: audit.promptDigest, audit };
 }
 
 async function runLive({ outputPath, model, maxBudgetUsd, repetitions, timeoutMs }) {

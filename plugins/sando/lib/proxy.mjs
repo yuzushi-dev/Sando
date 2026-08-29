@@ -225,14 +225,15 @@ export async function createProviderProxy({ upstream, host = '127.0.0.1', port =
               lastRequestAt = now;
               const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
               if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
+              const mechanicalContextTrimmedBytes = Math.max(0, rawBody.length - body.length);
               recordProxyTelemetry({
                 env, provider, transformed,
                 beforeText: rawBody.toString('utf8'), afterText: body.toString('utf8'),
               });
-              lastStats = { provider, ...transformed.stats, changed: transformed.changed, reasons: transformed.reasons };
+              lastStats = { provider, ...transformed.stats, mechanicalContextTrimmedBytes, changed: transformed.changed, reasons: transformed.reasons };
               recordProvider = provider;
               recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
-              recordStats = transformed.stats;
+              recordStats = { ...transformed.stats, mechanicalContextTrimmedBytes };
               if (typeof semanticCompactor === 'function') {
                 const candidates = listSemanticCandidates({ provider, body: transformed.body });
                 const stats = createSemanticStats(candidates);

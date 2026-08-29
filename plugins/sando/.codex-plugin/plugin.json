@@ -1,15 +1,15 @@
 {
   "name": "sando",
   "version": "0.3.0",
-  "description": "Bound repeated tool-output context in Codex with an adaptive cost and turn guard.",
+  "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
   "author": {
     "name": "Sando contributors"
   },
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Sando",
-    "shortDescription": "Bound tool output with adaptive cost guard",
-    "longDescription": "Reduce repeated tool-output context in Codex with deterministic local routing, provider-usage measurement, and automatic backoff when apply costs more than control.",
+    "shortDescription": "Bound tool output with provider accounting",
+    "longDescription": "Reduce repeated tool-output context in Codex with deterministic local routing, provider-usage measurement, and explicit paired control/treatment accounting.",
     "developerName": "Independent",
     "category": "Developer Tools",
     "capabilities": [
@@ -17,11 +17,11 @@
       "Sandboxed non-interactive terminal MCP tool",
       "PostToolUse observation",
       "Deterministic receipts",
-      "Adaptive provider cost and turn guard",
+      "Provider accounting and paired controls",
       "Optional explicit-upstream context proxy"
     ],
     "defaultPrompt": [
-      "Use Sando's bounded local routes for eligible reads and literal searches; keep native routing when its adaptive guard backs off."
+      "Use Sando's bounded local routes for eligible reads and literal searches; use an explicit control arm when measuring a paired comparison."
     ]
   }
 }

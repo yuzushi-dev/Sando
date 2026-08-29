@@ -1,11 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {
-  adaptiveArmFromEnv, adaptiveExperimentFromEnv, adaptiveWorkloadFromEnv, decideAdaptiveRouting,
-} from './adaptive-control.mjs';
+import { pairedArmFromEnv } from './paired-accounting.mjs';
 import { recordCoverage } from './coverage.mjs';
-import { defaultProviderUsagePath, readProviderUsage } from './provider-usage.mjs';
 
 const SHELL_TOOLS = new Set(['Bash', 'exec_command', 'shell_command']);
 const MAX_COMMAND_LENGTH = 8192;
@@ -118,39 +115,6 @@ function metric(result, toolName, env) {
   } catch {}
 }
 
-function adaptiveNumber(env, name, fallback, maximum) {
-  const value = env[name];
-  if (value === undefined) return fallback;
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 1 && number <= maximum ? number : fallback;
-}
-
-function adaptiveTolerance(env) {
-  const value = env.SANDO_ADAPTIVE_TOLERANCE;
-  if (value === undefined) return 0.05;
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : 0.05;
-}
-
-function adaptiveDecision(env) {
-  if (/^(0|false|off|no)$/i.test(env.SANDO_ADAPTIVE || '')) return { enabled: true, reason: 'disabled-by-env' };
-  const arm = adaptiveArmFromEnv(env);
-  if (arm === 'control') return { enabled: false, reason: 'control-arm' };
-  if (arm !== 'apply') return { enabled: false, reason: 'invalid-arm' };
-  try {
-    const experimentId = adaptiveExperimentFromEnv(env);
-    const storagePath = defaultProviderUsagePath(env);
-    return decideAdaptiveRouting({
-      records: readProviderUsage(storagePath).records,
-      host: 'codex', experimentId, workloadId: adaptiveWorkloadFromEnv(env),
-      minSessions: adaptiveNumber(env, 'SANDO_ADAPTIVE_MIN_SESSIONS', 3, 1000),
-      tolerance: adaptiveTolerance(env),
-    });
-  } catch {
-    return { enabled: false, reason: 'unavailable' };
-  }
-}
-
 export function runPreToolUse(input, env = process.env) {
   if (/^(0|false|off|no)$/i.test(env.SANDO_CLI_ROUTING || '')) return {};
   const toolName = input?.tool_name ?? input?.toolName;
@@ -159,9 +123,13 @@ export function runPreToolUse(input, env = process.env) {
     metric(result, toolName, env);
     return {};
   }
-  const adaptive = adaptiveDecision(env);
-  if (!adaptive.enabled) {
-    metric(bypass(`adaptive-${adaptive.reason}`), toolName, env);
+  const arm = pairedArmFromEnv(env);
+  if (arm === null) {
+    metric(bypass('invalid-control-arm'), toolName, env);
+    return {};
+  }
+  if (arm === 'control') {
+    metric(bypass('control-arm'), toolName, env);
     return {};
   }
   metric(result, toolName, env);

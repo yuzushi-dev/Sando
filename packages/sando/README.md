@@ -24,9 +24,9 @@ Project-specific detectors can be declared in `.sando/redaction.json`:
 
 Built-ins stay enabled. Profiles are declarative and local to the current project; invalid profiles fail visibly.
 
-The library requires Node.js `>=22.22.0 <23` and has no runtime dependencies. Installing it does not install or enable the plugin. The plugin is the supported product surface: it bundles the context/history runtime, provider ledger, adaptive backoff, and explicit proxy launcher.
+The library requires Node.js `>=22.22.0 <23` and has no runtime dependencies. Installing it does not install or enable the plugin. The plugin is the supported host surface; this package exports the context/history runtime, provider usage report, paired accounting, and explicit proxy API only.
 
-The adaptive controller compares cache-aware provider usage and turn counts between `apply` and `control` sessions. It remains permissive until both arms have enough evidence and then disables routing when applying Sando is measurably worse. Mechanical output reduction is diagnostic, not a cost claim.
+`computeWeightedUsage` and `buildPairedAccounting` keep mechanical reduction, weighted estimates, provider-reported cost, and replay counterfactuals distinct. The library does not install hooks, register MCP servers, or make routing/backoff decisions for a host.
 
 For plugin installation, see the [main project README](https://github.com/yuzushi-dev/Sando#readme).
 

@@ -38,6 +38,16 @@ test('parses Claude assistant usage and expands cache counters', () => {
   assert.match(records[0].eventKey, /^usage:claude:sha256:/);
 });
 
+test('retains a provider-reported transcript cost for accounting', () => {
+  const records = parseClaudeTranscript([
+    JSON.stringify({ type: 'assistant', uuid: 'claude-cost', timestamp: '2026-08-24T10:00:00.000Z', message: { usage: { input_tokens: 10, output_tokens: 2 } } }),
+    JSON.stringify({ type: 'result', subtype: 'success', total_cost_usd: 0.03 }),
+  ].join('\n'), { sessionId: 's1', turnId: 't1' });
+
+  assert.equal(records[0].totalCostUsd, 0.03);
+  assert.equal(buildProviderUsageReport({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records }).cost.status, 'provider-reported');
+});
+
 test('parses Codex last token usage without treating cache reads as extra input', () => {
   const records = parseCodexTranscript(JSON.stringify({
     timestamp: '2026-08-24T10:01:00.000Z', type: 'event_msg', payload: {
@@ -90,6 +100,10 @@ test('appends provider records idempotently and reports session totals', (t) => 
     eventCount: 1, sessionCount: 1, inputTokens: 10, cachedInputTokens: 0,
     cacheWriteInputTokens: 0, freshInputTokens: 10, outputTokens: 2, reasoningOutputTokens: 0,
     totalTokens: 12, turnCount: 1, weightedCostUnits: 12,
+    weightedCost: { source: 'weighted-estimate', costUnits: 12 },
+    cost: { status: 'unavailable', coverage: 'none', totalCostUsd: null, effectiveRateUsdPerMillionTokens: null },
+    totalCostUsd: null, providerReportedCostUsd: null,
+    sessionBlendedEffectiveRateUsdPerMillionTokens: null, costSource: 'unavailable',
   });
 });
 

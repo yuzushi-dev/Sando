@@ -23,7 +23,7 @@ function shellInput(cwd) {
   return { tool_name: 'Bash', tool_input: { command: 'cat -- fixture.txt' }, cwd };
 }
 
-test('keeps an eligible route enabled while adaptive evidence is insufficient', (t) => {
+test('routes an eligible command without consulting a provider ledger', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-adaptive-open-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
@@ -36,8 +36,8 @@ test('keeps an eligible route enabled while adaptive evidence is insufficient', 
   assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
 });
 
-test('bypasses an eligible route after apply cost or turns regress', (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-adaptive-backoff-'));
+test('keeps routing explicit instead of applying evidence-based backoff', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-paired-routing-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
   const storagePath = path.join(cwd, 'provider-usage.json');
@@ -54,9 +54,9 @@ test('bypasses an eligible route after apply cost or turns regress', (t) => {
     SANDO_COVERAGE_PATH: coveragePath,
   });
 
-  assert.deepEqual(result, {});
+  assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
   assert.deepEqual(JSON.parse(fs.readFileSync(coveragePath, 'utf8')).counts, {
-    eligible: 0, routed: 0, transformed: 0, blocked: 0, bypassed: 1,
+    eligible: 1, routed: 1, transformed: 1, blocked: 0, bypassed: 0,
   });
 });
 
@@ -66,7 +66,7 @@ test('control arm never routes through Sando', (t) => {
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
 
   const result = runPreToolUse(shellInput(cwd), {
-    SANDO_ADAPTIVE_ARM: 'control',
+    SANDO_EXPERIMENT_ARM: 'control',
     SANDO_PROVIDER_USAGE_PATH: path.join(cwd, 'provider-usage.json'),
   });
 
@@ -94,17 +94,17 @@ test('does not ingest a partial transcript during PreToolUse', (t) => {
   assert.equal(fs.existsSync(storagePath), false);
 });
 
-test('fails closed when adaptive evidence is unavailable or the arm is invalid', (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-adaptive-unavailable-'));
+test('fails closed only for invalid explicit arm metadata', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-paired-invalid-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
   const storagePath = path.join(cwd, 'provider-usage.json');
   fs.writeFileSync(storagePath, '{');
 
-  assert.deepEqual(runPreToolUse(shellInput(cwd), {
+  assert.match(runPreToolUse(shellInput(cwd), {
     SANDO_PROVIDER_USAGE_PATH: storagePath,
     SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
-  }), {});
+  }).hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
   assert.deepEqual(runPreToolUse(shellInput(cwd), {
     SANDO_PROVIDER_USAGE_PATH: path.join(cwd, 'missing.json'),
     SANDO_ADAPTIVE_ARM: 'invalid',

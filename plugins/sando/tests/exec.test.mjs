@@ -71,6 +71,32 @@ test('plugin sando_exec retains its cap without terminating the command', async 
   assert.equal(fs.readFileSync(path.join(cwd, 'after.txt'), 'utf8'), 'ok');
 });
 
+test('plugin sando_exec keeps stderr visible when stdout reaches its cap', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-stderr-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = await callMcpToolAsync('sando_exec', {
+    command: "printf '%s' 'stdout-noise'; head -c 10000 /dev/zero | tr '\\0' x; printf '%s' 'stderr-marker' >&2",
+    policy: { maxInlineBytes: 512, maxArtifactBytes: 256 },
+  }, {}, sandboxMeta(cwd));
+
+  assert.equal(result.execution.exitCode, 0);
+  assert.match(result.inline, /stderr-marker/);
+  assert.equal(result.execution.outputTruncated, true);
+});
+
+test('plugin sando_exec preserves a valid UTF-8 prefix when the cap cuts a multibyte character', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-exec-utf8-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = await callMcpToolAsync('sando_exec', {
+    command: "i=0; while [ \"$i\" -lt 255 ]; do printf x; i=$((i+1)); done; printf '€'",
+    policy: { maxInlineBytes: 512, maxArtifactBytes: 256 },
+  }, {}, sandboxMeta(cwd));
+
+  assert.equal(result.execution.binaryOutput, false);
+  assert.doesNotMatch(result.inline, /binary output withheld/);
+  assert.match(result.inline, /x{10}/);
+});
+
 test('plugin MCP advertises the sandbox metadata capability and sando_exec', () => {
   assert.ok(MCP_TOOLS.some((tool) => tool.name === 'sando_exec'));
   const result = spawnSync(process.execPath, [path.join(import.meta.dirname, '../mcp/server.mjs')], {
