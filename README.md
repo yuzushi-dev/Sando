@@ -8,7 +8,7 @@ Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversiz
 
 ## Install the plugin
 
-Install the plugin through the host marketplace. The package includes its hooks and bundles, so the setup has no build step.
+Install Sando from the host marketplace. Each marketplace source includes its hooks and bundles, so installation needs no build step.
 
 ### Requirements
 
@@ -40,7 +40,7 @@ codex plugin marketplace add yuzushi-dev/yuzushi-plugins
 
 Then open `/plugins`, select `sando`, and install/enable it. Start a new session if Codex was already open.
 
-After installation, the host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, proxy, statusline, metrics, and accounting launchers are manual entrypoints; see the [shipping matrix](docs/shipping-matrix.md). The bundle is self-contained; the optional npm package is not required.
+Each host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, proxy, statusline, metrics, and accounting launchers are manual entrypoints; see the [shipping matrix](docs/shipping-matrix.md). The bundle is self-contained; the optional npm package is not required.
 
 ## Provider accounting and paired controls
 
@@ -62,11 +62,11 @@ Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` (the default). Use the same 
 
 The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and billed cost when available. It marks replay results as counterfactual and never turns mechanical reduction into a provider-billing claim.
 
-The statusline shows provider tokens, turns, and cache-aware weighted units. It does not present mechanical reduction as provider savings.
+The statusline shows provider tokens, turns, and cache-aware weighted units. It labels mechanical reduction separately from provider billing.
 
 ## Optional provider proxy
 
-The plugin also ships the existing context/history transformer and an explicit proxy launcher for hosts that support a configured local base URL. It is opt-in and does not intercept or rewrite Codex transport automatically:
+The plugin also includes the context/history transformer and an explicit proxy launcher for hosts that support a configured local base URL. The proxy is opt-in and leaves Codex transport untouched unless you point the client at its local URL:
 
 ```bash
 SANDO_UPSTREAM_URL=https://api.example.test \

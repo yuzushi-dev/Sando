@@ -1,12 +1,12 @@
 # Sando shipping matrix
 
-This matrix describes the files that are actually wired by each install path.
+Use this matrix to see which files each install path wires automatically.
 It is the source for install claims in the public README.
 
 | Surface | Install entrypoint | Wired automatically | Present but manual/optional | Not installed by this path |
 | --- | --- | --- | --- | --- |
 | Claude Code marketplace | `/plugin install sando@yuzushi` | Claude companion hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`) | Bundled MCP server, provider proxy, statusline wrapper, metrics and accounting launchers | Codex plugin manifest and Codex MCP registration |
-| Codex marketplace | `codex plugin marketplace add yuzushi-dev/yuzushi-plugins`, then enable `sando` | Codex companion hooks, declared Sando MCP server, bounded CLI routes | `sando_exec`, provider proxy, statusline/metrics/accounting launchers | Claude plugin manifest and Claude statusline registration |
+| Codex marketplace | `codex plugin marketplace add yuzushi-dev/yuzushi-plugins`, then enable `sando` | Codex companion hooks, declared Sando MCP server including `sando_exec`, bounded CLI routes | Provider proxy, statusline/metrics/accounting launchers | Claude plugin manifest and Claude statusline registration |
 | npm `sandoichi` | `npm install sandoichi` | JavaScript library exports only; optional postinstall telemetry consent | Call exported transforms, reports, and proxy APIs from application code | Host hooks, MCP server registration, marketplace plugin launchers |
 
 ## Before/after claim corrections

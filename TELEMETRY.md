@@ -1,6 +1,6 @@
 # Sando telemetry
 
-Opt-in, off by default. Nothing is sent unless you explicitly answer the
+Telemetry starts disabled. Sando sends data only after you explicitly answer the
 consent prompt with `y`, `yes`, `n`, or `no`, or use one of the controls below.
 Input is case-insensitive. An empty or unrecognized answer leaves telemetry off
 without recording a decline.
@@ -10,6 +10,8 @@ If you installed via the Claude Code marketplace
 of the first session. It records that it was shown before displaying the
 reminder, so it is shown only once. The reminder only informs you. It never
 blocks a session or prompts by itself.
+
+The Codex marketplace plugin shows the same one-line reminder at `SessionStart`.
 
 The local consent state is explicit: `unasked`, `asked`, `enabled`, or
 `declined`. A decline is final for the first-use reminder. The state and any
@@ -25,11 +27,11 @@ rewrite that config; unset `DO_NOT_TRACK` to use the saved setting again.
 Once a day, Sando buckets that day's counts and sends only these event shapes:
 
 - `hook_summary`: host (`claude`/`codex`), mode (`enforce`, `observe`,
-  `dry_run`), tool-call count, capped-output count, bytes saved, and estimated
-  input tokens saved.
+  `dry_run`), tool-call count, capped-output count, mechanical byte-reduction
+  bucket, and estimated input-token reduction bucket.
 - `proxy_summary`: provider (`anthropic`, `openai`, `unknown`), mode
   (`enforce`), rewrite-applied count, rewrite-skipped-for-cache count, and
-  estimated input tokens saved.
+  estimated input-token reduction bucket.
 - `active_day`: one marker per UTC day and hook host.
 - `hook_failure_summary` and `proxy_failure_summary`: one row per UTC day,
   host/provider, and closed failure stage. Stages are `policy`, `input`,
@@ -40,7 +42,7 @@ All counts and byte values use fixed buckets (`zero`, `one`, `2_to_5`,
 `6_to_20`, `gt_20`; byte ranges such as `16_to_64k`). Redaction counts and
 local cache observations may remain in local diagnostics, but are not sent.
 
-It never sends partial counters for the current day; daily aggregates are sent
+Sando never sends partial counters for the current day; daily aggregates are sent
 only after that UTC day closes. The marker is flushed asynchronously.
 
 ## What's never collected
@@ -48,7 +50,11 @@ only after that UTC day closes. The marker is flushed asynchronously.
 Transcript content, tool output, file paths, session IDs, turn IDs,
 installation/device/account IDs, hostname, username, IP address, model
 name, exception text, raw failure messages, or any other free-form or
-identifying field. Values are always bucketed, never a raw count or byte value.
+identifying field. Sando sends bucket labels, not raw counts or byte values.
+
+The wire schema keeps the historical `bytes_saved_bucket` and
+`input_tokens_saved_bucket` field names. These fields describe mechanical
+reduction; they do not measure provider billing.
 
 ## Where it goes
 
@@ -78,10 +84,10 @@ sando telemetry no
 These commands are matched literally; natural-language variants and partial
 matches are ignored. `yes` enables collection and `no` declines or revokes it.
 
-There's no global shell `sando` command yet. Run `telemetry-cli.mjs` directly.
-The commands are the same either way, only the path to the script changes:
+The package does not install a global `sando` command. Run
+`telemetry-cli.mjs` directly. Only the script path changes by installation type:
 
-**From a git checkout, or the `sandoichi` npm package:**
+**Git checkout:**
 
 ```sh
 node packages/sando/src/telemetry-cli.mjs status
@@ -89,6 +95,16 @@ node packages/sando/src/telemetry-cli.mjs enable    # interactive only, asks y/y
 node packages/sando/src/telemetry-cli.mjs preview   # shows the exact next upload body, sends nothing
 node packages/sando/src/telemetry-cli.mjs flush
 node packages/sando/src/telemetry-cli.mjs disable --purge
+```
+
+**Installed from npm:**
+
+```sh
+node node_modules/sandoichi/src/telemetry-cli.mjs status
+node node_modules/sandoichi/src/telemetry-cli.mjs enable
+node node_modules/sandoichi/src/telemetry-cli.mjs preview
+node node_modules/sandoichi/src/telemetry-cli.mjs flush
+node node_modules/sandoichi/src/telemetry-cli.mjs disable --purge
 ```
 
 To disable telemetry persistently, run `disable` (optionally with `--purge` to
@@ -101,6 +117,9 @@ script lives at `lib/telemetry-cli.mjs` inside the installed plugin
   directory. Find it with `claude plugin list` or check what
 `${CLAUDE_PLUGIN_ROOT}` resolves to for this plugin, then run
 `node <that path>/lib/telemetry-cli.mjs enable`.
+
+**Installed via the Codex marketplace:** run the same script from the installed
+plugin root: `node <plugin-root>/lib/telemetry-cli.mjs status`.
 
 This is an opt-in sample, not a population measurement. Enabled users may
 not represent everyone running Sando.
