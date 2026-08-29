@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "sando",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "source": "./",
       "description": "Bound repeated tool-output context in Claude Code with deterministic hooks and provider accounting."
     }

@@ -62,7 +62,7 @@ Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` (the default). Use the same 
 
 The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and billed cost when available. It marks replay results as counterfactual and never turns mechanical reduction into a provider-billing claim.
 
-The statusline shows provider tokens, turns, and cache-aware weighted units. It labels mechanical reduction separately from provider billing.
+The statusline shows Sando's context tokens saved and the reduction percentage. A leading `~` marks an estimate; provider-reported savings omit it. Provider token accounting remains available through the accounting report.
 
 ## Optional provider proxy
 

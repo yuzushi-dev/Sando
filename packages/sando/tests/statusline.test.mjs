@@ -49,7 +49,7 @@ test('Codex statusline scopes provider usage to the selected session', (t) => {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1.1k provider tokens · 1 turn · 1.1k cost units');
+  assert.equal(result.stdout.trim(), '🥪 saved ~1k ctx tok (91%)');
 });
 
 test('Codex statusline resolves provider usage from the tmux pane marker', (t) => {
@@ -85,7 +85,7 @@ test('Codex statusline resolves provider usage from the tmux pane marker', (t) =
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 1.1k provider tokens · 1 turn · 1.1k cost units');
+  assert.equal(result.stdout.trim(), '🥪 saved ~1k ctx tok (91%)');
 });
 
 test('Codex statusline hides historical savings without a current session marker', (t) => {
@@ -111,46 +111,50 @@ test('Codex statusline hides historical savings without a current session marker
   assert.equal(result.stdout.trim(), '🥪 —');
 });
 
-test('does not render mechanical estimates without provider usage', () => {
+test('renders estimated context savings without provider usage', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000 },
-  }, Date.parse(current)), '🥪 —');
+    metrics: {
+      updatedAt: current, source: 'estimate', savedTokens: 2_510_000, estimatedInputTokens: 6_605_263,
+    },
+  }, Date.parse(current)), '🥪 saved ~2.51M ctx tok (38%)');
 });
 
 test('does not turn an estimate into a cost claim', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510_000 },
+    metrics: {
+      updatedAt: current, source: 'estimate', savedTokens: 2_510_000, estimatedInputTokens: 6_605_263,
+    },
     providerUsage: { totalTokens: 5_000_000 },
     totalCostUsd: 10,
+  }, Date.parse(current)), '🥪 saved ~2.51M ctx tok (38%)');
+});
+
+test('renders provider-reported context savings without a tilde', () => {
+  assert.equal(renderStatusLine({
+    metrics: {
+      updatedAt: current, source: 'provider-reported', savedTokens: 2_500_000, estimatedInputTokens: 5_000_000,
+    },
+    providerUsage: { totalTokens: 5_000_000, turnCount: 4, weightedCostUnits: 2_000_000 },
+    totalCostUsd: 10,
+  }, Date.parse(current)), '🥪 saved 2.5M ctx tok (50%)');
+});
+
+test('renders estimated savings with compact tokens and percentage', () => {
+  assert.equal(renderStatusLine({
+    metrics: { updatedAt: current, source: 'estimate', savedTokens: 2_510, estimatedInputTokens: 6_605 },
+  }, Date.parse(current)), '🥪 saved ~2.5k ctx tok (38%)');
+});
+
+test('renders no data when metrics are unavailable', () => {
+  assert.equal(renderStatusLine({
+    providerUsage: { totalTokens: 5_000_000, turnCount: 4, weightedCostUnits: 2_000_000 },
+    totalCostUsd: 10,
   }, Date.parse(current)), '🥪 —');
 });
 
-test('renders a real blended rate only alongside provider usage', () => {
+test('does not mark old savings stale', () => {
   assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000 },
-    providerUsage: { totalTokens: 5_000_000, turnCount: 4, weightedCostUnits: 2_000_000 },
-    totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 5M provider tokens · 4 turns · 2M cost units · $10.00 · $2.00/M');
-});
-
-test('renders provider usage, turns, and the real blended rate instead of token savings', () => {
-  assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 2_510_000 },
-    providerUsage: { totalTokens: 5_000_000, turnCount: 4, weightedCostUnits: 2_000_000 },
-    totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 5M provider tokens · 4 turns · 2M cost units · $10.00 · $2.00/M');
-});
-
-test('omits cost when providerUsage.totalTokens is unavailable', () => {
-  assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'provider-reported', savedTokens: 42_600 },
-    totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 —');
-});
-
-test('does not mark old data stale', () => {
-  assert.equal(renderStatusLine({
-    metrics: { updatedAt: current, source: 'estimate', savedTokens: 40 },
-  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 —');
+    metrics: { updatedAt: current, source: 'estimate', savedTokens: 40, estimatedInputTokens: 100 },
+  }, Date.parse(current) + 5 * 60 * 1000 + 1), '🥪 saved ~40 ctx tok (40%)');
   assert.equal(renderStatusLine({}, Date.parse(current)), '🥪 —');
 });

@@ -38,10 +38,12 @@ function readMetricsSnapshot(metricsPath, { host, sessionId, model } = {}) {
     const providerSavings = report.cumulative.providerReportedSavingsTokens;
     const source = hasProvider && !hasEstimate && providerSavings !== null
       ? 'provider-reported' : 'estimate';
+    const estimatedInputTokens = records.reduce((total, item) => total + item.estimatedInputTokens, 0);
     const latest = [...records].sort((left, right) => left.at.localeCompare(right.at)).at(-1);
     return {
       updatedAt: latestAt(records), source,
       model: model ?? latest?.model,
+      estimatedInputTokens,
       savedTokens: source === 'provider-reported'
         ? providerSavings : report.cumulative.estimatedTransformSavingsTokens,
     };
@@ -80,23 +82,10 @@ function compactTokens(value) {
   return `${Number((value / 1_000_000).toFixed(2))}M`;
 }
 
-function compactTurns(value) {
-  return `${value} ${value === 1 ? 'turn' : 'turns'}`;
-}
-
-export function renderStatusLine({ metrics, providerUsage, totalCostUsd } = {}, _now = Date.now()) {
-  if (!Number.isSafeInteger(providerUsage?.totalTokens) || providerUsage.totalTokens <= 0
-    || !Number.isSafeInteger(providerUsage?.turnCount) || providerUsage.turnCount <= 0) return '🥪 —';
-  const parts = [
-    `${compactTokens(providerUsage.totalTokens)} provider tokens`,
-    compactTurns(providerUsage.turnCount),
-  ];
-  if (Number.isFinite(providerUsage.weightedCostUnits) && providerUsage.weightedCostUnits >= 0) {
-    parts.push(`${compactTokens(Math.round(providerUsage.weightedCostUnits))} cost units`);
-  }
-  if (Number.isFinite(totalCostUsd) && totalCostUsd >= 0) {
-    const effectiveRate = totalCostUsd / providerUsage.totalTokens;
-    parts.push(`$${totalCostUsd.toFixed(2)}`, `$${(effectiveRate * 1_000_000).toFixed(2)}/M`);
-  }
-  return `🥪 ${parts.join(' · ')}`;
+export function renderStatusLine({ metrics } = {}) {
+  if (!Number.isSafeInteger(metrics?.savedTokens) || metrics.savedTokens < 0
+    || !Number.isSafeInteger(metrics?.estimatedInputTokens) || metrics.estimatedInputTokens <= 0) return '🥪 —';
+  const percentage = Math.round(metrics.savedTokens / metrics.estimatedInputTokens * 100);
+  const estimate = metrics.source === 'estimate' ? '~' : '';
+  return `🥪 saved ${estimate}${compactTokens(metrics.savedTokens)} ctx tok (${percentage}%)`;
 }

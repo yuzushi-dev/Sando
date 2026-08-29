@@ -1,6 +1,6 @@
 {
   "name": "sandoichi",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Bound repeated tool-output context in Claude Code and Codex with deterministic local routing and provider accounting.",
   "license": "MIT",
   "author": "yuzushi",
