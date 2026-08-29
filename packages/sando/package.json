@@ -1,7 +1,7 @@
 {
   "name": "sandoichi",
-  "version": "0.3.0",
-  "description": "Reduce repeated tool-output context in Claude Code and Codex.",
+  "version": "0.4.0",
+  "description": "Bound repeated tool-output context in Claude Code and Codex with deterministic local routing and provider accounting.",
   "license": "MIT",
   "author": "yuzushi",
   "repository": {
