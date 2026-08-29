@@ -43,12 +43,14 @@ class WeeklyReportTest(unittest.TestCase):
              "sando": {"saved_tokens": 7, "saved_pct": 10,
              "events": 1, "average_per_known_session": None, "unknown_session_events": 1},
              "comparison": [{"tool": "Honey <x>", "saved": "N/D", "pct": None, "status": "non disponibile", "evidence": "test"}]},
-            "Test User",
+            "Test <User>",
         )
-        self.assertIn("PROTOCOL TOKEN-SAVINGS", html)
-        self.assertIn("Honey &lt;x&gt;", html)
-        self.assertNotIn("Honey <x>", html)
+        self.assertIn("LOCAL MEASUREMENT", html)
+        self.assertIn("Test &lt;User&gt;", html)
+        self.assertNotIn("Test <User>", html)
         self.assertIn("cyber", html)
+        self.assertIn("Mechanical reduction", html)
+        self.assertNotIn("RTK", html)
 
     def test_load_env_does_not_use_n8n(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -63,6 +65,15 @@ class WeeklyReportTest(unittest.TestCase):
             values = MODULE.load_env(path)
         self.assertEqual(values["TASK_RUNNER_SMTP_HOST"], "smtp.example.test")
         self.assertNotIn("TASK_RUNNER_N8N_WEBHOOK_URL", values)
+
+    def test_report_has_no_cross_tool_token_scoreboard(self):
+        report = MODULE.build_report(
+            {"timezone": "UTC", "records": []},
+            datetime(2026, 8, 17, tzinfo=timezone.utc),
+        )
+
+        self.assertNotIn("comparison", report)
+        self.assertNotIn("RTK", MODULE.render_text(report))
 
 
 if __name__ == "__main__":

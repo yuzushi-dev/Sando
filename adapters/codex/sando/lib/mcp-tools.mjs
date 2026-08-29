@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { recordCoverage } from './coverage.mjs';
+import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './exec-capture.mjs';
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PATTERN_LENGTH = 512;
@@ -16,7 +17,6 @@ const MAX_GREP_OUTPUT_BYTES = 65_536;
 const CODEX_SANDBOX_META = 'codex/sandbox-state-meta';
 const MAX_EXEC_COMMAND_LENGTH = 8192;
 const MAX_EXEC_TIMEOUT_MS = 120_000;
-const MAX_EXEC_CAPTURE_BYTES = 16_777_216;
 
 /** Resolves the real `codex` binary on PATH, preferring a `.session-handoff-original`
  *  sibling when one exists. session-handoff (a companion plugin, same marketplace)
@@ -291,59 +291,14 @@ function shellArgs(root, workdir, command) {
   return ['-lc', 'cd -- "$1" && eval "$2"', 'sando-exec', path.relative(root, workdir) || '.', command];
 }
 
-function terminate(child, signal) {
-  try {
-    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch {}
-  try { child.kill(signal); } catch {}
-}
-
-function textOrBinary(buffer) {
-  if (buffer.includes(0)) return { binary: true, text: '' };
-  try { return { binary: false, text: new TextDecoder('utf-8', { fatal: true }).decode(buffer) }; }
-  catch { return { binary: true, text: '' }; }
-}
-
 async function runSandboxedCommand({ state, root, workdir, command, timeoutMs, maxBytes, signal }) {
   if (signal?.aborted) throw execError('sando_exec cancelled', 'cancelled');
   const shell = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
   const args = ['sandbox', '--sandbox-state-json', JSON.stringify(state), '--', shell, ...shellArgs(root, workdir, command)];
   const child = spawn(resolveCodexCommand(), args, { cwd: root, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  let captured = 0;
-  let truncated = false;
-  let forceTimer;
-  const stop = (signalName) => {
-    terminate(child, signalName);
-    if (signalName === 'SIGTERM' && forceTimer === undefined) forceTimer = setTimeout(() => terminate(child, 'SIGKILL'), 250);
-  };
-  const stdout = [];
-  const stderr = [];
-  const collect = (bucket, chunk) => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    const remaining = Math.max(0, maxBytes - captured);
-    if (remaining) {
-      const part = buffer.subarray(0, remaining);
-      bucket.push(part);
-      captured += part.length;
-    }
-    if (buffer.length > remaining) truncated = true;
-    if (truncated) stop('SIGTERM');
-  };
-  let timedOut = false;
-  let cancelled = false;
-  const timer = setTimeout(() => { timedOut = true; stop('SIGTERM'); }, timeoutMs);
-  const onAbort = () => { cancelled = true; stop('SIGTERM'); };
-  signal?.addEventListener('abort', onAbort, { once: true });
-  child.stdout.on('data', (chunk) => collect(stdout, chunk));
-  child.stderr.on('data', (chunk) => collect(stderr, chunk));
-  const outcome = await new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (exitCode, exitSignal) => resolve({ exitCode, exitSignal }));
-  }).catch((error) => { throw execError(`sando_exec runner unavailable: ${error.code || error.message}`, 'sandbox-runner-unavailable'); })
-    .finally(() => { clearTimeout(timer); clearTimeout(forceTimer); signal?.removeEventListener('abort', onAbort); });
-  if (signal?.aborted) cancelled = true;
-  return { stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), truncated, timedOut, cancelled, ...outcome };
+  const outcome = await captureProcess(child, { maxBytes, timeoutMs, signal })
+    .catch((error) => { throw execError(`sando_exec runner unavailable: ${error.code || error.message}`, 'sandbox-runner-unavailable'); });
+  return outcome;
 }
 
 async function execTool(args = {}, meta, signal) {
@@ -360,15 +315,20 @@ async function execTool(args = {}, meta, signal) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EXEC_TIMEOUT_MS) throw execError('timeoutMs is invalid', 'invalid-timeout');
   const policy = normalizePolicy(args.policy);
   const run = await runSandboxedCommand({ state, root, workdir, command: args.command, timeoutMs, maxBytes: Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES), signal });
-  const stdout = textOrBinary(run.stdout);
-  const stderr = textOrBinary(run.stderr);
+  const stdout = textOrBinary(run.stdout, { truncated: run.stdoutTruncated });
+  const stderr = textOrBinary(run.stderr, { truncated: run.stderrTruncated });
   const binaryOutput = stdout.binary || stderr.binary;
   const status = `[sando_exec exit_code=${run.exitCode ?? 'null'} signal=${run.exitSignal || 'none'} timed_out=${run.timedOut} cancelled=${run.cancelled} tty=false]`;
   const output = binaryOutput
     ? `${status}\n[binary output withheld]`
-    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${run.truncated ? `\n[sando_exec output bounded at ${Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES)} bytes]` : ''}`;
+    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${run.truncated ? `\n[sando_exec output bounded at ${Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES)} bytes per stream]` : ''}`;
   const result = optimizeToolOutput({ toolName: 'Bash', output, cwd: root, policy });
-  return { ...result, execution: { exitCode: run.exitCode, signal: run.exitSignal, timedOut: run.timedOut, cancelled: run.cancelled, outputTruncated: run.truncated, binaryOutput, tty: false, workdir: path.relative(root, workdir).split(path.sep).join('/') || '.' } };
+  return { ...result, execution: {
+    exitCode: run.exitCode, signal: run.exitSignal, timedOut: run.timedOut, cancelled: run.cancelled,
+    outputTruncated: run.truncated, stdoutTruncated: run.stdoutTruncated, stderrTruncated: run.stderrTruncated,
+    stdoutBytes: run.stdoutBytes, stderrBytes: run.stderrBytes, binaryOutput, tty: false,
+    workdir: path.relative(root, workdir).split(path.sep).join('/') || '.',
+  } };
 }
 
 export function callMcpTool(name, args, env = process.env) {

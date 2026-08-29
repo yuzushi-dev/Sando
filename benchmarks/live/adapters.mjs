@@ -2,6 +2,14 @@ function number(value) { return Number.isSafeInteger(value) && value >= 0 ? valu
 
 function requiredNumber(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 
+function reportedCost(value) {
+  const candidates = [
+    value?.total_cost_usd, value?.totalCostUsd, value?.cost_usd, value?.costUsd,
+    value?.cost?.total_cost_usd, value?.cost?.totalCostUsd, value?.cost?.usd,
+  ];
+  return candidates.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0) ?? null;
+}
+
 function jsonDocuments(stdout, { tolerateMalformed = false } = {}) {
   if (typeof stdout !== 'string' || !stdout.trim()) return null;
   try { return [JSON.parse(stdout)]; } catch {}
@@ -85,6 +93,10 @@ export function parseClaudeUsage(stdout, options) {
   const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : number(usage.total_tokens);
   if (totalTokens === null || !Number.isSafeInteger(totalTokens) || totalTokens !== inputTokens + outputTokens) return null;
   const resolvedModel = findModel(candidate);
+  const reasoningOutputTokens = usage.reasoning_output_tokens === undefined
+    ? undefined : number(usage.reasoning_output_tokens);
+  if (reasoningOutputTokens === null) return null;
+  const totalCostUsd = reportedCost(usage) ?? reportedCost(candidate);
   return {
     inputTokens,
     uncachedInputTokens,
@@ -92,6 +104,8 @@ export function parseClaudeUsage(stdout, options) {
     cacheReadInputTokens,
     outputTokens,
     totalTokens,
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    ...(totalCostUsd === null ? {} : { totalCostUsd }),
     ...(resolvedModel ? { resolvedModel } : {}),
   };
 }
@@ -107,7 +121,13 @@ export function parseCodexUsage(stdout) {
   if (inputTokens === null || outputTokens === null) return null;
   const cacheReadInputTokens = usage.cached_input_tokens === undefined && usage.cache_read_input_tokens === undefined
     ? 0 : number(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
-  if (cacheReadInputTokens === null) return null;
+  const hasCacheWrite = usage.cache_write_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const cacheWriteInputTokens = !hasCacheWrite
+    ? 0 : number(usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens);
+  const reasoningOutputTokens = usage.reasoning_output_tokens === undefined
+    ? undefined : number(usage.reasoning_output_tokens);
+  if (cacheReadInputTokens === null || cacheWriteInputTokens === null || reasoningOutputTokens === null
+    || cacheReadInputTokens + cacheWriteInputTokens > inputTokens) return null;
   const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : requiredNumber(usage.total_tokens);
   if (!Number.isSafeInteger(inputTokens + outputTokens)
     || totalTokens === null || totalTokens !== inputTokens + outputTokens) return null;
@@ -117,6 +137,13 @@ export function parseCodexUsage(stdout) {
     cacheReadInputTokens,
     outputTokens,
     totalTokens,
+    ...(hasCacheWrite ? {
+      uncachedInputTokens: inputTokens - cacheReadInputTokens - cacheWriteInputTokens,
+      cacheCreationInputTokens: cacheWriteInputTokens,
+      cacheWriteInputTokens,
+    } : {}),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    ...(reportedCost(usage) === null && reportedCost(terminal) === null ? {} : { totalCostUsd: reportedCost(usage) ?? reportedCost(terminal) }),
     ...(model ? { resolvedModel: model } : {}),
   };
 }

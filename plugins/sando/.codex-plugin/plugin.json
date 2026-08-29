@@ -1,25 +1,27 @@
 {
   "name": "sando",
   "version": "0.3.0",
-  "description": "Reduce repeated tool-output context in Codex.",
+  "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
   "author": {
     "name": "Sando contributors"
   },
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Sando",
-    "shortDescription": "Prepare bounded tool-output references",
-    "longDescription": "Reduce repeated tool-output context in Codex without network access or LLM calls.",
+    "shortDescription": "Bound tool output with provider accounting",
+    "longDescription": "Reduce repeated tool-output context in Codex with deterministic local routing, provider-usage measurement, and explicit paired control/treatment accounting.",
     "developerName": "Independent",
     "category": "Developer Tools",
     "capabilities": [
       "Read-only MCP tools",
       "Sandboxed non-interactive terminal MCP tool",
       "PostToolUse observation",
-      "Deterministic receipts"
+      "Deterministic receipts",
+      "Provider accounting and paired controls",
+      "Optional explicit-upstream context proxy"
     ],
     "defaultPrompt": [
-      "Prepare this tool output with Sando."
+      "Use Sando's bounded local routes for eligible reads and literal searches; use an explicit control arm when measuring a paired comparison."
     ]
   }
 }

@@ -10,6 +10,7 @@ test('Sando surfaces use the renamed package and plugin paths', () => {
   const packageJson = json('packages/sando/package.json');
   assert.equal(packageJson.name, 'sandoichi');
   assert.ok(fs.existsSync(path.join(root, 'plugins/sando/.codex-plugin/plugin.json')));
+  assert.ok(fs.existsSync(path.join(root, 'plugins/sando/README.md')));
   assert.ok(fs.existsSync(path.join(root, 'adapters/claude/sando/.claude-plugin/plugin.json')));
   assert.ok(fs.existsSync(path.join(root, 'adapters/codex/sando/.mcp.json')));
 });
@@ -112,6 +113,23 @@ test('public adapter and plugin text uses neutral branding', () => {
     const content = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(content, /Sando|sando/);
   }
+});
+
+test('shipping matrix states the three install paths and their wiring boundaries', () => {
+  const matrix = fs.readFileSync(path.join(root, 'docs/shipping-matrix.md'), 'utf8');
+  for (const surface of ['Claude Code marketplace', 'Codex marketplace', 'npm `sandoichi`']) {
+    assert.match(matrix, new RegExp(surface.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(matrix, /provider or host reports it/);
+  assert.match(matrix, /routing backoff is future work/);
+  assert.match(matrix, /extra model-visible MCP tool call/);
+});
+
+test('production routing does not import or invoke evidence-based adaptive backoff', () => {
+  const enforcement = fs.readFileSync(path.join(root, 'plugins/sando/lib/enforcement.mjs'), 'utf8');
+  assert.doesNotMatch(enforcement, /decideAdaptiveRouting|readProviderUsage/);
+  const pluginManifest = json('plugins/sando/.codex-plugin/plugin.json');
+  assert.doesNotMatch(JSON.stringify(pluginManifest), /adaptive backoff|automatic backoff/i);
 });
 
 test('PostToolUse hook is fail-open except for invalid policy input', () => {

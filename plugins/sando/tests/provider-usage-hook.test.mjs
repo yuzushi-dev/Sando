@@ -26,7 +26,12 @@ test('Codex Stop hook records transcript usage once', (t) => {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = spawnSync(process.execPath, [hook], {
       input: JSON.stringify(input), encoding: 'utf8',
-      env: { ...process.env, SANDO_PROVIDER_USAGE_PATH: storagePath },
+      env: {
+        ...process.env,
+        SANDO_PROVIDER_USAGE_PATH: storagePath,
+        SANDO_ADAPTIVE_ARM: 'apply',
+        SANDO_ADAPTIVE_EXPERIMENT: 'hook-fixture',
+      },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {});
@@ -34,4 +39,6 @@ test('Codex Stop hook records transcript usage once', (t) => {
   const state = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
   assert.equal(state.records.length, 1);
   assert.equal(state.records[0].host, 'codex');
+  assert.equal(state.records[0].arm, 'apply');
+  assert.equal(state.records[0].experimentId, 'hook-fixture');
 });

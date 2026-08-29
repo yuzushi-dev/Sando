@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
 import { materializeArtifact } from './lib/artifacts.mjs';
+import { runAccountingCli } from './lib/accounting-cli.mjs';
 import { normalizePolicy, optimizeToolOutput } from './lib/core.mjs';
+import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './lib/exec-capture.mjs';
 import { callMcpTool } from './lib/mcp-tools.mjs';
 
-const MAX_CAPTURE_BYTES = 16_777_216;
 const EXEC_TIMEOUT_MS = 120_000;
 
 function policyFromEnv(env = process.env) {
@@ -30,58 +31,22 @@ function commandArgs(args) {
   return args[0] === '--' ? args.slice(1) : args;
 }
 
-function captureChild(command, args, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env: process.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    const stdout = [];
-    const stderr = [];
-    let captured = 0;
-    let truncated = false;
-    let timedOut = false;
-    const collect = (bucket, chunk) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const remaining = Math.max(0, MAX_CAPTURE_BYTES - captured);
-      if (remaining) {
-        bucket.push(buffer.subarray(0, remaining));
-        captured += Math.min(buffer.length, remaining);
-      }
-      if (buffer.length > remaining) truncated = true;
-    };
-    const terminate = (signal) => {
-      try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch {}
-      try { child.kill(signal); } catch {}
-    };
-    const timer = setTimeout(() => { timedOut = true; terminate('SIGTERM'); }, EXEC_TIMEOUT_MS);
-    child.stdout.on('data', (chunk) => collect(stdout, chunk));
-    child.stderr.on('data', (chunk) => collect(stderr, chunk));
-    child.once('error', (error) => { clearTimeout(timer); reject(error); });
-    child.once('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), exitCode, signal, truncated, timedOut });
-    });
-  });
-}
-
-function textOrBinary(buffer) {
-  if (buffer.includes(0)) return { binary: true, text: '' };
-  try { return { binary: false, text: new TextDecoder('utf-8', { fatal: true }).decode(buffer) }; }
-  catch { return { binary: true, text: '' }; }
-}
-
 async function runExec(args, cwd, policy) {
   const command = commandArgs(args);
   if (!command.length) throw new Error('exec requires a command');
-  const result = await captureChild(command[0], command.slice(1), cwd);
-  const stdout = textOrBinary(result.stdout);
-  const stderr = textOrBinary(result.stderr);
+  const maxBytes = Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES);
+  const child = spawn(command[0], command.slice(1), { cwd, env: process.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const result = await captureProcess(child, { maxBytes, timeoutMs: EXEC_TIMEOUT_MS });
+  const stdout = textOrBinary(result.stdout, { truncated: result.stdoutTruncated });
+  const stderr = textOrBinary(result.stderr, { truncated: result.stderrTruncated });
   const binary = stdout.binary || stderr.binary;
-  const status = `[sando exec exit_code=${result.exitCode ?? 'null'} signal=${result.signal || 'none'} timed_out=${result.timedOut} tty=false]`;
+  const status = `[sando exec exit_code=${result.exitCode ?? 'null'} signal=${result.exitSignal || 'none'} timed_out=${result.timedOut} tty=false]`;
   const output = binary
     ? `${status}\n[binary output withheld]`
-    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${result.truncated ? `\n[sando exec output bounded at ${MAX_CAPTURE_BYTES} bytes]` : ''}`;
+    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${result.truncated ? `\n[sando exec output bounded at ${maxBytes} bytes per stream]` : ''}`;
   const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy });
   writeResult(prepared, cwd);
-  if (result.exitCode !== 0 || result.signal || result.timedOut) process.exitCode = result.exitCode || 1;
+  if (result.exitCode !== 0 || result.exitSignal || result.timedOut) process.exitCode = result.exitCode || 1;
 }
 
 function runRead(args, cwd, policy) {
@@ -96,14 +61,15 @@ function runGrep(args, cwd, policy) {
   writeResult(callMcpTool('sando_grep', { pattern: values[0], path: values[1], cwd, policy }), cwd);
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), env = process.env) {
   const [command, ...args] = argv;
   const cwd = cwdRoot();
-  const policy = policyFromEnv();
+  const policy = policyFromEnv(env);
   if (command === 'read') runRead(args, cwd, policy);
   else if (command === 'grep') runGrep(args, cwd, policy);
   else if (command === 'exec') await runExec(args, cwd, policy);
-  else throw new Error('usage: sando {read|grep|exec} ...');
+  else if (command === 'accounting') runAccountingCli({ argv: args, env });
+  else throw new Error('usage: sando {read|grep|exec|accounting} ...');
 }
 
 main().catch((error) => {

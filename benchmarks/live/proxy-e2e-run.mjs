@@ -10,6 +10,7 @@ import { auditMetadata, digestPrompt } from '../lib/audit.mjs';
 import { assertQualityGate, summarizeRuns } from '../lib/metrics.mjs';
 import { createProviderProxy } from '../../packages/sando/src/proxy.mjs';
 import { formatChildFailure, parseClaudeUsage, parseCodexUsage } from './adapters.mjs';
+import { countInteractions } from './interaction-counts.mjs';
 import { parseModelProbeResult } from './e2e-run.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -158,6 +159,7 @@ function failedRun({ host, variant, repetition, prompt, args, result, clientVers
     inputTokens: 0, outputTokens: 0, totalTokens: 0, providerUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null, toolEvidence: false,
     proxyChanged: variant === 'baseline' ? null : false, audit, error: message,
+    modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0,
   };
 }
 
@@ -184,6 +186,8 @@ async function runClaudeVariant({ variant, repetition, workspace, script, model,
     const proxyStats = proxy?.lastStats ?? null;
     const proxyChanged = variant === 'baseline' ? null : proxyStats?.changed === true;
     const quality = factsPass && evidence && (variant === 'baseline' || proxyChanged);
+    const interactions = countInteractions(result.stdout, 'claude');
+    const mechanicalContextTrimmedBytes = variant === 'optimized' ? proxyStats?.mechanicalContextTrimmedBytes ?? null : 0;
     audit.resolvedModel = usage.resolvedModel ?? model ?? null;
     audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
     return {
@@ -191,7 +195,7 @@ async function runClaudeVariant({ variant, repetition, workspace, script, model,
       measurement: 'end-to-end-proxy', tokenAccounting: 'provider-reported', providerUsage: usage,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
       quality: quality ? 'pass' : 'fail', modelVisibleQuality: factsPass ? 'pass' : 'fail', artifactResolvable: true,
-      secretLeak: false, toolEvidence: evidence, proxyChanged, proxyStats, promptDigest: audit.promptDigest, audit,
+      secretLeak: false, toolEvidence: evidence, ...interactions, mechanicalContextTrimmedBytes, proxyChanged, proxyStats, promptDigest: audit.promptDigest, audit,
     };
   } finally {
     if (proxy) await proxy.close();
@@ -219,6 +223,8 @@ async function runCodexVariant({ variant, repetition, workspace, script, model, 
     const proxyStats = proxy?.lastStats ?? null;
     const proxyChanged = variant === 'baseline' ? null : proxyStats?.changed === true;
     const quality = factsPass && evidence && (variant === 'baseline' || proxyChanged);
+    const interactions = countInteractions(result.stdout, 'codex');
+    const mechanicalContextTrimmedBytes = variant === 'optimized' ? proxyStats?.mechanicalContextTrimmedBytes ?? null : 0;
     audit.resolvedModel = usage.resolvedModel ?? model ?? null;
     audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
     return {
@@ -226,7 +232,7 @@ async function runCodexVariant({ variant, repetition, workspace, script, model, 
       measurement: 'end-to-end-proxy', tokenAccounting: 'provider-reported', providerUsage: usage,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
       quality: quality ? 'pass' : 'fail', modelVisibleQuality: factsPass ? 'pass' : 'fail', artifactResolvable: true,
-      secretLeak: false, toolEvidence: evidence, proxyChanged, proxyStats, promptDigest: audit.promptDigest, audit,
+      secretLeak: false, toolEvidence: evidence, ...interactions, mechanicalContextTrimmedBytes, proxyChanged, proxyStats, promptDigest: audit.promptDigest, audit,
     };
   } finally {
     if (proxy) await proxy.close();

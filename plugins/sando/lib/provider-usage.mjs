@@ -3,11 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { computeWeightedUsage } from './paired-accounting.mjs';
+
 const SCHEMA = 'sando-provider-usage/v1';
 const VERSION = 1;
 const LOCK_WAIT_MS = 10;
 const LOCK_ATTEMPTS = 250;
 const STALE_LOCK_MS = 30_000;
+const COST_SCOPES = new Set(['session', 'event']);
 
 export const PROVIDER_USAGE_SCHEMA = SCHEMA;
 export const PROVIDER_USAGE_VERSION = VERSION;
@@ -15,9 +18,18 @@ export const PROVIDER_USAGE_VERSION = VERSION;
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function text(value) { return typeof value === 'string' && value.length > 0; }
 function counter(value) { return Number.isSafeInteger(value) && value >= 0; }
+function usd(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+function cacheFits(inputTokens, cachedInputTokens, cacheWriteInputTokens) {
+  return cacheWriteInputTokens <= inputTokens
+    && cachedInputTokens <= inputTokens - cacheWriteInputTokens;
+}
 function safeSum(...values) {
   const total = values.reduce((sum, value) => sum + value, 0);
   return Number.isSafeInteger(total) ? total : null;
+}
+function sumUsd(values) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Number.isFinite(total) ? Number(total.toFixed(12)) : null;
 }
 function sha256(value) { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
 function isoDate(value, fallback = new Date()) {
@@ -39,26 +51,55 @@ function jsonLines(textValue) {
   });
 }
 
+function reportedCost(value) {
+  const candidates = [
+    value?.total_cost_usd,
+    value?.totalCostUsd,
+    value?.cost_usd,
+    value?.costUsd,
+    value?.usage?.total_cost_usd,
+    value?.usage?.totalCostUsd,
+    value?.message?.usage?.total_cost_usd,
+    value?.message?.usage?.totalCostUsd,
+    value?.cost?.total_cost_usd,
+    value?.cost?.totalCostUsd,
+    value?.cost?.usd,
+  ];
+  return candidates.find(usd);
+}
+
+function attachReportedCost(records, totalCostUsd) {
+  if (!records.length || !usd(totalCostUsd)) return records;
+  return records.map((item, index) => index === records.length - 1
+    ? { ...item, totalCostUsd, costScope: 'session' } : item);
+}
+
 function usageRecord({ host, source, sourceKey, sessionId, turnId, at, inputTokens, cachedInputTokens = 0,
-  cacheWriteInputTokens = 0, outputTokens, reasoningOutputTokens = 0 }) {
+  cacheWriteInputTokens = 0, outputTokens, reasoningOutputTokens = 0, totalCostUsd, arm, experimentId, workloadId }) {
   if (!text(host) || !text(source) || !text(sourceKey)
     || (sessionId !== null && !text(sessionId)) || (turnId !== null && !text(turnId))
     || !text(at) || !counter(inputTokens) || !counter(cachedInputTokens)
-    || !counter(cacheWriteInputTokens) || !counter(outputTokens) || !counter(reasoningOutputTokens)) return null;
+    || !counter(cacheWriteInputTokens) || !cacheFits(inputTokens, cachedInputTokens, cacheWriteInputTokens)
+    || !counter(outputTokens) || !counter(reasoningOutputTokens) || reasoningOutputTokens > outputTokens) return null;
   const totalTokens = safeSum(inputTokens, outputTokens);
   if (totalTokens === null) return null;
   const identity = JSON.stringify({ host, source, sourceKey, at, inputTokens, cachedInputTokens,
-    cacheWriteInputTokens, outputTokens, reasoningOutputTokens, totalTokens });
-  return {
+    cacheWriteInputTokens, outputTokens, reasoningOutputTokens, totalTokens, arm, experimentId, workloadId });
+  const result = {
     eventKey: `usage:${host}:${sha256(identity)}`,
     schema: SCHEMA, version: VERSION, host, source,
     sessionId: sessionId ?? null, turnId: turnId ?? null, at,
     inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens,
     reasoningOutputTokens, totalTokens,
   };
+  if (totalCostUsd !== undefined && usd(totalCostUsd)) result.totalCostUsd = totalCostUsd;
+  if (arm !== undefined) result.arm = arm;
+  if (experimentId !== undefined) result.experimentId = experimentId;
+  if (workloadId !== undefined) result.workloadId = workloadId;
+  return result;
 }
 
-function claudeRecord(value, index, { sessionId = null, turnId = null, now } = {}) {
+function claudeRecord(value, index, { sessionId = null, turnId = null, now, arm, experimentId, workloadId } = {}) {
   if (value.type !== 'assistant' || !record(value.message?.usage)) return null;
   const usage = value.message.usage;
   const inputTokens = usage.input_tokens;
@@ -74,10 +115,11 @@ function claudeRecord(value, index, { sessionId = null, turnId = null, now } = {
     host: 'claude', source: 'claude-transcript', sourceKey: value.uuid ?? value.request_id ?? value.timestamp ?? String(index),
     sessionId, turnId: value.turn_id ?? turnId, at: isoDate(value.timestamp, now),
     inputTokens: totalInputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens,
+    arm, experimentId, workloadId,
   });
 }
 
-function codexRecord(value, index, { sessionId = null, turnId = null, now } = {}) {
+function codexRecord(value, index, { sessionId = null, turnId = null, now, arm, experimentId, workloadId } = {}) {
   const usage = value.type === 'turn.completed'
     ? value.usage
     : value.type === 'event_msg' && value.payload?.type === 'token_count'
@@ -95,17 +137,24 @@ function codexRecord(value, index, { sessionId = null, turnId = null, now } = {}
   if (!counter(totalTokens) || totalTokens !== inputTokens + outputTokens) return null;
   return usageRecord({
     host: 'codex', source: 'codex-transcript', sourceKey: value.turn_id ?? value.id ?? value.timestamp ?? String(index),
-    sessionId, turnId: value.turn_id ?? turnId, at: isoDate(value.timestamp, now),
+    sessionId, turnId: value.turn_id ?? value.id ?? (value.timestamp ? `at:${value.timestamp}` : turnId), at: isoDate(value.timestamp, now),
     inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens,
+    arm, experimentId, workloadId,
   });
 }
 
 export function parseClaudeTranscript(textValue, options = {}) {
-  return jsonLines(textValue).map(({ value }, index) => claudeRecord(value, index, options)).filter(Boolean);
+  const entries = jsonLines(textValue);
+  const records = entries.map(({ value }, index) => claudeRecord(value, index, options)).filter(Boolean);
+  const totalCostUsd = options.totalCostUsd ?? entries.slice().reverse().map(({ value }) => reportedCost(value)).find(usd);
+  return attachReportedCost(records, totalCostUsd);
 }
 
 export function parseCodexTranscript(textValue, options = {}) {
-  return jsonLines(textValue).map(({ value }, index) => codexRecord(value, index, options)).filter(Boolean);
+  const entries = jsonLines(textValue);
+  const records = entries.map(({ value }, index) => codexRecord(value, index, options)).filter(Boolean);
+  const totalCostUsd = options.totalCostUsd ?? entries.slice().reverse().map(({ value }) => reportedCost(value)).find(usd);
+  return attachReportedCost(records, totalCostUsd);
 }
 
 export function defaultProviderUsagePath(env = process.env) {
@@ -131,8 +180,17 @@ function validateUsage(value) {
     || !text(value.host) || !text(value.source) || !text(value.at)
     || (value.sessionId !== null && !text(value.sessionId)) || (value.turnId !== null && !text(value.turnId))
     || !counter(value.inputTokens) || !counter(value.cachedInputTokens) || !counter(value.cacheWriteInputTokens)
-    || !counter(value.outputTokens) || !counter(value.reasoningOutputTokens) || !counter(value.totalTokens)
-    || value.totalTokens !== value.inputTokens + value.outputTokens) throw new Error('provider usage record is invalid');
+    || !cacheFits(value.inputTokens, value.cachedInputTokens, value.cacheWriteInputTokens)
+    || !counter(value.outputTokens) || !counter(value.reasoningOutputTokens) || value.reasoningOutputTokens > value.outputTokens
+    || !counter(value.totalTokens)
+    || value.totalTokens !== value.inputTokens + value.outputTokens
+    || (value.arm !== undefined && !['apply', 'control'].includes(value.arm))
+    || (value.experimentId !== undefined && !text(value.experimentId))
+    || (value.workloadId !== undefined && !text(value.workloadId))
+    || (value.totalCostUsd !== undefined && !usd(value.totalCostUsd))
+    || (value.costScope !== undefined && (!COST_SCOPES.has(value.costScope) || value.totalCostUsd === undefined))) {
+    throw new Error('provider usage record is invalid');
+  }
 }
 
 function validateState(value) {
@@ -191,34 +249,92 @@ export function appendProviderUsage({ storagePath = defaultProviderUsagePath(), 
   ensureDirectory(path.dirname(filePath));
   return withLock(`${filePath}.lock`, () => {
     const state = readProviderUsage(filePath);
-    const existing = new Set(state.records.map((item) => item.eventKey));
-    for (const item of records) if (!existing.has(item.eventKey)) { state.records.push(item); existing.add(item.eventKey); }
+    const existing = new Map(state.records.map((item, index) => [item.eventKey, index]));
+    for (const item of records) {
+      const index = existing.get(item.eventKey);
+      if (index === undefined) {
+        existing.set(item.eventKey, state.records.length);
+        state.records.push(item);
+      } else if (item.costScope === 'session') {
+        state.records[index] = item;
+      }
+    }
     atomicWrite(filePath, state);
     return state;
   });
 }
 
 export function collectProviderUsage({ host, transcriptPath, sessionId = null, turnId = null,
-  storagePath = defaultProviderUsagePath(), now } = {}) {
+  storagePath = defaultProviderUsagePath(), now, totalCostUsd, arm, experimentId, workloadId } = {}) {
   if (!['claude', 'codex'].includes(host) || typeof transcriptPath !== 'string' || !transcriptPath) return { records: [], state: readProviderUsage(storagePath) };
   try {
     const textValue = fs.readFileSync(transcriptPath, 'utf8');
     const parse = host === 'claude' ? parseClaudeTranscript : parseCodexTranscript;
-    const records = parse(textValue, { sessionId, turnId, now });
+    const records = parse(textValue, { sessionId, turnId, now, totalCostUsd, arm, experimentId, workloadId });
     return { records, state: appendProviderUsage({ storagePath, records }) };
   } catch {
     return { records: [], state: readProviderUsage(storagePath) };
   }
 }
 
-export function buildProviderUsageReport(state, { sessionId } = {}) {
+export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
   const records = validateState(state).records.filter((item) => sessionId === undefined || item.sessionId === sessionId);
   const sessions = new Set(records.map((item) => `${item.host}\0${item.sessionId ?? '<unknown>'}`));
+  const turns = new Set(records.map((item, index) => `${item.host}\0${item.sessionId ?? '<unknown>'}\0${item.turnId ?? `record:${index}`}`));
   const sum = (field) => records.reduce((total, item) => total + item[field], 0);
+  const weightedCostUnits = records.reduce((total, item) => total + computeWeightedUsage(item, pricing).costUnits, 0);
+  const freshInputTokens = records.reduce((total, item) => total + item.inputTokens - item.cachedInputTokens - item.cacheWriteInputTokens, 0);
+  const billing = reportedCostSummary(records);
+  const totalCostUsd = billing.complete ? billing.totalCostUsd : null;
+  const effectiveRate = totalCostUsd !== null && totalTokens(records) > 0
+    ? totalCostUsd / totalTokens(records) * 1_000_000 : null;
+  const cost = {
+    status: billing.complete ? 'provider-reported' : 'unavailable',
+    coverage: billing.complete ? 'complete' : billing.partial ? 'partial' : 'none',
+    totalCostUsd,
+    effectiveRateUsdPerMillionTokens: effectiveRate,
+  };
   return {
     eventCount: records.length, sessionCount: sessions.size,
     inputTokens: sum('inputTokens'), cachedInputTokens: sum('cachedInputTokens'),
-    cacheWriteInputTokens: sum('cacheWriteInputTokens'), outputTokens: sum('outputTokens'),
-    reasoningOutputTokens: sum('reasoningOutputTokens'), totalTokens: sum('totalTokens'),
+    cacheWriteInputTokens: sum('cacheWriteInputTokens'), freshInputTokens,
+    outputTokens: sum('outputTokens'), reasoningOutputTokens: sum('reasoningOutputTokens'), totalTokens: sum('totalTokens'),
+    turnCount: turns.size, weightedCostUnits,
+    weightedCost: { source: 'weighted-estimate', costUnits: weightedCostUnits },
+    cost,
+    totalCostUsd,
+    providerReportedCostUsd: totalCostUsd,
+    sessionBlendedEffectiveRateUsdPerMillionTokens: effectiveRate,
+    costSource: cost.status,
   };
+}
+
+function billingKey(item) {
+  return `${item.host}\0${item.sessionId ?? '<unknown>'}`;
+}
+
+function reportedCostSummary(records) {
+  const groups = new Map();
+  records.forEach((item) => {
+    const entries = groups.get(billingKey(item)) ?? [];
+    entries.push(item);
+    groups.set(billingKey(item), entries);
+  });
+  const totals = [];
+  for (const entries of groups.values()) {
+    const sessionCosts = entries.filter((item) => item.costScope === 'session' && usd(item.totalCostUsd));
+    if (sessionCosts.length) {
+      const latest = sessionCosts.reduce((left, right) => right.at >= left.at ? right : left);
+      totals.push(latest.totalCostUsd);
+      continue;
+    }
+    if (entries.every((item) => usd(item.totalCostUsd))) totals.push(sumUsd(entries.map((item) => item.totalCostUsd)));
+  }
+  const complete = groups.size > 0 && totals.length === groups.size && !totals.includes(null);
+  const totalCostUsd = complete ? sumUsd(totals) : null;
+  return { complete: complete && totalCostUsd !== null, partial: totals.length > 0, totalCostUsd };
+}
+
+function totalTokens(records) {
+  return records.reduce((total, item) => total + item.totalTokens, 0);
 }

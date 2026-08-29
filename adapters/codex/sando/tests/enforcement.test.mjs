@@ -89,6 +89,21 @@ test('PreToolUse records an ambiguous shell command as bypass', (t) => {
   assert.equal(coverage.byReason['ambiguous-shell'], 1);
 });
 
+test('PreToolUse keeps an explicit control arm on the native path', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-control-hook-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+  const result = spawnSync(process.execPath, [path.join(root, 'hooks/pre-tool-use.mjs')], {
+    cwd,
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat -- fixture.txt' }, cwd }),
+    encoding: 'utf8',
+    env: { ...process.env, SANDO_EXPERIMENT_ARM: 'control' },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {});
+});
+
 test('Codex hook manifests install the PreToolUse gate', () => {
   for (const file of ['hooks/hooks.json', '../../../plugins/sando/hooks/hooks.json']) {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));

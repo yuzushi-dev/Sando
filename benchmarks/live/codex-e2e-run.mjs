@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { auditMetadata, digestPrompt } from '../lib/audit.mjs';
 import { assertQualityGate, summarizeRuns } from '../lib/metrics.mjs';
 import { formatChildFailure, parseCodexUsage } from './adapters.mjs';
+import { countInteractions } from './interaction-counts.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const CODEX_TOOL_MEASUREMENT = 'end-to-end-tools';
@@ -21,6 +22,18 @@ const ALL_EXEC_FACTS = ['SANDO_EXEC_HEAD_FACT', 'SANDO_EXEC_TAIL_FACT'];
 const ALL_REQUIRED_FACTS = [...ALL_CLI_FACTS, ...ALL_EXEC_FACTS];
 const ALL_EXEC_COMMAND = "i=0; while [ \"$i\" -lt 300 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_EXEC_HEAD_FACT\\nSANDO_EXEC_TAIL_FACT\\n'";
 const ALL_SANDO_POLICY = { mode: 'apply', maxInlineBytes: 1024, maxArtifactBytes: 65536, redact: true };
+
+function cliFixtureText(facts) {
+  return `${[
+    `export const ${facts[0]} = '${facts[0]}';`,
+    ...Array.from({ length: 300 }, (_, index) => `noise:${index}`),
+    `export const ${facts[1]} = '${facts[1]}';`,
+  ].join('\n')}\n`;
+}
+
+function commandFixtureText(count, facts) {
+  return `${Array.from({ length: count }, (_, index) => `noise:${index}`).join('\n')}\n${facts.join('\n')}\n`;
+}
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -127,6 +140,26 @@ function eventText(value) {
   ].map((part) => typeof part === 'string' ? part : part === undefined ? '' : JSON.stringify(part)).join('\n');
 }
 
+function observedToolOutputBytes(stdout, route) {
+  const documents = jsonDocuments(stdout);
+  const values = documents.flatMap((document) => [document, document?.item]);
+  const selected = values.filter((value) => {
+    if (!value || typeof value !== 'object') return false;
+    if (route === 'mcp') return ['mcp_tool_call', 'mcp_tool_call_output'].includes(value.type)
+      && (value.name === 'sando_exec' || value.tool === 'sando_exec');
+    if (route === 'cli') return value.type === 'command_execution' || value.type === 'shell_command';
+    return ['mcp_tool_call', 'mcp_tool_call_output', 'command_execution', 'shell_command'].includes(value.type);
+  });
+  return selected.reduce((total, value) => total + Buffer.byteLength(eventText(value), 'utf8'), 0);
+}
+
+function rawToolOutputBytes(route) {
+  if (route === 'mcp') return Buffer.byteLength(commandFixtureText(700, REQUIRED_FACTS), 'utf8');
+  if (route === 'cli') return Buffer.byteLength(cliFixtureText(REQUIRED_FACTS), 'utf8');
+  return Buffer.byteLength(cliFixtureText(ALL_CLI_FACTS), 'utf8')
+    + Buffer.byteLength(commandFixtureText(300, ALL_EXEC_FACTS), 'utf8');
+}
+
 function toolOutputHasFacts(stdout, variant, route) {
   if (route === 'all') {
     const documents = jsonDocuments(stdout);
@@ -217,6 +250,7 @@ function failedRun({ variant, repetition, prompt, args, result, clientVersion, s
     providerUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, inputTokens: 0, outputTokens: 0, totalTokens: 0,
     quality: 'fail', modelVisibleQuality: 'fail', artifactResolvable: false, secretLeak: null,
     promptDigest: audit.promptDigest, audit, error: message,
+    modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0,
   };
 }
 
@@ -238,12 +272,15 @@ async function runVariant({ variant, repetition, workspace, serverPath, model, t
   audit.resolvedModel = usage.resolvedModel ?? model ?? null;
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
   const evidence = runEvidence({ variant, stdout: result.stdout, route });
+  const interactions = countInteractions(result.stdout, 'codex');
+  const mechanicalContextTrimmedBytes = variant === 'optimized'
+    ? Math.max(0, rawToolOutputBytes(route) - observedToolOutputBytes(result.stdout, route)) : 0;
   return {
     host: 'codex', scenario, scenarioDigest, repetition, variant,
     resolvedModel: usage.resolvedModel ?? model ?? null, clientVersion, measurement: CODEX_TOOL_MEASUREMENT,
     tokenAccounting: 'provider-reported', providerUsage: usage, inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, latencyMs: Date.now() - started,
-    ...evidence, promptDigest: audit.promptDigest, audit,
+    ...evidence, ...interactions, mechanicalContextTrimmedBytes, promptDigest: audit.promptDigest, audit,
   };
 }
 
@@ -252,11 +289,7 @@ export async function runCodexToolBenchmark({ outputPath, model, repetitions, ti
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-codex-e2e-'));
   if (route === 'cli' || route === 'all') {
     const fixtureFacts = route === 'all' ? ALL_CLI_FACTS : REQUIRED_FACTS;
-    const fixture = [
-      `export const ${fixtureFacts[0]} = '${fixtureFacts[0]}';`,
-      ...Array.from({ length: 300 }, (_, index) => `noise:${index}`),
-      `export const ${fixtureFacts[1]} = '${fixtureFacts[1]}';`,
-    ].join('\n');
+    const fixture = cliFixtureText(fixtureFacts).trimEnd();
     await fs.writeFile(path.join(workspace, 'fixture.txt'), `${fixture}\n`);
   }
   const version = await runCommand('codex', ['--version'], { cwd: ROOT, timeoutMs: 10_000 });

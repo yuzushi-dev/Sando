@@ -9,6 +9,7 @@ import { auditMetadata, digestPrompt } from '../lib/audit.mjs';
 import { assertQualityGate, estimateTokens, summarizeRuns } from '../lib/metrics.mjs';
 import { loadScenario } from '../lib/replay.mjs';
 import { buildClaudeArgs, buildCodexArgs, formatChildFailure, hasOkStatus, parseClaudeUsage, parseCodexUsage } from './adapters.mjs';
+import { countInteractions } from './interaction-counts.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const LIVE_QUALITY_BLOCKED_NOTE = 'Prompt-level live data cannot establish modelVisibleQuality, artifactResolvable, or secretLeak evidence; the live quality gate blocks this report.';
@@ -143,6 +144,7 @@ function failureRun({ host, scenario, repetition, variant, prompt, args, result,
     modelVisibleQuality: null, artifactResolvable: null, secretLeak: null,
     promptDigest: audit.promptDigest,
     audit,
+    modelTurns: 0, totalToolCalls: 0, nativeToolCalls: 0, sandoMcpCalls: 0, mechanicalContextTrimmedBytes: 0,
     error: message,
   };
 }
@@ -171,6 +173,7 @@ async function main() {
   for (let repetition = 0; repetition < repetitions; repetition += 1) {
     for (const variant of ['baseline', 'optimized']) {
       const contexts = [];
+      let mechanicalContextTrimmedBytes = 0;
       for (const event of scenario.events) {
         const result = variant === 'baseline' ? { inline: event.output } : await core.optimizeToolOutput({
           toolName: event.toolName,
@@ -181,6 +184,10 @@ async function main() {
         });
         if (!result || typeof result.inline !== 'string') throw new Error(`no inline output for ${event.id}`);
         contexts.push(result.inline);
+        if (variant === 'optimized') {
+          mechanicalContextTrimmedBytes += Math.max(0,
+            Buffer.byteLength(String(event.output), 'utf8') - Buffer.byteLength(result.inline, 'utf8'));
+        }
       }
       const prompt = promptFor(contexts.join('\n\n'));
       const args = host === 'claude'
@@ -234,6 +241,7 @@ async function main() {
         },
       });
       audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
+      const interactions = countInteractions(result.stdout, host);
       runs.push({
         host,
         scenario: scenario.id,
@@ -254,6 +262,8 @@ async function main() {
         promptEstimate: estimateTokens(prompt),
         responseBytes: Buffer.byteLength(result.stdout),
         latencyMs: Date.now() - started,
+        ...interactions,
+        mechanicalContextTrimmedBytes,
         quality,
         modelVisibleQuality: null,
         artifactResolvable: null,

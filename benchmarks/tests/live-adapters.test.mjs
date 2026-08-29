@@ -146,7 +146,7 @@ test('parses Claude reported usage including cache counters', () => {
     type: 'result',
     subtype: 'success',
     model: 'claude-test',
-    usage: { input_tokens: 120, cache_creation_input_tokens: 20, cache_read_input_tokens: 40, output_tokens: 8 },
+    usage: { input_tokens: 120, cache_creation_input_tokens: 20, cache_read_input_tokens: 40, output_tokens: 8, reasoning_output_tokens: 3, total_cost_usd: 0.12 },
   })), {
     inputTokens: 180,
     uncachedInputTokens: 120,
@@ -154,6 +154,8 @@ test('parses Claude reported usage including cache counters', () => {
     cacheReadInputTokens: 40,
     outputTokens: 8,
     totalTokens: 188,
+    reasoningOutputTokens: 3,
+    totalCostUsd: 0.12,
     resolvedModel: 'claude-test',
   });
 });
@@ -264,12 +266,17 @@ test('parses Claude probe JSON after a client diagnostic prefix', () => {
 test('parses Codex usage only from the final direct turn.completed record', () => {
   assert.deepEqual(parseCodexUsage([
     JSON.stringify({ type: 'item.completed', item: { text: 'done' } }),
-    JSON.stringify({ type: 'turn.completed', model: 'codex-test', usage: { input_tokens: 90, cached_input_tokens: 30, output_tokens: 7, total_tokens: 97 } }),
+    JSON.stringify({ type: 'turn.completed', model: 'codex-test', usage: { input_tokens: 90, cached_input_tokens: 30, cache_write_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 2, total_tokens: 97, total_cost_usd: 0.07 } }),
   ].join('\n')), {
     inputTokens: 90,
+    uncachedInputTokens: 55,
+    cacheCreationInputTokens: 5,
+    cacheWriteInputTokens: 5,
     cacheReadInputTokens: 30,
     outputTokens: 7,
+    reasoningOutputTokens: 2,
     totalTokens: 97,
+    totalCostUsd: 0.07,
     resolvedModel: 'codex-test',
   });
 });

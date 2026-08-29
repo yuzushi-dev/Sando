@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 
+import { pairedArmFromEnv, pairedExperimentFromEnv, pairedWorkloadFromEnv } from '../lib/paired-accounting.mjs';
 import { collectProviderUsage, defaultProviderUsagePath } from '../lib/provider-usage.mjs';
 
 try {
@@ -9,7 +10,8 @@ try {
     collectProviderUsage({
       host: 'claude', transcriptPath: input.transcript_path,
       sessionId: input.session_id ?? null, turnId: input.turn_id ?? null,
-      storagePath: defaultProviderUsagePath(),
+      storagePath: defaultProviderUsagePath(), arm: pairedArmFromEnv(process.env),
+      experimentId: pairedExperimentFromEnv(process.env), workloadId: pairedWorkloadFromEnv(process.env),
     });
   }
 } catch {

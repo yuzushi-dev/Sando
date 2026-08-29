@@ -40,7 +40,41 @@ codex plugin marketplace add yuzushi-dev/yuzushi-plugins
 
 Then open `/plugins`, select `sando`, and install/enable it. Start a new session if Codex was already open.
 
-After installation, Sando's hooks, MCP server, bounded tool commands, artifacts, and status reporting are available through the host.
+After installation, the host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, proxy, statusline, metrics, and accounting launchers are manual entrypoints; see the [shipping matrix](docs/shipping-matrix.md). The bundle is self-contained; the optional npm package is not required.
+
+## Provider accounting and paired controls
+
+Sando records provider-reported input, cache-read, cache-write, output, reasoning, and turn counts at session stop. It also records mechanical context trimming separately. A weighted token estimate is diagnostic; provider cost and blended rates are shown only when the provider or host reports them.
+
+Run an explicit control session with the plugin still installed:
+
+```bash
+SANDO_EXPERIMENT=read-heavy \
+SANDO_EXPERIMENT_ARM=control \
+codex
+```
+
+Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` (the default). Use the same experiment and optional `SANDO_EXPERIMENT_WORKLOAD` for both arms. Generate the accounting report from the installed Codex plugin:
+
+```bash
+/path/to/installed/sando/bin/sando accounting --json
+```
+
+The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and billed cost when available. It marks replay results as counterfactual and never turns mechanical reduction into a provider-billing claim.
+
+The statusline shows provider tokens, turns, and cache-aware weighted units. It does not present mechanical reduction as provider savings.
+
+## Optional provider proxy
+
+The plugin also ships the existing context/history transformer and an explicit proxy launcher for hosts that support a configured local base URL. It is opt-in and does not intercept or rewrite Codex transport automatically:
+
+```bash
+SANDO_UPSTREAM_URL=https://api.example.test \
+SANDO_CONTEXT_POLICY='{"maxHistoryTokens":1000}' \
+/path/to/installed/sando/bin/sando-proxy
+```
+
+Point the provider client at the printed local URL. The proxy records request-level mechanical metrics; provider cost and turn comparisons still come from paired `apply`/`control` runs.
 
 ## Project redaction rules
 

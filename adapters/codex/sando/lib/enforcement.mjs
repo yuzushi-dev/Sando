@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { recordCoverage } from './coverage.mjs';
+import { pairedArmFromEnv } from './paired-accounting.mjs';
 
 const SHELL_TOOLS = new Set(['Bash', 'exec_command', 'shell_command']);
 const MAX_COMMAND_LENGTH = 8192;
@@ -117,8 +118,16 @@ export function runPreToolUse(input, env = process.env) {
   if (/^(0|false|off|no)$/i.test(env.SANDO_CLI_ROUTING || '')) return {};
   const toolName = input?.tool_name ?? input?.toolName;
   const result = classifyShellCommand({ toolName, toolInput: input?.tool_input ?? input?.toolInput, cwd: input?.cwd });
+  if (result.status !== 'eligible') {
+    metric(result, toolName, env);
+    return {};
+  }
+  const arm = pairedArmFromEnv(env);
+  if (arm === null || arm === 'control') {
+    metric(bypass(arm === null ? 'invalid-control-arm' : 'control-arm'), toolName, env);
+    return {};
+  }
   metric(result, toolName, env);
-  if (result.status !== 'eligible') return {};
   const cliCommand = result.route === 'sando_read'
     ? `${shellQuote(CLI_PATH)} read -- ${shellQuote(result.path)}`
     : `${shellQuote(CLI_PATH)} grep -F -- ${shellQuote(result.pattern)} ${shellQuote(result.path)}`;
