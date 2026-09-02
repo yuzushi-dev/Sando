@@ -153,3 +153,18 @@ test('publisher posts one local OTLP batch after explicit consent', async (t) =>
   assert.match(records[0].timeUnixNano, /^\d+$/);
   assert.equal(BigInt(records[1].timeUnixNano), BigInt(records[0].timeUnixNano) + 1n);
 });
+
+test('publisher defaults to the local F2 collector instead of the general endpoint', async (t) => {
+  let request;
+  const result = await publishF2Telemetry({
+    result: resultFixture(),
+    configPath: configFile(t, { ...enabledConfig(), endpoint: 'https://telemetry.example/v1/logs' }),
+    env: {},
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 202 };
+    },
+  });
+  assert.equal(result.events, 2);
+  assert.equal(request.url, 'http://127.0.0.1:4319/v1/logs');
+});

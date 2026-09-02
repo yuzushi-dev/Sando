@@ -6,7 +6,7 @@ import {
   SCHEMA_VERSION, defaultTelemetryConfigPath, isDoNotTrack, readTelemetryConfig, serializeEvent, toOtlpLogs,
 } from './telemetry.mjs';
 
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:4318/v1/logs';
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:4319/v1/logs';
 const SUMMARY_FIELDS = Object.freeze([
   'files', 'blocks', 'instructionBytes', 'alwaysOnBlocks', 'alwaysOnBytes',
   'onDemandBlocks', 'onDemandBytes', 'duplicateBlocks', 'duplicateBytes',
@@ -85,7 +85,9 @@ async function publishEvents(events, {
   if (!events.length) return { events: 0, status: 'empty' };
   const config = readTelemetryConfig(configPath ?? defaultTelemetryConfigPath(env));
   if (!config.enabled || isDoNotTrack(env)) return { events: 0, status: 'disabled' };
-  const destination = endpoint ?? env.SANDO_F2_TELEMETRY_ENDPOINT ?? config.endpoint ?? DEFAULT_ENDPOINT;
+  // F2 is a local Grafana aggregate. The general consent endpoint is for the
+  // daily queue and does not admit feature-local event shapes.
+  const destination = endpoint ?? env.SANDO_F2_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const firstTimestamp = BigInt(Date.now()) * 1000000n;

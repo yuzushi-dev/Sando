@@ -19,6 +19,7 @@ This release adds measurement and bounded handling for context and tool output. 
 - The Codex canary uses the client default model unless `SANDO_CODEX_MODEL` is set.
 - Telemetry events use the v2 schema. Mechanical estimates and provider-reported usage remain separate.
 - Already queued v1 aggregate rows are preserved and drained during the v2 rollout.
+- F2 defaults to the local collector used by the self-hosted Grafana stack; a destination override remains explicit.
 
 ### Fixed
 

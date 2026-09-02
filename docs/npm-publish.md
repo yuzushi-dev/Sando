@@ -37,6 +37,10 @@ test -z "$(git ls-files 'handoffs/**')"
 npm run canary:smoke
 ```
 
+Prima del publish, verificare nel collector self-hosted la pipeline pubblica: la
+coda può contenere righe v1 e v2 durante il rollout e il collector deve
+accettarle entrambe.
+
 Poi controlla il contenuto del tarball e pubblica dalla directory del package:
 
 ```sh

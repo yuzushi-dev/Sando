@@ -26,7 +26,10 @@ The F2 snapshot and review publishers use the same consent gate. The local F2
 planner and state stay usable while upload is disabled, but no F2 network
 request is made without `enabled: true`; `DO_NOT_TRACK` also blocks an enabled
 configuration, including a loopback collector. Grafana dashboards belong in the
-self-hosted telemetry stack, not in this repository.
+self-hosted telemetry stack, not in this repository. F2 publishes to the local
+collector on `127.0.0.1:4319` by default; set
+`SANDO_F2_TELEMETRY_ENDPOINT` for an explicit destination. It does not reuse the
+general daily-queue endpoint, whose public pipeline does not admit F2 event shapes.
 
 ## What's collected
 
