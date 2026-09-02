@@ -7,35 +7,15 @@
     "node": ">=22.22.0 <23"
   },
   "scripts": {
-    "test": "npm run test:package && npm run test:benchmark && npm run test:bundles",
+    "test": "npm run test:package && npm run test:bundles",
     "test:package": "node --test --test-concurrency=1 packages/sando/tests/*.test.mjs",
-    "test:benchmark": "node --test --test-concurrency=1 benchmarks/tests/*.test.mjs",
     "test:bundles": "node --test --test-concurrency=1 adapters/claude/sando/tests/*.test.mjs adapters/codex/sando/tests/*.test.mjs plugins/sando/tests/*.test.mjs",
     "sync:bundles": "node scripts/sync-bundles.mjs",
-    "proxy": "node scripts/sando-proxy.mjs",
-    "proxy:report": "node scripts/sando-proxy-report.mjs",
     "context:audit": "node packages/sando/src/context-audit-cli.mjs",
-    "context:plan": "node packages/sando/src/instruction-plan-cli.mjs",
-    "context:f2-auto": "node scripts/sando-f2-auto.mjs",
     "context:gateway-gate": "node packages/sando/src/gateway-gate-cli.mjs",
-    "canary": "node packages/sando/src/canary.mjs",
-    "canary:claude": "node scripts/sando-canary-claude.mjs",
-    "canary:codex": "node scripts/sando-canary-codex.mjs",
-    "canary:smoke": "node scripts/sando-canary-smoke.mjs",
-    "canary:report": "node scripts/sando-canary-report.mjs",
     "check:gateway": "node --check packages/sando/src/lazy-mcp-gateway.mjs && node --check packages/sando/src/lazy-mcp-gateway-stdio.mjs && node --check packages/sando/gateway.mjs",
     "artifact:get": "node packages/sando/src/artifact-cli.mjs",
     "accounting": "node packages/sando/src/accounting-cli.mjs",
-    "benchmark:local": "node benchmarks/run-local.mjs",
-    "benchmark:semantic-shadow": "node benchmarks/semantic-shadow-run.mjs",
-    "benchmark:semantic-shadow-live": "node benchmarks/live/semantic-shadow-live-run.mjs",
-    "benchmark:live": "node benchmarks/live/run-live.mjs",
-    "probe:cache-attribution": "node benchmarks/cache-attribution-report.mjs",
-    "probe:cache-hits": "node benchmarks/cache-hit-provenance.mjs",
-    "probe:cache-control": "node benchmarks/cache-control-survival-probe.mjs",
-    "probe:prefix-divergence": "node benchmarks/prefix-divergence-probe.mjs",
-    "probe:rewrite-payback": "node benchmarks/rewrite-payback-probe.mjs",
-    "probes": "npm run probe:cache-control && npm run probe:cache-hits && npm run probe:cache-attribution",
-    "check": "files=$(git ls-files --cached --others --exclude-standard '*.mjs') && test -n \"$files\" && printf '%s\\n' \"$files\" | xargs -P 8 -n 1 node --check"
+    "check": "files=$(git ls-files --cached --others --exclude-standard '*.mjs' | while IFS= read -r file; do test -f \"$file\" && printf '%s\\n' \"$file\"; done) && test -n \"$files\" && printf '%s\\n' \"$files\" | xargs -P 8 -n 1 node --check"
   }
 }

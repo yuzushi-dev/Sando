@@ -378,10 +378,10 @@ test('the detached flush entrypoint flushes the queue in-process when telemetry 
   assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
 });
 
-test('local-only F1/F2/F4 events can never enter the public upload queue', () => {
+test('local-only F1/F4 events can never enter the public upload queue', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-local-only-'));
   const queuePath = path.join(directory, 'telemetry-queue.jsonl');
-  for (const event of ['f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway']) {
+  for (const event of ['f1_footprint', 'f4_gateway']) {
     assert.throws(
       () => appendQueueRows(queuePath, [{ schema_version: 2, event, day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION }]),
       /local-only event must never reach the upload queue/,

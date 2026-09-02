@@ -6,6 +6,8 @@
 
 Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversized tool output under control, preserves complete redacted artifacts when they fit the admission limit, and provides bounded local tool surfaces. It runs locally and makes no LLM calls.
 
+Release notes: [Sando 0.4.2](docs/changelogs/0.4.2.md).
+
 ## Install the plugin
 
 Install Sando from the host marketplace. Each marketplace source includes its hooks and bundles, so installation needs no build step.
@@ -40,7 +42,7 @@ codex plugin marketplace add yuzushi-dev/yuzushi-plugins
 
 Then open `/plugins`, select `sando`, and install/enable it. Start a new session if Codex was already open.
 
-Each host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, audit/planner/artifact recovery, proxy, statusline, metrics, and accounting launchers are manual entrypoints; see the [shipping matrix](docs/shipping-matrix.md). The bundle is self-contained; the optional npm package is not required.
+Each host wires only the hooks and MCP surfaces declared by its manifest. The remaining bundled CLI, audit, artifact recovery, proxy, statusline, metrics, and accounting launchers are manual entrypoints. The bundle is self-contained; the optional npm package is not required.
 
 ## Provider accounting and paired controls
 
@@ -88,24 +90,7 @@ Without a capture it reports the honest boundary:
 
 Capture files use `sando-context-capture/v1`. They contain byte counts or ephemeral content for classified segments; reports retain only numeric totals and provenance digests, never paths, prompts, or secrets. Mechanical token estimates (`ceil(UTF-8 bytes / 4)`) and provider-reported usage are separate evidence classes.
 
-## Instruction progressive disclosure
-
-### F2 daily review
-
-F2 provides an optional daily, preview-only instruction-planning workflow when
-its runner and self-hosted telemetry collector are configured. Review aggregate
-trends and labels in Grafana, outside this repository. Sando does not apply a
-plan automatically. The runner remains usable with telemetry disabled; snapshot
-and review uploads require explicit telemetry consent and still honor
-`DO_NOT_TRACK`, including for a loopback collector.
-
-Preview procedure-like moves from `AGENTS.md`/`CLAUDE.md` into portable Claude/Codex skills:
-
-```bash
-/path/to/installed/sando/bin/sando context plan-instructions --root . --host both --json
-```
-
-The planner is deterministic and emits content-free structured move previews with byte counts and redacted-content digests. It keeps safety and ambiguous blocks always-on, rejects `--apply`, and never edits project instructions or skills.
+## Lazy MCP Gateway
 
 Evaluate the explicit Lazy MCP Gateway gate from a redacted, numeric evidence file:
 
@@ -124,10 +109,7 @@ the explicit safety/quality thresholds. Missing evidence stays
 The evaluator validates the supplied redacted summary structurally; its digest is
 an integrity checksum, not authentication of provider provenance. A `go` result is
 not authorization to build or enable the gateway unless the summary is traced back
-to the authorized paired runner outputs. Live scenario evidence exists, but the
-spike is implemented locally and remains disabled; the production gate remains
-`insufficient-evidence` because the native Tool Search control arm and a
-complete paired matrix are still missing.
+to the authorized paired runner outputs.
 
 ## Result progressive disclosure
 

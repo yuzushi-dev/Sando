@@ -18,7 +18,6 @@ export {
   summarizePairedSessions,
 } from './src/paired-accounting.mjs';
 export { formatAccountingReport, runAccountingCli } from './src/accounting-cli.mjs';
-export { buildCanaryReport, formatCanaryReport, runCanaryCli, CANARY_REPORT_SCHEMA } from './src/canary.mjs';
 export {
   buildSemanticPrompt,
   createSemanticCompactor,
@@ -91,16 +90,6 @@ export {
   recoverArtifactFromWorkspace,
 } from './src/artifact-recovery.mjs';
 export { runArtifactCli } from './src/artifact-cli.mjs';
-export {
-  INSTRUCTION_CLASSIFICATIONS,
-  INSTRUCTION_CAPTURE_SCHEMA,
-  INSTRUCTION_PLAN_SCHEMA,
-  INSTRUCTION_PLAN_VERSION,
-  buildInstructionPlan,
-  serializeInstructionPlan,
-} from './src/instruction-plan.mjs';
-export { formatInstructionPlanReport, runInstructionPlanCli } from './src/instruction-plan-cli.mjs';
-export { buildF2ReviewEvent, buildF2TelemetryEvents, publishF2Review, publishF2Telemetry } from './src/f2-telemetry.mjs';
 export { buildF1TelemetryEvent, publishF1Telemetry } from './src/f1-telemetry.mjs';
 export {
   F4_EVENT_SCHEMA,

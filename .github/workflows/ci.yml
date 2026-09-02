@@ -28,11 +28,6 @@ jobs:
         with:
           node-version: '22.22.0'
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
       - name: Smoke Codex 0.151.0
         run: |
           curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_RELEASE=0.151.0 CODEX_NON_INTERACTIVE=1 sh
@@ -61,17 +56,33 @@ jobs:
       - name: Check JavaScript
         run: npm run check
 
-      - name: Check Python report
-        run: python -m unittest scripts/test_weekly_report.py
-
       - name: Check public tree
         shell: bash
         run: |
-          if [ -n "$(git ls-files 'handoffs/**')" ]; then
-            echo "::error::Internal handoffs must not be tracked in the public repository."
+          if [ -n "$(git ls-files 'handoffs/**' 'spikes/**' 'dashboard/**' 'config/**' 'benchmarks/**' 'canary/**' 'docs/**' '.internal/**' 'packages/sando/src/canary.mjs' 'packages/sando/src/f2-telemetry.mjs' 'packages/sando/src/instruction-plan*.mjs')" ]; then
+            echo "::error::Internal Sando material must not be tracked in the public repository."
+            exit 1
+          fi
+          test "$(git ls-files 'scripts/**')" = "scripts/sync-bundles.mjs"
+          docs_files="$(git ls-files 'docs/**')"
+          test -n "$docs_files"
+          if printf '%s\n' "$docs_files" | grep -Evq '^docs/changelogs/[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\.md$'; then
+            echo "::error::Only versioned changelogs may be tracked under docs/."
             exit 1
           fi
 
       - name: Check npm package contents
         working-directory: packages/sando
-        run: npm pack --dry-run
+        shell: bash
+        run: |
+          sando_pack_json="$(npm pack --dry-run --json)"
+          SANDO_PACK_JSON="$sando_pack_json" node <<'NODE'
+          const packageFiles = JSON.parse(process.env.SANDO_PACK_JSON)[0].files.map(({ path }) => path);
+          const allowed = /^(LICENSE|README\.md|index\.mjs|package\.json|src\/[a-z0-9-]+\.mjs)$/;
+          const forbidden = /(?:canary|instruction-plan|f2[-_])/i;
+          const invalid = packageFiles.filter((file) => !allowed.test(file) || forbidden.test(file));
+          if (invalid.length > 0) {
+            console.error(`Unexpected npm package files: ${invalid.join(', ')}`);
+            process.exit(1);
+          }
+          NODE

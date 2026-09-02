@@ -115,16 +115,6 @@ test('public adapter and plugin text uses neutral branding', () => {
   }
 });
 
-test('shipping matrix states the three install paths and their wiring boundaries', () => {
-  const matrix = fs.readFileSync(path.join(root, 'docs/shipping-matrix.md'), 'utf8');
-  for (const surface of ['Claude Code marketplace', 'Codex marketplace', 'npm `sandoichi`']) {
-    assert.match(matrix, new RegExp(surface.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  }
-  assert.match(matrix, /provider or host reports it/);
-  assert.match(matrix, /routing backoff is future work/);
-  assert.match(matrix, /extra model-visible MCP tool call/);
-});
-
 test('production routing does not import or invoke evidence-based adaptive backoff', () => {
   const enforcement = fs.readFileSync(path.join(root, 'plugins/sando/lib/enforcement.mjs'), 'utf8');
   assert.doesNotMatch(enforcement, /decideAdaptiveRouting|readProviderUsage/);

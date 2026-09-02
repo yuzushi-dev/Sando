@@ -22,15 +22,6 @@ runtime privacy override: Sando does not prompt, collect, queue, or upload
 telemetry, even when the local config says `enabled: true`. Sando does not
 rewrite that config; unset `DO_NOT_TRACK` to use the saved setting again.
 
-The F2 snapshot and review publishers use the same consent gate. The local F2
-planner and state stay usable while upload is disabled, but no F2 network
-request is made without `enabled: true`; `DO_NOT_TRACK` also blocks an enabled
-configuration, including a loopback collector. Grafana dashboards belong in the
-self-hosted telemetry stack, not in this repository. F2 publishes to the local
-collector on `127.0.0.1:4319` by default; set
-`SANDO_F2_TELEMETRY_ENDPOINT` for an explicit destination. It does not reuse the
-general daily-queue endpoint, whose public pipeline does not admit F2 event shapes.
-
 ## What's collected
 
 Once a day, Sando buckets that day's counts and sends only these event shapes:
@@ -82,8 +73,7 @@ Server retention is 13 months for aggregate rows only. The local upload queue
 is bounded to approximately 30 days of daily rows (up to 4096 rows / 4 MiB);
 older unsent rows are evicted first during an outage.
 
-The endpoint is live. This page does not claim that the canary rollout or an
-independent privacy review is complete; the independent review remains open.
+The endpoint is live. An independent privacy review remains open.
 
 ## Controlling it
 
@@ -100,7 +90,7 @@ matches are ignored. `yes` enables collection and `no` declines or revokes it.
 The package does not install a global `sando` command. Run
 `telemetry-cli.mjs` directly. Only the script path changes by installation type:
 
-**Git checkout:**
+For a Git checkout:
 
 ```sh
 node packages/sando/src/telemetry-cli.mjs status
@@ -110,7 +100,7 @@ node packages/sando/src/telemetry-cli.mjs flush
 node packages/sando/src/telemetry-cli.mjs disable --purge
 ```
 
-**Installed from npm:**
+For an npm install:
 
 ```sh
 node node_modules/sandoichi/src/telemetry-cli.mjs status
@@ -125,14 +115,14 @@ remove queued local data), or reply `sando telemetry no` when the hook is
 installed. To disable it for a process or environment without changing the
 saved consent, set `DO_NOT_TRACK=1` (or any non-empty value other than `0`).
 
-**Installed via the Claude Code marketplace (`sando@yuzushi`):** the same
-script lives at `lib/telemetry-cli.mjs` inside the installed plugin
-  directory. Find it with `claude plugin list` or check what
+For the Claude Code marketplace plugin (`sando@yuzushi`), the same script lives
+at `lib/telemetry-cli.mjs` inside the installed plugin directory. Find it with
+`claude plugin list` or check what
 `${CLAUDE_PLUGIN_ROOT}` resolves to for this plugin, then run
 `node <that path>/lib/telemetry-cli.mjs enable`.
 
-**Installed via the Codex marketplace:** run the same script from the installed
-plugin root: `node <plugin-root>/lib/telemetry-cli.mjs status`.
+For the Codex marketplace, run the script from the installed plugin root:
+`node <plugin-root>/lib/telemetry-cli.mjs status`.
 
 This is an opt-in sample, not a population measurement. Enabled users may
 not represent everyone running Sando.

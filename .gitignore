@@ -1,4 +1,5 @@
 node_modules/
+.internal/
 .sando/
 benchmarks/results/
 graphify-out/
@@ -45,16 +46,13 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Keep the public install-surface matrix versioned while internal docs stay ignored.
+# Keep only versioned changelogs and the bundle synchronizer versioned.
 !docs/
 docs/*
-!docs/shipping-matrix.md
-!docs/npm-publish.md
+!docs/changelogs/
+docs/changelogs/*
+!docs/changelogs/*.md
 
-# Keep the reproducible local validation launchers versioned.
 !scripts/
 scripts/*
-!scripts/sando-*.mjs
-!canary/
-canary/*
-!canary/README.md
+!scripts/sync-bundles.mjs

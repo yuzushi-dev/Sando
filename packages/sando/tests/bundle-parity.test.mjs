@@ -17,9 +17,9 @@ const BUNDLES = [
 const GENERATED_MODULES = [
   'core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'metrics.mjs',
   'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'adaptive-control.mjs',
-  'paired-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs', 'canary.mjs',
+  'paired-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs',
   'context-footprint.mjs', 'context-classifier.mjs', 'context-capture.mjs', 'context-audit-cli.mjs',
-  'instruction-plan.mjs', 'instruction-plan-cli.mjs', 'f1-telemetry.mjs', 'f4-telemetry.mjs',
+  'f1-telemetry.mjs', 'f4-telemetry.mjs',
   'result-disclosure.mjs', 'artifact-recovery.mjs', 'artifact-store.mjs', 'artifact-cli.mjs',
   'gateway-gate.mjs', 'gateway-gate-cli.mjs', 'lazy-mcp-gateway.mjs', 'lazy-mcp-gateway-stdio.mjs',
   'history-disclosure.mjs', 'exec-capture.mjs', 'context-transform.mjs', 'history-budget.mjs',

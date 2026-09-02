@@ -8,8 +8,6 @@ Inspect the provider report with `bin/sando accounting --json`. The Stop hook wr
 
 Run the capture-based, read-only context audit with `bin/sando context audit --host codex --input capture.json --json`. Without an explicit capture, it reports `unavailable`; it does not infer host-owned prompt categories from provider totals.
 
-Preview instruction progressive-disclosure moves with `bin/sando context plan-instructions --root . --host both --json`. The planner is read-only and rejects `--apply`.
-
 Evaluate a redacted numeric gateway evidence file with `bin/sando context gateway-gate --input gateway-evidence.json --json`. The command only reports `go`, `no-go`, or `insufficient-evidence`; it never changes MCP configuration or enables a gateway.
 
 Large result previews expose `sando-result-disclosure/v1`; use the read-only `sando_artifact_get` MCP tool or `bin/sando artifact get --root . --ref sando:sha256:...` for bounded redacted recovery. The Lazy MCP Gateway remains gated until native Tool Search paired evidence exists.

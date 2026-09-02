@@ -106,7 +106,7 @@ test('supersedes OpenAI Chat Completions Reads and preserves malformed arguments
 
 test('supports OpenAI Responses function_call and function_call_output items', () => {
   const body = {
-    model: 'gpt-5.6-luna',
+    model: 'codex-fixture-model',
     input: [
       { type: 'function_call', call_id: 'old', name: 'Read', arguments: '{"file_path":"same"}' },
       { type: 'function_call_output', call_id: 'old', output: 'old body' },
@@ -152,7 +152,7 @@ test('supports Codex custom_tool_call history in Responses requests', () => {
 
 test('lists only historical successful provider results as semantic candidates', () => {
   const body = {
-    model: 'gpt-5.6-luna',
+    model: 'codex-fixture-model',
     input: [
       { type: 'custom_tool_call', call_id: 'old', name: 'Bash', input: { command: 'npm test' } },
       { type: 'custom_tool_call_output', call_id: 'old', output: 'old successful output' },
@@ -166,7 +166,7 @@ test('lists only historical successful provider results as semantic candidates',
 
   assert.deepEqual(listSemanticCandidates({ provider: 'openai-responses', body }), [{
     id: 'old',
-    model: 'gpt-5.6-luna',
+    model: 'codex-fixture-model',
     toolName: 'Bash',
     text: 'old successful output',
     current: false,

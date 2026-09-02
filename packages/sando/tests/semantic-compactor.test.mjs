@@ -147,7 +147,7 @@ test('repairs a summary that lists required facts but omits them from the prose'
   });
   const result = await compact({
     provider: 'codex',
-    model: 'gpt-5.6-luna',
+    model: 'codex-fixture-model',
     toolName: 'Bash',
     text: longText,
     requiredFacts: ['READ_HEAD_FACT', 'READ_TAIL_FACT', '/workspace/src/app.mjs', 'error: exit 1'],

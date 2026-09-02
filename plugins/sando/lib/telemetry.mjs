@@ -15,22 +15,15 @@ const MAX_EVENT_BYTES = 2048;
 
 const COUNT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', '21_to_100', 'gt_100'];
 const BYTE_BUCKETS = ['lt_4k', '4_to_16k', '16_to_64k', '64_to_256k', '256k_to_1m', 'gte_1m'];
-const LOCAL_ONLY_EVENTS = new Set(['f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway']);
+const LOCAL_ONLY_EVENTS = new Set(['f1_footprint', 'f4_gateway']);
 const HOSTS = ['claude', 'codex'];
 const PROVIDERS = ['anthropic', 'openai', 'unknown'];
 const MODES = ['enforce', 'observe', 'dry_run'];
-const F2_STATUSES = ['recorded', 'unchanged', 'error'];
-const F2_LABELS = ['useful', 'not-useful', 'duplicate', 'risky'];
-const F2_ERROR_KINDS = ['none', 'missing-root', 'permission-denied', 'limits-exceeded', 'invalid-state', 'scan-failed'];
 const F4_HOSTS = ['claude', 'codex', 'unknown'];
 const F4_OPERATIONS = ['catalog', 'call'];
 const F4_OUTCOMES = ['success', 'rejected', 'timeout', 'cancelled', 'error'];
 const F4_LATENCY_BUCKETS = ['lt_10ms', '10_to_100ms', '100_to_1000ms', 'gte_1000ms'];
 const F4_RESULT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', 'gt_20', 'unknown'];
-const F2_PROJECT = (value) => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(value);
-const F2_SNAPSHOT_ID = (value) => typeof value === 'string' && /^[0-9a-f]{12}$/.test(value);
-const F2_COUNTER = (value) => Number.isSafeInteger(value) && value >= 0;
-const F2_SIGNED_COUNTER = (value) => Number.isSafeInteger(value);
 const F1_HOSTS = ['claude', 'codex'];
 const F1_STATUSES = ['complete', 'partial', 'unavailable'];
 const F1_RATIO_BUCKETS = ['zero', 'lt_1pct', '1_to_10pct', 'gt_10pct', 'unavailable'];
@@ -44,7 +37,7 @@ const SHARED_FIELDS = {
   schema_version: (value) => value === SCHEMA_VERSION,
   event: (value) => [
     'hook_summary', 'proxy_summary', 'active_day', 'hook_failure_summary', 'proxy_failure_summary',
-    'f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway',
+    'f1_footprint', 'f4_gateway',
   ].includes(value),
   day_utc: (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
   plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
@@ -76,33 +69,6 @@ const PROXY_FAILURE_FIELDS = {
   provider: (value) => PROVIDERS.includes(value),
   failure_stage: (value) => FAILURE_STAGES.includes(value),
 };
-const F2_SNAPSHOT_FIELDS = {
-  f2_project: F2_PROJECT,
-  f2_snapshot_id: F2_SNAPSHOT_ID,
-  f2_status: (value) => F2_STATUSES.includes(value),
-  f2_duration_ms: F2_COUNTER,
-  f2_files: F2_COUNTER,
-  f2_blocks: F2_COUNTER,
-  f2_instruction_bytes: F2_COUNTER,
-  f2_always_on_blocks: F2_COUNTER,
-  f2_always_on_bytes: F2_COUNTER,
-  f2_on_demand_blocks: F2_COUNTER,
-  f2_on_demand_bytes: F2_COUNTER,
-  f2_duplicate_blocks: F2_COUNTER,
-  f2_duplicate_bytes: F2_COUNTER,
-  f2_unknown_blocks: F2_COUNTER,
-  f2_unknown_bytes: F2_COUNTER,
-  f2_proposal_count: F2_COUNTER,
-  f2_proposed_bytes: F2_COUNTER,
-  f2_delta_instruction_bytes: F2_SIGNED_COUNTER,
-  f2_delta_proposed_bytes: F2_SIGNED_COUNTER,
-  f2_error_kind: (value) => F2_ERROR_KINDS.includes(value),
-};
-const F2_REVIEW_FIELDS = {
-  f2_project: F2_PROJECT,
-  f2_snapshot_id: F2_SNAPSHOT_ID,
-  f2_label: (value) => F2_LABELS.includes(value),
-};
 const F4_FIELDS = {
   f4_host: (value) => F4_HOSTS.includes(value),
   f4_operation: (value) => F4_OPERATIONS.includes(value),
@@ -124,8 +90,6 @@ function fieldsForEvent(eventType) {
   if (eventType === 'proxy_summary') return PROXY_FIELDS;
   if (eventType === 'active_day') return ACTIVE_DAY_FIELDS;
   if (eventType === 'hook_failure_summary') return HOOK_FAILURE_FIELDS;
-  if (eventType === 'f2_snapshot') return F2_SNAPSHOT_FIELDS;
-  if (eventType === 'f2_review') return F2_REVIEW_FIELDS;
   if (eventType === 'f4_gateway') return F4_FIELDS;
   return PROXY_FAILURE_FIELDS;
 }
@@ -176,11 +140,6 @@ export const TELEMETRY_CONFIG_VERSION = 1;
 export const CONSENT_VERSION = 1;
 export const TELEMETRY_DETAILS_URL = 'https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md';
 export const CONSENT_STATES = ['unasked', 'asked', 'enabled', 'declined'];
-// Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
-// reachable from any of the owner's machines (see
-// session-handoff/deploy/telemetry/). Rate-limited at nginx (30 req/min/IP).
-// Release/broader publication is still gated on the open items in
-// session-handoff/docs/telemetry-canary-report.md.
 export const TELEMETRY_ENDPOINT = 'https://telemetry.yuzushi.party/v1/logs';
 
 export function isDoNotTrack(env = process.env) {
