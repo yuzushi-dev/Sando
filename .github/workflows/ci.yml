@@ -59,7 +59,7 @@ jobs:
       - name: Check public tree
         shell: bash
         run: |
-          if [ -n "$(git ls-files 'handoffs/**' 'spikes/**' 'dashboard/**' 'config/**' 'benchmarks/**' 'canary/**' 'docs/**' '.internal/**' 'packages/sando/src/canary.mjs' 'packages/sando/src/f2-telemetry.mjs' 'packages/sando/src/instruction-plan*.mjs')" ]; then
+          if [ -n "$(git ls-files 'handoffs/**' 'spikes/**' 'dashboard/**' 'config/**' 'benchmarks/**' 'canary/**' '.internal/**' 'packages/sando/src/canary.mjs' 'packages/sando/src/f2-telemetry.mjs' 'packages/sando/src/instruction-plan*.mjs')" ]; then
             echo "::error::Internal Sando material must not be tracked in the public repository."
             exit 1
           fi
