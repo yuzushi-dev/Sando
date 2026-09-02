@@ -1,0 +1,10 @@
+{
+  "schema": "sando-context-capture/v1",
+  "host": "codex",
+  "requestFormat": "codex-cli",
+  "body": { "state": "observed", "content": "CODEX_CLI_CONTEXT\n" },
+  "segments": [
+    { "category": "history", "source": "codex-session", "content": "CODEX_CLI_CONTEXT\n" }
+  ],
+  "toolSearch": { "state": "unavailable" }
+}

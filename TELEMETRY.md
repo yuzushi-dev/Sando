@@ -22,6 +22,12 @@ runtime privacy override: Sando does not prompt, collect, queue, or upload
 telemetry, even when the local config says `enabled: true`. Sando does not
 rewrite that config; unset `DO_NOT_TRACK` to use the saved setting again.
 
+The F2 snapshot and review publishers use the same consent gate. The local F2
+planner and state stay usable while upload is disabled, but no F2 network
+request is made without `enabled: true`; `DO_NOT_TRACK` also blocks an enabled
+configuration, including a loopback collector. Grafana dashboards belong in the
+self-hosted telemetry stack, not in this repository.
+
 ## What's collected
 
 Once a day, Sando buckets that day's counts and sends only these event shapes:
@@ -39,11 +45,15 @@ Once a day, Sando buckets that day's counts and sends only these event shapes:
   `response`.
 
 All counts and byte values use fixed buckets (`zero`, `one`, `2_to_5`,
-`6_to_20`, `gt_20`; byte ranges such as `16_to_64k`). Redaction counts and
+`6_to_20`, `21_to_100`, `gt_100`; byte ranges such as `16_to_64k`). Redaction counts and
 local cache observations may remain in local diagnostics, but are not sent.
 
 Sando never sends partial counters for the current day; daily aggregates are sent
 only after that UTC day closes. The marker is flushed asynchronously.
+
+New queue rows use schema v2. During the rollout, already queued v1 aggregate
+rows are accepted and sent unchanged until drained; the collector must accept
+both versions. Unsupported queue schemas are rejected before they are persisted.
 
 ## What's never collected
 

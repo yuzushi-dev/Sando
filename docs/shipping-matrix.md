@@ -5,8 +5,8 @@ It is the source for install claims in the public README.
 
 | Surface | Install entrypoint | Wired automatically | Present but manual/optional | Not installed by this path |
 | --- | --- | --- | --- | --- |
-| Claude Code marketplace | `/plugin install sando@yuzushi` | Claude companion hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`) | Bundled MCP server, provider proxy, statusline wrapper, metrics and accounting launchers | Codex plugin manifest and Codex MCP registration |
-| Codex marketplace | `codex plugin marketplace add yuzushi-dev/yuzushi-plugins`, then enable `sando` | Codex companion hooks, declared Sando MCP server including `sando_exec`, bounded CLI routes | Provider proxy, statusline/metrics/accounting launchers | Claude plugin manifest and Claude statusline registration |
+| Claude Code marketplace | `/plugin install sando@yuzushi` | Claude companion hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`) | Bundled MCP server, audit/planner/gateway-gate/artifact recovery, provider proxy, statusline wrapper, metrics and accounting launchers | Codex plugin manifest and Codex MCP registration |
+| Codex marketplace | `codex plugin marketplace add yuzushi-dev/yuzushi-plugins`, then enable `sando` | Codex companion hooks, declared Sando MCP server including `sando_exec`, bounded CLI routes | Audit/planner/gateway-gate/artifact recovery, provider proxy, statusline/metrics/accounting launchers | Claude plugin manifest and Claude statusline registration |
 | npm `sandoichi` | `npm install sandoichi` | JavaScript library exports only; optional postinstall telemetry consent | Call exported transforms, reports, and proxy APIs from application code | Host hooks, MCP server registration, marketplace plugin launchers |
 
 ## Before/after claim corrections
@@ -22,3 +22,12 @@ The Codex native PreToolUse route is preferred for eligible literal reads and
 searches because it avoids an extra model-visible MCP tool call. MCP remains
 useful for explicit bounded operations such as `sando_exec`; its turn/tool-call
 tradeoff must be measured per host, model, and workload.
+
+## Feature boundaries
+
+| Feature | Automatic boundary | Manual/optional boundary | Current evidence limit |
+| --- | --- | --- | --- |
+| F1 context footprint | None beyond explicitly configured capture/proxy hooks | Capture and provider-proxy telemetry are opt-in | Reports separate mechanical estimates from provider-reported usage; unavailable host bodies stay unavailable |
+| F2 instruction disclosure | No plan application | Runner, self-hosted telemetry/Grafana, previews, and fixed human labels | Preview-only; upload requires consent and honors `DO_NOT_TRACK` |
+| F3 result disclosure | Bounded hook/MCP output on wired host surfaces | Artifact byte/line recovery and provider proxy | Oversized artifacts over the admission cap have bounded previews with no complete-artifact claim |
+| F4 lazy MCP gateway | None; gateway is disabled by default | Explicit config, process, allowlist, and local ledger | Smoke/gateway evidence is not native Tool Search evidence or a production go decision |

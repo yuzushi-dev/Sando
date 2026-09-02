@@ -240,6 +240,9 @@ test('detects provider tool shapes conservatively and leaves no-op requests clon
     deduplicatedResults: 0,
     compactedStructures: 0,
     shakenResults: 0,
+    historyDisclosureCount: 0,
+    historyDisclosureOriginalBytes: 0,
+    historyDisclosureVisibleBytes: 0,
     budgetTriggered: false,
     cacheProtectedSkips: 0,
     cacheRewriteRatio: null,
@@ -263,6 +266,9 @@ test('deduplicates an older identical historical tool result', () => {
   assert.equal(result.body.messages[1].content, '[sando duplicate historical result]');
   assert.equal(result.body.messages[3].content, output);
   assert.equal(result.stats.deduplicatedResults, 1);
+  assert.equal(result.stats.historyDisclosureCount, 1);
+  assert.equal(result.stats.historyDisclosureOriginalBytes, Buffer.byteLength(output));
+  assert.equal(result.stats.historyDisclosureVisibleBytes, Buffer.byteLength('[sando duplicate historical result]'));
   assert.ok(result.stats.estimatedOutputTokens < result.stats.estimatedInputTokens);
   assert.ok(result.reasons.includes('duplicate-history'));
 });

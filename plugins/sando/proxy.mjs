@@ -10,7 +10,8 @@ function help(stdout = process.stdout) {
   stdout.write('Sando provider proxy (explicit opt-in)\n'
     + 'Required: SANDO_UPSTREAM_URL=https://api.example.test\n'
     + 'Optional: SANDO_PROXY_HOST=127.0.0.1 SANDO_PROXY_PORT=0\n'
-    + '          SANDO_CONTEXT_POLICY=<JSON> SANDO_PROXY_METRICS_PATH=<absolute path>\n');
+    + '          SANDO_CONTEXT_POLICY=<JSON> SANDO_PROXY_METRICS_PATH=<absolute path>\n'
+    + 'F1 capture: SANDO_CONTEXT_FOOTPRINT_PATH=<absolute path> SANDO_CONTEXT_SESSION_KEY=<key>\n');
 }
 
 function numberEnv(env, name, fallback) {
@@ -39,10 +40,15 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     port: numberEnv(env, 'SANDO_PROXY_PORT', 0),
     policy: policyEnv(env),
     metricsPath: env.SANDO_PROXY_METRICS_PATH || defaultProxyMetricsPath(env),
+    contextCapturePath: env.SANDO_CONTEXT_FOOTPRINT_PATH,
+    contextCaptureHost: env.SANDO_CONTEXT_FOOTPRINT_HOST,
+    contextSessionKey: env.SANDO_CONTEXT_SESSION_KEY,
+    transformProviderRequests: env.SANDO_PROXY_TRANSFORM !== '0',
     env,
   });
   process.stdout.write(`${JSON.stringify({
     schema: 'sando-provider-proxy/v1', url: proxy.url, metricsPath: env.SANDO_PROXY_METRICS_PATH || defaultProxyMetricsPath(env),
+    contextCapturePath: env.SANDO_CONTEXT_FOOTPRINT_PATH || null,
   })}\n`);
   await new Promise((resolve) => {
     const stop = async () => { await proxy.close(); resolve(); };

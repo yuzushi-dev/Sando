@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -15,13 +16,99 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 export const CODEX_TOOL_MEASUREMENT = 'end-to-end-tools';
 export const MAX_REPETITIONS = 15;
 const REQUIRED_FACTS = ['SANDO_AB_HEAD_FACT', 'SANDO_AB_TAIL_FACT'];
-const FIXTURE_COMMAND = "i=0; while [ \"$i\" -lt 700 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_AB_HEAD_FACT\\nSANDO_AB_TAIL_FACT\\n'";
+export const FIXTURE_COMMAND = "i=0; while [ \"$i\" -lt 700 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_AB_HEAD_FACT\\nSANDO_AB_TAIL_FACT\\n'";
 const CLI_FIXTURE_COMMAND = 'cat -- fixture.txt';
 const ALL_CLI_FACTS = ['SANDO_CLI_HEAD_FACT', 'SANDO_CLI_TAIL_FACT'];
 const ALL_EXEC_FACTS = ['SANDO_EXEC_HEAD_FACT', 'SANDO_EXEC_TAIL_FACT'];
 const ALL_REQUIRED_FACTS = [...ALL_CLI_FACTS, ...ALL_EXEC_FACTS];
 const ALL_EXEC_COMMAND = "i=0; while [ \"$i\" -lt 300 ]; do printf 'noise:%s\\n' \"$i\"; i=$((i+1)); done; printf 'SANDO_EXEC_HEAD_FACT\\nSANDO_EXEC_TAIL_FACT\\n'";
 const ALL_SANDO_POLICY = { mode: 'apply', maxInlineBytes: 1024, maxArtifactBytes: 65536, redact: true };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function receiptFailure(message, cause) {
+  const error = new Error(`receipt: ${message}`);
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+export async function readExecReceipt(directory) {
+  if (typeof directory !== 'string' || directory.trim() === '') throw receiptFailure('directory is required');
+
+  let directoryStat;
+  try {
+    directoryStat = await fs.lstat(directory);
+  } catch (error) {
+    throw receiptFailure('directory cannot be inspected', error);
+  }
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+    throw receiptFailure('directory must be a real directory');
+  }
+
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    throw receiptFailure('directory cannot be read', error);
+  }
+  if (entries.length === 0) throw receiptFailure('directory is empty');
+  if (entries.length !== 1) throw receiptFailure('directory must contain exactly one receipt entry; temporary residue is not allowed');
+
+  const [entry] = entries;
+  if (path.extname(entry.name) !== '.json') throw receiptFailure('the receipt entry must have a .json extension');
+  if (entry.isSymbolicLink()) throw receiptFailure('the receipt entry must not be a symlink');
+
+  const receiptPath = path.join(directory, entry.name);
+  let entryStat;
+  try {
+    entryStat = await fs.lstat(receiptPath);
+  } catch (error) {
+    throw receiptFailure('the receipt entry cannot be inspected', error);
+  }
+  if (entryStat.isSymbolicLink()) throw receiptFailure('the receipt entry must not be a symlink');
+  if (!entryStat.isFile()) throw receiptFailure('the receipt entry must be a regular file');
+
+  let source;
+  try {
+    source = await fs.readFile(receiptPath, 'utf8');
+  } catch (error) {
+    throw receiptFailure('the receipt entry cannot be read', error);
+  }
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw receiptFailure('the receipt JSON is invalid', error);
+  }
+}
+
+export function validateExecReceipt(receipt, options = {}) {
+  const { command, requiredFacts = [] } = options ?? {};
+  const fail = (message) => { throw receiptFailure(`validation failed: ${message}`); };
+
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) fail('an object is required');
+  if (receipt.schema !== 'sando-exec-receipt/v1') fail('schema must be sando-exec-receipt/v1');
+  if (typeof receipt.run_id !== 'string' || !UUID_PATTERN.test(receipt.run_id)) fail('run_id must be a UUID');
+  if (typeof command !== 'string' || receipt.command !== command) fail('command does not match');
+  if (receipt.workdir !== '.') fail('workdir must be .');
+  if (typeof receipt.stdout !== 'string' || typeof receipt.stderr !== 'string') fail('stdout and stderr must be strings');
+  if (receipt.stdout_sha256 !== sha256(receipt.stdout)) fail('stdout_sha256 does not match stdout');
+  if (receipt.stderr_sha256 !== sha256(receipt.stderr)) fail('stderr_sha256 does not match stderr');
+  if (receipt.stdout_bytes !== Buffer.byteLength(receipt.stdout, 'utf8')) fail('stdout_bytes does not match stdout');
+  if (receipt.stderr_bytes !== Buffer.byteLength(receipt.stderr, 'utf8')) fail('stderr_bytes does not match stderr');
+  if (receipt.exit_code !== 0) fail('exit_code must be 0');
+  if (receipt.signal !== null) fail('signal must be null');
+  for (const field of ['timed_out', 'cancelled', 'stdout_truncated', 'stderr_truncated', 'truncated']) {
+    if (receipt[field] !== false) fail(`${field} must be false`);
+  }
+  if (!Array.isArray(requiredFacts)) fail('requiredFacts must be an array');
+  for (const fact of requiredFacts) {
+    if (typeof fact !== 'string' || !receipt.stdout.includes(fact)) fail('required fact is missing from stdout');
+  }
+  return receipt;
+}
 
 function cliFixtureText(facts) {
   return `${[
@@ -40,6 +127,12 @@ function option(name, fallback) {
   return index === -1 ? fallback : process.argv[index + 1];
 }
 
+export function resolveCodexExecutable({ executable, env = process.env } = {}) {
+  const value = executable ?? env.SANDO_CODEX_BIN ?? 'codex';
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError('non-empty executable is required');
+  return value;
+}
+
 function validateRepetitions(value) {
   const repetitions = Number(value);
   if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > MAX_REPETITIONS) {
@@ -48,7 +141,7 @@ function validateRepetitions(value) {
   return repetitions;
 }
 
-export function buildCodexToolArgs({ prompt, model, optimized, serverPath, route = 'mcp' }) {
+export function buildCodexToolArgs({ prompt, model, optimized, serverPath, route = 'mcp', receiptDirectory }) {
   if (typeof prompt !== 'string' || !prompt) throw new TypeError('prompt is required');
   if (!['mcp', 'cli', 'all'].includes(route)) throw new TypeError('route must be mcp, cli, or all');
   const usesMcp = route === 'mcp' || route === 'all';
@@ -59,13 +152,21 @@ export function buildCodexToolArgs({ prompt, model, optimized, serverPath, route
   if (usesMcp && optimized) {
     if (typeof serverPath !== 'string' || !path.isAbsolute(serverPath)) throw new TypeError('absolute MCP server path is required');
     args.push('-c', 'mcp_servers.sando.command="node"', '-c', `mcp_servers.sando.args=${JSON.stringify([serverPath])}`);
+    if (typeof receiptDirectory === 'string' && receiptDirectory.trim() !== '') {
+      args.push('-c', `mcp_servers.sando.env.SANDO_EXEC_RECEIPT_DIR=${JSON.stringify(receiptDirectory)}`);
+    }
   }
   args.push(prompt);
   return args;
 }
 
-export function buildCodexE2EEnv({ variant, route, baseEnv = process.env }) {
+export function buildCodexE2EEnv({ variant, route, baseEnv = process.env, receiptDirectory }) {
   const env = { ...baseEnv };
+  if (variant === 'optimized' && (route === 'mcp' || route === 'all') && typeof receiptDirectory === 'string' && receiptDirectory.trim() !== '') {
+    env.SANDO_EXEC_RECEIPT_DIR = receiptDirectory;
+  } else {
+    delete env.SANDO_EXEC_RECEIPT_DIR;
+  }
   if (route !== 'cli' && route !== 'all') return env;
   env.SANDO_CLI_ROUTING = variant === 'optimized' ? 'on' : 'off';
   if (variant === 'optimized') {
@@ -160,25 +261,25 @@ function rawToolOutputBytes(route) {
     + Buffer.byteLength(commandFixtureText(300, ALL_EXEC_FACTS), 'utf8');
 }
 
-function toolOutputHasFacts(stdout, variant, route) {
+function toolOutputHasFacts(stdout, variant, route, receipt) {
   if (route === 'all') {
     const documents = jsonDocuments(stdout);
     const shellOutput = documents
       .filter((value) => ['command_execution', 'shell_command'].includes(value.type) || ['command_execution', 'shell_command'].includes(value.item?.type))
       .map(eventText).join('\n');
-    const mcpOutput = documents.flatMap((value) => [value, value.item])
-      .filter((value) => ['mcp_tool_call', 'mcp_tool_call_output'].includes(value?.type) && (value.name === 'sando_exec' || value.tool === 'sando_exec'))
-      .map(eventText).join('\n');
-    return ALL_CLI_FACTS.every((fact) => shellOutput.includes(fact))
-      && ALL_EXEC_FACTS.every((fact) => (variant === 'optimized' ? mcpOutput : shellOutput).includes(fact));
+    const execFactsPresent = variant === 'optimized'
+      ? typeof receipt?.stdout === 'string' && ALL_EXEC_FACTS.every((fact) => receipt.stdout.includes(fact))
+      : ALL_EXEC_FACTS.every((fact) => shellOutput.includes(fact));
+    return ALL_CLI_FACTS.every((fact) => shellOutput.includes(fact)) && execFactsPresent;
+  }
+  if (route === 'mcp' && variant === 'optimized') {
+    return typeof receipt?.stdout === 'string' && REQUIRED_FACTS.every((fact) => receipt.stdout.includes(fact));
   }
   return contains(jsonDocuments(stdout), (value) => {
     const text = typeof value.aggregated_output === 'string'
       ? value.aggregated_output
       : JSON.stringify(value.result ?? '');
-    const isTool = route === 'mcp' && variant === 'optimized'
-      ? ['mcp_tool_call', 'mcp_tool_call_output'].includes(value.type) && (value.name === 'sando_exec' || value.tool === 'sando_exec')
-      : value.type === 'command_execution' || value.item?.type === 'command_execution';
+    const isTool = value.type === 'command_execution' || value.item?.type === 'command_execution';
     return isTool && REQUIRED_FACTS.every((fact) => text.includes(fact));
   });
 }
@@ -215,14 +316,14 @@ function promptFor({ variant, route }) {
   ].join('\n');
 }
 
-function runEvidence({ variant, stdout, route }) {
+function runEvidence({ variant, stdout, route, receipt }) {
   const facts = finalFacts(stdout);
   const pathPass = route === 'mcp'
     ? (variant === 'optimized' ? usedTool(stdout, 'sando_exec') : usedBuiltinShell(stdout))
     : route === 'cli'
       ? (variant === 'optimized' ? usedSandoCli(stdout) : usedBuiltinShell(stdout))
       : (variant === 'optimized' ? usedSandoCli(stdout) && usedTool(stdout, 'sando_exec') : usedBuiltinShell(stdout));
-  const resultPass = toolOutputHasFacts(stdout, variant, route);
+  const resultPass = toolOutputHasFacts(stdout, variant, route, receipt);
   const requiredFacts = route === 'all' ? ALL_REQUIRED_FACTS : REQUIRED_FACTS;
   const modelVisibleQuality = facts?.status === 'ok' && Array.isArray(facts.facts)
     && requiredFacts.every((fact) => facts.facts.includes(fact)) ? 'pass' : 'fail';
@@ -254,12 +355,12 @@ function failedRun({ variant, repetition, prompt, args, result, clientVersion, s
   };
 }
 
-async function runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route }) {
+async function runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route, codexExecutable, receiptDirectory }) {
   const prompt = promptFor({ variant, route });
-  const args = buildCodexToolArgs({ prompt, model, optimized: variant === 'optimized', serverPath, route });
+  const args = buildCodexToolArgs({ prompt, model, optimized: variant === 'optimized', serverPath, route, receiptDirectory });
   const started = Date.now();
-  const env = buildCodexE2EEnv({ variant, route });
-  const result = await runCommand('codex', args, { cwd: workspace, timeoutMs, env });
+  const env = buildCodexE2EEnv({ variant, route, receiptDirectory });
+  const result = await runCommand(codexExecutable, args, { cwd: workspace, timeoutMs, env });
   const scenario = route === 'cli' ? 'codex-cli-noise' : route === 'all' ? 'codex-all-strategies' : 'codex-tool-noise';
   const scenarioDigest = digestPrompt(route === 'cli' ? CLI_FIXTURE_COMMAND : route === 'all' ? `${CLI_FIXTURE_COMMAND}\n${ALL_EXEC_COMMAND}` : FIXTURE_COMMAND);
   const audit = auditMetadata({
@@ -267,11 +368,25 @@ async function runVariant({ variant, repetition, workspace, serverPath, model, t
     measurement: { mode: CODEX_TOOL_MEASUREMENT, hookEndToEnd: true, toolPath: variant === 'optimized' ? (route === 'mcp' ? 'sando_exec' : route === 'cli' ? 'sando-cli' : 'sando-cli+sando_exec') : 'builtin-shell' }, cwd: ROOT,
   });
   if (result.code !== 0) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario, message: formatChildFailure('codex', variant, result) });
+  let receipt = null;
+  if (variant === 'optimized' && (route === 'mcp' || route === 'all')) {
+    try {
+      receipt = validateExecReceipt(await readExecReceipt(receiptDirectory), {
+        command: route === 'all' ? ALL_EXEC_COMMAND : FIXTURE_COMMAND,
+        requiredFacts: route === 'all' ? ALL_EXEC_FACTS : REQUIRED_FACTS,
+      });
+    } catch (error) {
+      return failedRun({
+        variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario,
+        message: `optimized ${route} execution receipt validation failed: ${error.message}`,
+      });
+    }
+  }
   const usage = parseCodexUsage(result.stdout);
   if (!usage) return failedRun({ variant, repetition, prompt, args, result, clientVersion, scenarioDigest, scenario, message: 'Codex returned no provider usage' });
   audit.resolvedModel = usage.resolvedModel ?? model ?? null;
   audit.tokenAccounting = { source: 'provider-reported', providerObserved: true };
-  const evidence = runEvidence({ variant, stdout: result.stdout, route });
+  const evidence = runEvidence({ variant, stdout: result.stdout, route, receipt });
   const interactions = countInteractions(result.stdout, 'codex');
   const mechanicalContextTrimmedBytes = variant === 'optimized'
     ? Math.max(0, rawToolOutputBytes(route) - observedToolOutputBytes(result.stdout, route)) : 0;
@@ -284,21 +399,28 @@ async function runVariant({ variant, repetition, workspace, serverPath, model, t
   };
 }
 
-export async function runCodexToolBenchmark({ outputPath, model, repetitions, timeoutMs = 120_000, serverPath = path.join(ROOT, 'plugins/sando/mcp/server.mjs'), route = 'mcp' }) {
+export async function runCodexToolBenchmark({ outputPath, model, repetitions, timeoutMs = 120_000, serverPath = path.join(ROOT, 'plugins/sando/mcp/server.mjs'), route = 'mcp', codexExecutable } = {}) {
   if (!['mcp', 'cli', 'all'].includes(route)) throw new Error('route must be mcp, cli, or all');
+  const resolvedCodexExecutable = resolveCodexExecutable({ executable: codexExecutable });
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-codex-e2e-'));
-  if (route === 'cli' || route === 'all') {
-    const fixtureFacts = route === 'all' ? ALL_CLI_FACTS : REQUIRED_FACTS;
-    const fixture = cliFixtureText(fixtureFacts).trimEnd();
-    await fs.writeFile(path.join(workspace, 'fixture.txt'), `${fixture}\n`);
-  }
-  const version = await runCommand('codex', ['--version'], { cwd: ROOT, timeoutMs: 10_000 });
-  const clientVersion = version.stdout.trim().split('\n').find(Boolean) ?? 'unresolved';
-  const runs = [];
+  const receiptRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sando-codex-receipts-'));
   try {
+    if (route === 'cli' || route === 'all') {
+      const fixtureFacts = route === 'all' ? ALL_CLI_FACTS : REQUIRED_FACTS;
+      const fixture = cliFixtureText(fixtureFacts).trimEnd();
+      await fs.writeFile(path.join(workspace, 'fixture.txt'), `${fixture}\n`);
+    }
+    const version = await runCommand(resolvedCodexExecutable, ['--version'], { cwd: ROOT, timeoutMs: 10_000 });
+    const clientVersion = version.stdout.trim().split('\n').find(Boolean) ?? 'unresolved';
+    const runs = [];
     for (let repetition = 0; repetition < repetitions; repetition += 1) {
       for (const variant of ['baseline', 'optimized']) {
-        const run = await runVariant({ variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route });
+        const run = await runVariant({
+          variant, repetition, workspace, serverPath, model, timeoutMs, clientVersion, route, codexExecutable: resolvedCodexExecutable,
+          ...(variant === 'optimized' && (route === 'mcp' || route === 'all')
+            ? { receiptDirectory: await fs.mkdtemp(path.join(receiptRoot, `repetition-${repetition}-optimized-`)) }
+            : {}),
+        });
         runs.push(run);
         if (run.quality !== 'pass') break;
       }
@@ -319,7 +441,10 @@ export async function runCodexToolBenchmark({ outputPath, model, repetitions, ti
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`);
     return output;
-  } finally { await fs.rm(workspace, { recursive: true, force: true }); }
+  } finally {
+    await fs.rm(receiptRoot, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -328,7 +453,7 @@ async function main() {
   const outputPath = path.resolve(option('out', path.join(ROOT, 'benchmarks/results', route === 'cli' ? 'live-codex-cli-tools.json' : route === 'all' ? 'live-codex-all-strategies.json' : 'live-codex-tools.json')));
   const output = await runCodexToolBenchmark({
     outputPath, model: option('model'), repetitions: validateRepetitions(option('repetitions', '1')),
-    timeoutMs: Number(option('timeout-ms', '120000')), route, serverPath: path.resolve(option('server-path', path.join(ROOT, 'plugins/sando/mcp/server.mjs'))),
+    timeoutMs: Number(option('timeout-ms', '120000')), route, codexExecutable: option('codex-bin'), serverPath: path.resolve(option('server-path', path.join(ROOT, 'plugins/sando/mcp/server.mjs'))),
   });
   process.stdout.write(`${JSON.stringify({ outputPath, status: output.status, summary: output.summary }, null, 2)}\n`);
   if (output.status !== 'passed') process.exitCode = 1;

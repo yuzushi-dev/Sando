@@ -5,16 +5,37 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { atomicWrite, ensureDirectory, withLock } from './provider-usage.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
 
-const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+const LEGACY_SCHEMA_VERSION = 1;
+const SUPPORTED_QUEUE_SCHEMA_VERSIONS = new Set([LEGACY_SCHEMA_VERSION, SCHEMA_VERSION]);
 const MAX_STRING_LENGTH = 32;
 const MAX_EVENT_BYTES = 2048;
 
-const COUNT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', 'gt_20'];
-const BYTE_BUCKETS = ['lt_4k', '4_to_16k', '16_to_64k', 'gte_64k'];
+const COUNT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', '21_to_100', 'gt_100'];
+const BYTE_BUCKETS = ['lt_4k', '4_to_16k', '16_to_64k', '64_to_256k', '256k_to_1m', 'gte_1m'];
+const LOCAL_ONLY_EVENTS = new Set(['f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway']);
 const HOSTS = ['claude', 'codex'];
 const PROVIDERS = ['anthropic', 'openai', 'unknown'];
 const MODES = ['enforce', 'observe', 'dry_run'];
+const F2_STATUSES = ['recorded', 'unchanged', 'error'];
+const F2_LABELS = ['useful', 'not-useful', 'duplicate', 'risky'];
+const F2_ERROR_KINDS = ['none', 'missing-root', 'permission-denied', 'limits-exceeded', 'invalid-state', 'scan-failed'];
+const F4_HOSTS = ['claude', 'codex', 'unknown'];
+const F4_OPERATIONS = ['catalog', 'call'];
+const F4_OUTCOMES = ['success', 'rejected', 'timeout', 'cancelled', 'error'];
+const F4_LATENCY_BUCKETS = ['lt_10ms', '10_to_100ms', '100_to_1000ms', 'gte_1000ms'];
+const F4_RESULT_BUCKETS = ['zero', 'one', '2_to_5', '6_to_20', 'gt_20', 'unknown'];
+const F2_PROJECT = (value) => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(value);
+const F2_SNAPSHOT_ID = (value) => typeof value === 'string' && /^[0-9a-f]{12}$/.test(value);
+const F2_COUNTER = (value) => Number.isSafeInteger(value) && value >= 0;
+const F2_SIGNED_COUNTER = (value) => Number.isSafeInteger(value);
+const F1_HOSTS = ['claude', 'codex'];
+const F1_STATUSES = ['complete', 'partial', 'unavailable'];
+const F1_RATIO_BUCKETS = ['zero', 'lt_1pct', '1_to_10pct', 'gt_10pct', 'unavailable'];
+const F1_SIZE_BUCKETS = [...BYTE_BUCKETS, 'unavailable'];
+const F1_INPUT_BUCKETS = [...COUNT_BUCKETS, 'unavailable'];
 export const FAILURE_STAGES = [
   'policy', 'input', 'redaction', 'optimization', 'artifact', 'output', 'upstream', 'response',
 ];
@@ -23,6 +44,7 @@ const SHARED_FIELDS = {
   schema_version: (value) => value === SCHEMA_VERSION,
   event: (value) => [
     'hook_summary', 'proxy_summary', 'active_day', 'hook_failure_summary', 'proxy_failure_summary',
+    'f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway',
   ].includes(value),
   day_utc: (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
   plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
@@ -54,12 +76,57 @@ const PROXY_FAILURE_FIELDS = {
   provider: (value) => PROVIDERS.includes(value),
   failure_stage: (value) => FAILURE_STAGES.includes(value),
 };
+const F2_SNAPSHOT_FIELDS = {
+  f2_project: F2_PROJECT,
+  f2_snapshot_id: F2_SNAPSHOT_ID,
+  f2_status: (value) => F2_STATUSES.includes(value),
+  f2_duration_ms: F2_COUNTER,
+  f2_files: F2_COUNTER,
+  f2_blocks: F2_COUNTER,
+  f2_instruction_bytes: F2_COUNTER,
+  f2_always_on_blocks: F2_COUNTER,
+  f2_always_on_bytes: F2_COUNTER,
+  f2_on_demand_blocks: F2_COUNTER,
+  f2_on_demand_bytes: F2_COUNTER,
+  f2_duplicate_blocks: F2_COUNTER,
+  f2_duplicate_bytes: F2_COUNTER,
+  f2_unknown_blocks: F2_COUNTER,
+  f2_unknown_bytes: F2_COUNTER,
+  f2_proposal_count: F2_COUNTER,
+  f2_proposed_bytes: F2_COUNTER,
+  f2_delta_instruction_bytes: F2_SIGNED_COUNTER,
+  f2_delta_proposed_bytes: F2_SIGNED_COUNTER,
+  f2_error_kind: (value) => F2_ERROR_KINDS.includes(value),
+};
+const F2_REVIEW_FIELDS = {
+  f2_project: F2_PROJECT,
+  f2_snapshot_id: F2_SNAPSHOT_ID,
+  f2_label: (value) => F2_LABELS.includes(value),
+};
+const F4_FIELDS = {
+  f4_host: (value) => F4_HOSTS.includes(value),
+  f4_operation: (value) => F4_OPERATIONS.includes(value),
+  f4_outcome: (value) => F4_OUTCOMES.includes(value),
+  f4_latency_bucket: (value) => F4_LATENCY_BUCKETS.includes(value),
+  f4_result_bucket: (value) => F4_RESULT_BUCKETS.includes(value),
+};
+const F1_FIELDS = {
+  f1_host: (value) => F1_HOSTS.includes(value),
+  f1_status: (value) => F1_STATUSES.includes(value),
+  f1_unknown_ratio_bucket: (value) => F1_RATIO_BUCKETS.includes(value),
+  f1_body_size_bucket: (value) => F1_SIZE_BUCKETS.includes(value),
+  f1_input_tokens_bucket: (value) => F1_INPUT_BUCKETS.includes(value),
+};
 
 function fieldsForEvent(eventType) {
+  if (eventType === 'f1_footprint') return F1_FIELDS;
   if (eventType === 'hook_summary') return HOOK_FIELDS;
   if (eventType === 'proxy_summary') return PROXY_FIELDS;
   if (eventType === 'active_day') return ACTIVE_DAY_FIELDS;
   if (eventType === 'hook_failure_summary') return HOOK_FAILURE_FIELDS;
+  if (eventType === 'f2_snapshot') return F2_SNAPSHOT_FIELDS;
+  if (eventType === 'f2_review') return F2_REVIEW_FIELDS;
+  if (eventType === 'f4_gateway') return F4_FIELDS;
   return PROXY_FAILURE_FIELDS;
 }
 
@@ -69,7 +136,8 @@ export function countBucket(count) {
   if (count === 1) return 'one';
   if (count <= 5) return '2_to_5';
   if (count <= 20) return '6_to_20';
-  return 'gt_20';
+  if (count <= 100) return '21_to_100';
+  return 'gt_100';
 }
 
 export function byteBucket(bytes) {
@@ -77,7 +145,9 @@ export function byteBucket(bytes) {
   if (bytes < 4096) return 'lt_4k';
   if (bytes < 16384) return '4_to_16k';
   if (bytes < 65536) return '16_to_64k';
-  return 'gte_64k';
+  if (bytes < 262144) return '64_to_256k';
+  if (bytes < 1048576) return '256k_to_1m';
+  return 'gte_1m';
 }
 
 export function validateEvent(payload) {
@@ -239,7 +309,17 @@ function readCounters(countersPath) {
 
 function readQueueRows(queuePath) {
   if (!fs.existsSync(queuePath)) return [];
-  return fs.readFileSync(queuePath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  return fs.readFileSync(queuePath, 'utf8').split('\n').filter(Boolean).map((line) => {
+    const row = JSON.parse(line);
+    assertQueueRow(row);
+    return row;
+  });
+}
+
+function assertQueueRow(row) {
+  if (!record(row) || !SUPPORTED_QUEUE_SCHEMA_VERSIONS.has(row.schema_version)) {
+    throw new Error('telemetry queue event schema is unsupported');
+  }
 }
 
 function writeQueueRows(queuePath, rows) {
@@ -253,7 +333,11 @@ function writeQueueRows(queuePath, rows) {
 
 /** Enforces the bounded queue (4096 rows / 4 MiB), dropping the oldest rows first —
  *  a telemetry backlog must never grow without bound or block product behavior. */
-function appendQueueRows(queuePath, newRows) {
+export function appendQueueRows(queuePath, newRows) {
+  for (const row of newRows) {
+    assertQueueRow(row);
+    if (LOCAL_ONLY_EVENTS.has(row.event)) throw new Error(`${row.event}: local-only event must never reach the upload queue`);
+  }
   ensureDirectory(path.dirname(queuePath));
   withLock(`${queuePath}.lock`, () => {
     let rows = readQueueRows(queuePath);
@@ -279,7 +363,7 @@ function publicRow(row) {
 function bucketEntry(entry, pluginVersion) {
   if (entry.event === 'hook_summary') {
     return {
-      schema_version: TELEMETRY_CONFIG_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: pluginVersion,
+      schema_version: SCHEMA_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
       host: entry.host, mode: entry.mode,
       tool_calls_bucket: countBucket(entry.toolCalls ?? 0),
       capped_outputs_bucket: countBucket(entry.cappedOutputs ?? 0),
@@ -288,18 +372,18 @@ function bucketEntry(entry, pluginVersion) {
     };
   }
   if (entry.event === 'proxy_summary') return {
-    schema_version: TELEMETRY_CONFIG_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    schema_version: SCHEMA_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
     provider: entry.provider ?? 'unknown', mode: entry.mode ?? 'enforce',
     rewrites_applied_bucket: countBucket(entry.rewritesApplied ?? 0),
     rewrites_skipped_cache_bucket: countBucket(entry.rewritesSkippedCache ?? 0),
     input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
   };
   if (entry.event === 'hook_failure_summary') return {
-    schema_version: TELEMETRY_CONFIG_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    schema_version: SCHEMA_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
     host: entry.host, failure_stage: entry.failureStage,
   };
   return {
-    schema_version: TELEMETRY_CONFIG_VERSION, event: 'proxy_failure_summary', day_utc: entry.day, plugin_version: pluginVersion,
+    schema_version: SCHEMA_VERSION, event: 'proxy_failure_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
     provider: entry.provider, failure_stage: entry.failureStage,
   };
 }
@@ -341,7 +425,7 @@ export function recordFailure({ statePaths, day, event, host, provider, failureS
 /** Queues a single non-aggregate activity marker for this UTC day and host. */
 export function recordActiveDay({ statePaths, day, pluginVersion, host }) {
   const marker = {
-    schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: pluginVersion, host,
+    schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: PLUGIN_VERSION, host,
   };
   const validatedMarker = validateEvent(marker);
   const activeDayKey = `${day}|${host}`;
@@ -459,6 +543,7 @@ export function toOtlpLogs(rows) {
       resource: { attributes: [{ key: 'service.name', value: { stringValue: 'sando' } }] },
       scopeLogs: [{
         logRecords: rows.map((row) => ({
+          ...(typeof row._timeUnixNano === 'string' ? { timeUnixNano: row._timeUnixNano } : {}),
           body: { stringValue: 'sando.daily_aggregate' },
           attributes: Object.entries(publicRow(row)).map(([key, value]) => ({ key, value: { stringValue: String(value) } })),
         })),

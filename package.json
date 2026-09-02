@@ -1,6 +1,6 @@
 {
   "name": "sando",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,6 +14,17 @@
     "sync:bundles": "node scripts/sync-bundles.mjs",
     "proxy": "node scripts/sando-proxy.mjs",
     "proxy:report": "node scripts/sando-proxy-report.mjs",
+    "context:audit": "node packages/sando/src/context-audit-cli.mjs",
+    "context:plan": "node packages/sando/src/instruction-plan-cli.mjs",
+    "context:f2-auto": "node scripts/sando-f2-auto.mjs",
+    "context:gateway-gate": "node packages/sando/src/gateway-gate-cli.mjs",
+    "canary": "node packages/sando/src/canary.mjs",
+    "canary:claude": "node scripts/sando-canary-claude.mjs",
+    "canary:codex": "node scripts/sando-canary-codex.mjs",
+    "canary:smoke": "node scripts/sando-canary-smoke.mjs",
+    "canary:report": "node scripts/sando-canary-report.mjs",
+    "check:gateway": "node --check packages/sando/src/lazy-mcp-gateway.mjs && node --check packages/sando/src/lazy-mcp-gateway-stdio.mjs && node --check packages/sando/gateway.mjs",
+    "artifact:get": "node packages/sando/src/artifact-cli.mjs",
     "accounting": "node packages/sando/src/accounting-cli.mjs",
     "benchmark:local": "node benchmarks/run-local.mjs",
     "benchmark:semantic-shadow": "node benchmarks/semantic-shadow-run.mjs",
@@ -25,6 +36,6 @@
     "probe:prefix-divergence": "node benchmarks/prefix-divergence-probe.mjs",
     "probe:rewrite-payback": "node benchmarks/rewrite-payback-probe.mjs",
     "probes": "npm run probe:cache-control && npm run probe:cache-hits && npm run probe:cache-attribution",
-    "check": "node --check packages/sando/src/core.mjs && node --check packages/sando/src/hook-cli.mjs && node --check packages/sando/src/mcp-server.mjs && node --check packages/sando/src/metrics-cli.mjs && node --check packages/sando/src/accounting-cli.mjs && node --check packages/sando/src/active-session.mjs && node --check packages/sando/src/adaptive-control.mjs && node --check packages/sando/src/paired-accounting.mjs && node --check packages/sando/src/exec-capture.mjs && node --check packages/sando/src/context-transform.mjs && node --check packages/sando/src/semantic-compactor.mjs && node --check packages/sando/src/history-dedupe.mjs && node --check packages/sando/src/history-budget.mjs && node --check packages/sando/src/history-shake.mjs && node --check packages/sando/src/history-structure.mjs && node --check packages/sando/src/proxy.mjs && node --check packages/sando/src/proxy-metrics.mjs && node --check plugins/sando/cli.mjs && node --check plugins/sando/proxy.mjs && node --check scripts/sando-proxy-report.mjs && node --check benchmarks/live/idle-flush-real-session-run.mjs && node --check benchmarks/semantic-shadow-run.mjs && node --check benchmarks/live/semantic-cli-adapter.mjs && node --check benchmarks/live/semantic-api-adapter.mjs && node --check benchmarks/live/semantic-codex-api-adapter.mjs && node --check benchmarks/live/semantic-shadow-live-run.mjs && node --check benchmarks/live/windowed-fold-run.mjs && node --check scripts/sando-proxy.mjs && node --check benchmarks/cache-attribution-report.mjs && node --check benchmarks/cache-hit-provenance.mjs && node --check benchmarks/cache-control-survival-probe.mjs && node --check benchmarks/prefix-divergence-probe.mjs && node --check benchmarks/rewrite-payback-probe.mjs"
+    "check": "files=$(git ls-files --cached --others --exclude-standard '*.mjs') && test -n \"$files\" && printf '%s\\n' \"$files\" | xargs -P 8 -n 1 node --check"
   }
 }

@@ -1,0 +1,31 @@
+{
+  "schema": "sando-context-capture/v1",
+  "host": "claude",
+  "requestFormat": "anthropic",
+  "body": {
+    "state": "observed",
+    "content": "HOST_RULE\nPROJECT_RULE Authorization: Bearer fixture-secret\nSKILL_RULE\nBUILTIN_TOOL\nMCP_DIRECT\nMCP_DEFERRED\nSANDO_TOOL\nUSER_PROMPT\nHISTORY\nPROVIDER_META\n"
+  },
+  "segments": [
+    { "category": "host-instructions", "source": "/private/host/system.md", "content": "HOST_RULE\n" },
+    { "category": "project-instructions", "source": "/private/project/AGENTS.md", "content": "PROJECT_RULE Authorization: Bearer fixture-secret\n" },
+    { "category": "skills", "source": "/private/skills/skill.md", "content": "SKILL_RULE\n" },
+    { "category": "builtin-tools", "source": "host-builtins", "content": "BUILTIN_TOOL\n" },
+    { "category": "mcp-direct", "source": "mcp-server", "content": "MCP_DIRECT\n" },
+    { "category": "mcp-deferred", "source": "deferred-mcp-server", "content": "MCP_DEFERRED\n" },
+    { "category": "sando", "source": "sando-plugin", "content": "SANDO_TOOL\n" },
+    { "category": "user-prompt", "source": "user", "content": "USER_PROMPT\n" },
+    { "category": "history", "source": "conversation", "content": "HISTORY\n" },
+    { "category": "provider-overhead", "source": "provider", "content": "PROVIDER_META\n" }
+  ],
+  "toolSearch": { "state": "enabled" },
+  "providerUsage": {
+    "inputTokens": 900,
+    "cachedInputTokens": 100,
+    "cacheWriteInputTokens": 50,
+    "outputTokens": 20,
+    "reasoningOutputTokens": 5,
+    "totalTokens": 920,
+    "totalCostUsd": 0.012
+  }
+}

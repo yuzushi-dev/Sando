@@ -4,7 +4,12 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
 import { materializeArtifact } from './lib/artifacts.mjs';
+import { runArtifactCli } from './lib/artifact-cli.mjs';
 import { runAccountingCli } from './lib/accounting-cli.mjs';
+import { runCanaryCli } from './lib/canary.mjs';
+import { runContextAuditCli } from './lib/context-audit-cli.mjs';
+import { runGatewayGateCli } from './lib/gateway-gate-cli.mjs';
+import { runInstructionPlanCli } from './lib/instruction-plan-cli.mjs';
 import { normalizePolicy, optimizeToolOutput } from './lib/core.mjs';
 import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './lib/exec-capture.mjs';
 import { callMcpTool } from './lib/mcp-tools.mjs';
@@ -63,13 +68,30 @@ function runGrep(args, cwd, policy) {
 
 async function main(argv = process.argv.slice(2), env = process.env) {
   const [command, ...args] = argv;
+  if (command === 'context' && args[0] === 'audit') {
+    runContextAuditCli({ argv: args.slice(1) });
+    return;
+  }
+  if (command === 'context' && args[0] === 'plan-instructions') {
+    runInstructionPlanCli({ argv: args.slice(1) });
+    return;
+  }
+  if (command === 'context' && args[0] === 'gateway-gate') {
+    runGatewayGateCli({ argv: args.slice(1) });
+    return;
+  }
+  if (command === 'artifact' && args[0] === 'get') {
+    runArtifactCli({ argv: args });
+    return;
+  }
   const cwd = cwdRoot();
   const policy = policyFromEnv(env);
   if (command === 'read') runRead(args, cwd, policy);
   else if (command === 'grep') runGrep(args, cwd, policy);
   else if (command === 'exec') await runExec(args, cwd, policy);
   else if (command === 'accounting') runAccountingCli({ argv: args, env });
-  else throw new Error('usage: sando {read|grep|exec|accounting} ...');
+  else if (command === 'canary') runCanaryCli({ argv: args, env });
+  else throw new Error('usage: sando {read|grep|exec|accounting|canary|context audit|context plan-instructions|context gateway-gate|artifact get} ...');
 }
 
 main().catch((error) => {

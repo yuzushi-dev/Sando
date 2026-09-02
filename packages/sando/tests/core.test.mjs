@@ -20,7 +20,7 @@ test('estimateTokens is deterministic and explicitly approximate', async () => {
   assert.throws(() => estimateTokens(null), /text must be a string/);
 });
 
-test('optimizeToolOutput bounds inline output and returns a complete redacted artifact', async () => {
+test('optimizeToolOutput bounds inline output when the artifact is over the admission limit', async () => {
   const { optimizeToolOutput } = await core();
   const result = optimizeToolOutput({
     toolName: 'Bash',
@@ -30,11 +30,13 @@ test('optimizeToolOutput bounds inline output and returns a complete redacted ar
   });
 
   assert.ok(Buffer.byteLength(result.inline) <= 256);
-  assert.match(result.inline, /sando:sha256:/);
+  assert.match(result.inline, /middle elided/i);
   assert.equal(result.inline.includes('secret-value'), false);
-  assert.equal(result.artifact.content.includes('secret-value'), false);
-  assert.equal(result.artifact.content, `Authorization: Bearer [REDACTED]\n${'x'.repeat(600)}`);
-  assert.equal(result.artifact.truncated, false);
+  assert.equal(result.artifact, undefined);
+  assert.equal(result.route, 'passthrough');
+  assert.equal(result.reason, 'artifact-admission-limit');
+  assert.equal(result.disclosure.artifact, null);
+  assert.deepEqual(result.disclosure.recovery, { mode: 'unavailable', bounded: true });
   assert.deepEqual(result.stats, optimizeToolOutput({
     toolName: 'Bash',
     output: `Authorization: Bearer secret-value\n${'x'.repeat(600)}`,

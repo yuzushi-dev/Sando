@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { countBucket, byteBucket, FAILURE_STAGES, isDoNotTrack, serializeEvent, validateEvent } from '../src/telemetry.mjs';
+import { PLUGIN_VERSION } from '../src/version.mjs';
 
 function hookEvent(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: 2,
     event: 'hook_summary',
     day_utc: '2026-08-25',
-    plugin_version: '0.5',
+    plugin_version: PLUGIN_VERSION,
     host: 'claude',
     mode: 'enforce',
     tool_calls_bucket: '6_to_20',
@@ -21,10 +22,10 @@ function hookEvent(overrides = {}) {
 
 function proxyEvent(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: 2,
     event: 'proxy_summary',
     day_utc: '2026-08-25',
-    plugin_version: '0.5',
+    plugin_version: PLUGIN_VERSION,
     provider: 'openai',
     mode: 'enforce',
     rewrites_applied_bucket: '2_to_5',
@@ -41,7 +42,9 @@ test('countBucket maps counts to the fixed enum', () => {
   assert.equal(countBucket(5), '2_to_5');
   assert.equal(countBucket(6), '6_to_20');
   assert.equal(countBucket(20), '6_to_20');
-  assert.equal(countBucket(21), 'gt_20');
+  assert.equal(countBucket(21), '21_to_100');
+  assert.equal(countBucket(100), '21_to_100');
+  assert.equal(countBucket(101), 'gt_100');
   assert.throws(() => countBucket(-1), /invalid/);
   assert.throws(() => countBucket(1.5), /invalid/);
 });
@@ -51,7 +54,9 @@ test('byteBucket maps byte counts to the fixed enum', () => {
   assert.equal(byteBucket(4095), 'lt_4k');
   assert.equal(byteBucket(4096), '4_to_16k');
   assert.equal(byteBucket(16384), '16_to_64k');
-  assert.equal(byteBucket(65536), 'gte_64k');
+  assert.equal(byteBucket(65536), '64_to_256k');
+  assert.equal(byteBucket(262144), '256k_to_1m');
+  assert.equal(byteBucket(1048576), 'gte_1m');
   assert.throws(() => byteBucket(-1), /invalid/);
 });
 
@@ -73,11 +78,11 @@ test('validateEvent accepts a well-formed proxy_summary event', () => {
 test('validateEvent accepts failure summaries and the dry_run mode', () => {
   assert.equal(FAILURE_STAGES.length, 8);
   assert.doesNotThrow(() => validateEvent({
-    schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5',
+    schema_version: 2, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION,
     host: 'codex', failure_stage: 'input',
   }));
   assert.doesNotThrow(() => validateEvent({
-    schema_version: 1, event: 'proxy_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5',
+    schema_version: 2, event: 'proxy_failure_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION,
     provider: 'unknown', failure_stage: 'input',
   }));
   assert.doesNotThrow(() => validateEvent(hookEvent({ mode: 'dry_run' })));
@@ -85,7 +90,7 @@ test('validateEvent accepts failure summaries and the dry_run mode', () => {
 
 test('validateEvent accepts the privacy-preserving active_day marker', () => {
   assert.doesNotThrow(() => validateEvent({
-    schema_version: 1, event: 'active_day', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude',
+    schema_version: 2, event: 'active_day', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION, host: 'claude',
   }));
 });
 
@@ -116,7 +121,7 @@ test('validateEvent rejects nested objects and arrays', () => {
 });
 
 test('validateEvent rejects strings over 32 characters', () => {
-  assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5'.padEnd(33, '0') })), /plugin_version/);
+  assert.throws(() => validateEvent(hookEvent({ plugin_version: PLUGIN_VERSION.padEnd(33, '0') })), /plugin_version/);
 });
 
 test('validateEvent accepts stable patch plugin versions and rejects prereleases', () => {

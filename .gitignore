@@ -9,6 +9,13 @@ graphify-out/
 docs/
 spikes/
 handoffs/
+dashboard/
+scripts/
+canary/
+benchmarks/
+
+# Machine-local gateway and timer notes/configuration.
+config/
 
 # Build and test output
 coverage/
@@ -42,3 +49,12 @@ Thumbs.db
 !docs/
 docs/*
 !docs/shipping-matrix.md
+!docs/npm-publish.md
+
+# Keep the reproducible local validation launchers versioned.
+!scripts/
+scripts/*
+!scripts/sando-*.mjs
+!canary/
+canary/*
+!canary/README.md

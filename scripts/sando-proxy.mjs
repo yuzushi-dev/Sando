@@ -9,7 +9,8 @@ function option(name, fallback) {
 }
 
 if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: SANDO_UPSTREAM_URL=https://provider.example npm run proxy [--port PORT] [--host HOST] [--metrics-path PATH]\n');
+  process.stdout.write('Usage: SANDO_UPSTREAM_URL=https://provider.example npm run proxy [--port PORT] [--host HOST] [--metrics-path PATH]\n'
+    + 'F1 capture: SANDO_CONTEXT_FOOTPRINT_PATH=PATH SANDO_CONTEXT_SESSION_KEY=KEY\n');
   process.exit(0);
 }
 
@@ -27,8 +28,15 @@ try {
     port: Number(option('port', process.env.SANDO_PROXY_PORT || '0')),
     policy: process.env.SANDO_CONTEXT_POLICY ? JSON.parse(process.env.SANDO_CONTEXT_POLICY) : {},
     metricsPath,
+    contextCapturePath: process.env.SANDO_CONTEXT_FOOTPRINT_PATH,
+    contextCaptureHost: process.env.SANDO_CONTEXT_FOOTPRINT_HOST,
+    contextSessionKey: process.env.SANDO_CONTEXT_SESSION_KEY,
+    transformProviderRequests: process.env.SANDO_PROXY_TRANSFORM !== '0',
   });
-  process.stdout.write(`${JSON.stringify({ schema: 'sando-provider-proxy/v1', url: proxy.url, upstream: new URL(upstream).origin, metricsPath })}\n`);
+  process.stdout.write(`${JSON.stringify({
+    schema: 'sando-provider-proxy/v1', url: proxy.url, upstream: new URL(upstream).origin, metricsPath,
+    contextCapturePath: process.env.SANDO_CONTEXT_FOOTPRINT_PATH || null,
+  })}\n`);
   const shutdown = async () => {
     await proxy.close();
     process.exit(0);

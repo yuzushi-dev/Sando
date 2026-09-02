@@ -20,8 +20,15 @@ const ARTIFACT_FACTS = ['SANDO_E2E_MIDDLE_FACT'];
 export const MAX_REPETITIONS = 15;
 const SECRET = 'sk-test-01234567890123456789';
 const SCENARIO_DIGEST = digestPrompt(JSON.stringify({ SCENARIO, REQUIRED_FACTS, ARTIFACT_FACTS }));
-const POLICY = { mode: 'apply', maxInlineBytes: 768, maxArtifactBytes: 4096, maxColumns: 768, redact: true };
+const POLICY = { mode: 'apply', maxInlineBytes: 768, maxArtifactBytes: 16384, maxColumns: 768, redact: true };
+const DETERMINISTIC_PROBE_POLICY = { ...POLICY, maxArtifactBytes: 16_384 };
 export const CLAUDE_NO_COST_BLOCKER = 'Claude Code cannot provide a no-cost end-to-end fixture: PostToolUse is emitted only after a live Claude tool call, and the --print CLI requires a provider request to produce that tool call; no local/mock provider can produce Claude model-visible tool-call evidence. The existing prompt-level runner disables tools and embeds context, so it cannot establish model-visible or hook lifecycle evidence.';
+
+export async function readStdin(input = process.stdin) {
+  let value = '';
+  for await (const chunk of input) value += chunk;
+  return value;
+}
 
 function option(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
@@ -206,7 +213,7 @@ async function createProbeScript(workspace, options) {
 async function runHook({ cwd, mode, toolResponse }) {
   const result = await runCommand(process.execPath, [HOOK], {
     cwd, input: `${JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: toolResponse, cwd })}\n`,
-    env: { ...process.env, SANDO_MODE: mode, SANDO_POLICY: JSON.stringify({ ...POLICY, mode }), SANDO_METRICS_PATH: path.join(cwd, 'metrics.json') },
+    env: { ...process.env, SANDO_MODE: mode, SANDO_POLICY: JSON.stringify({ ...DETERMINISTIC_PROBE_POLICY, mode }), SANDO_METRICS_PATH: path.join(cwd, 'metrics.json') },
     timeoutMs: 10_000,
   });
   if (result.code !== 0) throw new Error(`PostToolUse probe failed (${result.code ?? result.signal})`);
@@ -307,7 +314,7 @@ async function createCapturePlugin(pluginDir, capturePath) {
   await fs.mkdir(path.join(pluginDir, 'hooks'), { recursive: true });
   await fs.writeFile(path.join(pluginDir, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'sando-live-capture', version: '0.0.0' }));
   await fs.writeFile(path.join(pluginDir, 'hooks/hooks.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/capture.mjs"', timeout: 10 }] }] } }));
-  await fs.writeFile(path.join(pluginDir, 'hooks/capture.mjs'), `import fs from 'node:fs/promises'; import { spawnSync } from 'node:child_process'; const input = await fs.readFile(0, 'utf8'); const result = spawnSync(process.execPath, [${JSON.stringify(HOOK)}], { input, encoding: 'utf8', env: process.env }); const event = JSON.parse(input); const hook = JSON.parse(result.stdout || '{}'); await fs.writeFile(${JSON.stringify(capturePath)}, JSON.stringify({ hookEventName: event.hook_event_name, updatedToolOutput: hook.hookSpecificOutput?.updatedToolOutput ?? null })); process.stdout.write(result.stdout || '{}');`);
+  await fs.writeFile(path.join(pluginDir, 'hooks/capture.mjs'), `import fs from 'node:fs/promises'; import { spawnSync } from 'node:child_process'; ${readStdin.toString()} const input = await readStdin(); const result = spawnSync(process.execPath, [${JSON.stringify(HOOK)}], { input, encoding: 'utf8', env: process.env }); const event = JSON.parse(input); const hook = JSON.parse(result.stdout || '{}'); await fs.writeFile(${JSON.stringify(capturePath)}, JSON.stringify({ hookEventName: event.hook_event_name, updatedToolOutput: hook.hookSpecificOutput?.updatedToolOutput ?? null })); process.stdout.write(result.stdout || '{}');`);
 }
 
 async function runVariant({ variant, workspace, script, pluginDir, capturePath, model, maxBudgetUsd, timeoutMs, clientVersion }) {

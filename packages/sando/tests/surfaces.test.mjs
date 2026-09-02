@@ -151,7 +151,7 @@ test('PostToolUse hook is fail-open except for invalid policy input', () => {
   assert.equal(invalidPolicy.status, 2);
 });
 
-test('Claude apply updates tool output and persists bounded artifacts', (t) => {
+test('Claude apply bounds output when the artifact is over the admission limit', (t) => {
   const cwd = fs.mkdtempSync('/tmp/sando-claude-');
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const hook = path.join(root, 'adapters/claude/sando/hooks/post-tool-use.mjs');
@@ -168,14 +168,10 @@ test('Claude apply updates tool output and persists bounded artifacts', (t) => {
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.hookSpecificOutput.hookEventName, 'PostToolUse');
-  assert.match(output.hookSpecificOutput.updatedToolOutput, /\.sando\/sando\/artifacts\/[^\s]+\.txt/);
-  assert.equal(output.hookSpecificOutput.updatedToolOutput.includes('hidden'), false);
-  const relative = output.hookSpecificOutput.updatedToolOutput.match(/\.sando\/sando\/artifacts\/[^\s]+\.txt/)[0];
-  const artifact = path.join(cwd, relative);
-  assert.ok(fs.statSync(artifact).isFile());
-  assert.ok(fs.statSync(artifact).size > 320);
-  assert.equal(fs.statSync(artifact).mode & 0o777, 0o600);
-  assert.equal(fs.readFileSync(artifact, 'utf8'), `secret=[REDACTED]\n${'x'.repeat(600)}`);
+  const updated = output.hookSpecificOutput.updatedToolOutput;
+  assert.ok(Buffer.byteLength(updated) <= 256);
+  assert.equal(updated.includes('hidden'), false);
+  assert.doesNotMatch(updated, /\.sando\/sando\/artifacts\/[^\s]+\.txt/);
 });
 
 test('Claude apply preserves the shape of oversized Bash output', (t) => {
@@ -245,10 +241,13 @@ test('MCP server exposes bounded read, grep, and sandboxed exec tools', async (t
   while (messages.length < 5 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(messages.length, 5);
   assert.equal(messages[0].result.serverInfo.name, 'sando');
-  assert.deepEqual(messages[1].result.tools.map((tool) => tool.name), ['prepare_tool_output', 'sando_read', 'sando_grep', 'sando_exec']);
-  assert.ok(messages[1].result.tools.slice(0, 3).every((tool) => tool.annotations.readOnlyHint));
-  assert.equal(messages[1].result.tools[3].name, 'sando_exec');
-  assert.equal(messages[1].result.tools[3].annotations.readOnlyHint, false);
+  const tools = messages[1].result.tools;
+  assert.deepEqual(tools.map((tool) => tool.name), ['prepare_tool_output', 'sando_read', 'sando_grep', 'sando_exec', 'sando_artifact_get']);
+  assert.ok(tools.slice(0, 3).every((tool) => tool.annotations.readOnlyHint));
+  assert.equal(tools[3].name, 'sando_exec');
+  assert.equal(tools[3].annotations.readOnlyHint, false);
+  assert.equal(tools[4].annotations.readOnlyHint, true);
+  assert.equal(tools[4].inputSchema.properties.maxBytes.maximum, 1_048_576);
   assert.equal(messages[2].result.structuredContent.inline, 'ok');
   assert.match(messages[3].result.structuredContent.inline, /\"name\"/);
   assert.match(messages[4].result.structuredContent.inline, /package\.json:/);

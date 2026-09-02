@@ -87,12 +87,25 @@ function qualityGateFailure(runs) {
   return null;
 }
 
+function canSummarize(runs) {
+  if (!runs.length || runs.some((run) => run.quality !== 'pass')) return false;
+  const pairs = new Map();
+  for (const run of runs) {
+    const key = `${run.scenario}\u0000${run.repetition}`;
+    const pair = pairs.get(key) ?? {};
+    pair[run.variant] = true;
+    pairs.set(key, pair);
+  }
+  return [...pairs.values()].every((pair) => pair.baseline && pair.optimized);
+}
+
 async function writeReport({ destination, host, clientVersion, scenario, runs, failure }) {
   const gateFailure = qualityGateFailure(runs);
   const reportFailure = failure ?? (gateFailure ? { status: 'blocked', message: gateFailure } : null);
   const firstAudit = runs.find((run) => run.audit)?.audit;
   const resolvedModel = runs.find((run) => run.audit?.resolvedModel)?.audit.resolvedModel ?? null;
   const providerObserved = runs.some((run) => run.providerUsage);
+  const summary = canSummarize(runs) ? summarizeRuns(runs) : null;
   const output = {
     schema: 'sando-live-benchmark/v2',
     status: reportFailure?.status === 'blocked' ? 'blocked' : reportFailure ? 'failed' : 'passed',
@@ -118,7 +131,7 @@ async function writeReport({ destination, host, clientVersion, scenario, runs, f
         : 'This run measures provider usage for a prepared prompt. It does not prove transparent hook rewriting.',
     },
     runs,
-    summary: runs.length ? summarizeRuns(runs) : null,
+    summary,
     ...(reportFailure ? { failure: reportFailure } : {}),
   };
   await fs.mkdir(path.dirname(destination), { recursive: true });

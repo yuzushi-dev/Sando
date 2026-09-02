@@ -8,10 +8,11 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  ackBatch, closeDay, closeFinishedDays, flushQueue, incrementCounter, loadBatch, previewNextUpload, recordActiveDay, recordFailure, toOtlpLogs,
+  ackBatch, appendQueueRows, closeDay, closeFinishedDays, flushQueue, incrementCounter, loadBatch, previewNextUpload, recordActiveDay, recordFailure, toOtlpLogs,
 } from '../src/telemetry.mjs';
 import { runTelemetryFlushEntry } from '../src/telemetry-flush-entry.mjs';
 import { runSessionStart } from '../src/session-start.mjs';
+import { PLUGIN_VERSION } from '../src/version.mjs';
 
 function tempStatePaths() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-telemetry-queue-'));
@@ -25,7 +26,7 @@ test('incrementCounter accumulates raw counts per day/host/mode and closeDay buc
   const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   assert.equal(closed.length, 1);
   assert.deepEqual(closed[0], {
-    schema_version: 1, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: '0.5',
+    schema_version: 2, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION,
     host: 'claude', mode: 'enforce',
     tool_calls_bucket: '2_to_5', capped_outputs_bucket: 'one', bytes_saved_bucket: '4_to_16k', input_tokens_saved_bucket: 'lt_4k',
   });
@@ -78,7 +79,7 @@ test('closeDay buckets proxy_summary with provider and mode', () => {
   incrementCounter({ statePaths, day: '2026-08-25', event: 'proxy_summary', provider: 'openai', mode: 'enforce', deltas: { rewritesApplied: 3, rewritesSkippedCache: 1, inputTokensSaved: 20000 } });
   const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   assert.deepEqual(closed[0], {
-    schema_version: 1, event: 'proxy_summary', day_utc: '2026-08-25', plugin_version: '0.5', provider: 'openai', mode: 'enforce',
+    schema_version: 2, event: 'proxy_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION, provider: 'openai', mode: 'enforce',
     rewrites_applied_bucket: '2_to_5', rewrites_skipped_cache_bucket: 'one',
     input_tokens_saved_bucket: '16_to_64k',
   });
@@ -91,8 +92,8 @@ test('closeDay emits one failure row per host and failure stage without a raw co
   recordFailure({ statePaths, day: '2026-08-25', event: 'hook_failure_summary', host: 'claude', failureStage: 'input' });
   const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
   assert.deepEqual(closed, [
-    { schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude', failure_stage: 'optimization' },
-    { schema_version: 1, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude', failure_stage: 'input' },
+    { schema_version: 2, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION, host: 'claude', failure_stage: 'optimization' },
+    { schema_version: 2, event: 'hook_failure_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION, host: 'claude', failure_stage: 'input' },
   ]);
 });
 
@@ -112,7 +113,7 @@ test('the queue keeps 4096 rows, evicting the oldest first', () => {
   const statePaths = tempStatePaths();
   const seedRows = [];
   for (let day = 0; day < 4099; day += 1) seedRows.push({
-    schema_version: 1, event: 'active_day', day_utc: dayUtc(day), plugin_version: '0.5', host: 'claude',
+    schema_version: 2, event: 'active_day', day_utc: dayUtc(day), plugin_version: PLUGIN_VERSION, host: 'claude',
   });
   fs.mkdirSync(path.dirname(statePaths.queue), { recursive: true });
   fs.writeFileSync(statePaths.queue, `${seedRows.map((row) => JSON.stringify(row)).join('\n')}\n`);
@@ -231,7 +232,7 @@ test('loadBatch reads at most 32 rows by default', () => {
 });
 
 test('toOtlpLogs maps rows to an OTLP/HTTP JSON body with service.name=sando', () => {
-  const rows = [{ schema_version: 1, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: '0.5', host: 'claude', mode: 'enforce', tool_calls_bucket: 'one', redactions_bucket: 'zero', capped_outputs_bucket: 'zero', bytes_saved_bucket: 'lt_4k' }];
+  const rows = [{ schema_version: 2, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION, host: 'claude', mode: 'enforce', tool_calls_bucket: 'one', redactions_bucket: 'zero', capped_outputs_bucket: 'zero', bytes_saved_bucket: 'lt_4k' }];
   const body = toOtlpLogs(rows);
   const resourceAttrs = body.resourceLogs[0].resource.attributes;
   assert.deepEqual(resourceAttrs, [{ key: 'service.name', value: { stringValue: 'sando' } }]);
@@ -289,6 +290,31 @@ test('flushQueue posts the batch over HTTPS-shaped fetch and acks on success, le
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('flushQueue preserves and drains legacy v1 queue rows during the v2 rollout', async () => {
+  const statePaths = tempStatePaths();
+  const legacy = {
+    schema_version: 1, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION,
+    host: 'claude', mode: 'enforce', tool_calls_bucket: 'gt_20', capped_outputs_bucket: 'zero',
+    bytes_saved_bucket: 'gte_64k', input_tokens_saved_bucket: 'gte_64k',
+  };
+  fs.mkdirSync(path.dirname(statePaths.queue), { recursive: true });
+  fs.writeFileSync(statePaths.queue, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+  assert.deepEqual(loadBatch({ statePaths, lease: false }), [legacy]);
+
+  let sent;
+  const result = await flushQueue({
+    statePaths,
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      return new Response('', { status: 200 });
+    },
+  });
+  const attributes = sent.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  assert.equal(attributes.find(({ key }) => key === 'schema_version').value.stringValue, '1');
+  assert.equal(result.sent, 1);
+  assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
 });
 
 test('flushQueue leaves the queue intact when the upload fails', async () => {
@@ -350,4 +376,26 @@ test('the detached flush entrypoint flushes the queue in-process when telemetry 
     await new Promise((resolve) => server.close(resolve));
   }
   assert.equal(loadBatch({ statePaths, lease: false }).length, 0);
+});
+
+test('local-only F1/F2/F4 events can never enter the public upload queue', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-local-only-'));
+  const queuePath = path.join(directory, 'telemetry-queue.jsonl');
+  for (const event of ['f1_footprint', 'f2_snapshot', 'f2_review', 'f4_gateway']) {
+    assert.throws(
+      () => appendQueueRows(queuePath, [{ schema_version: 2, event, day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION }]),
+      /local-only event must never reach the upload queue/,
+    );
+  }
+  assert.equal(fs.existsSync(queuePath), false);
+});
+
+test('the queue rejects unsupported event schema versions before persistence', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-unsupported-schema-'));
+  const queuePath = path.join(directory, 'telemetry-queue.jsonl');
+  assert.throws(
+    () => appendQueueRows(queuePath, [{ schema_version: 99, event: 'active_day' }]),
+    /telemetry queue event schema is unsupported/,
+  );
+  assert.equal(fs.existsSync(queuePath), false);
 });

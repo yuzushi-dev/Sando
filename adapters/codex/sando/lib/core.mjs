@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 
 import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
+import { buildResultDisclosure } from './result-disclosure.mjs';
 
 const DEFAULT_POLICY = Object.freeze({
-  mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 65536, headBytes: undefined, tailBytes: undefined,
+  mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 1_048_576, headBytes: undefined, tailBytes: undefined,
   maxColumns: 768, redact: true,
 });
 const POLICY_FIELDS = new Set(Object.keys(DEFAULT_POLICY));
@@ -186,9 +187,20 @@ export function optimizeToolOutput({
   const sourceBytes = Buffer.byteLength(redacted.text);
   let inline = modelText;
   let artifact;
+  const artifactAdmitted = sourceBytes <= normalizedPolicy.maxArtifactBytes;
   const hasLongLine = routePolicy.maxColumns > 0
     && modelText.split('\n').some((line) => Buffer.byteLength(line) > routePolicy.maxColumns);
-  if (route.route === 'summary' || route.route === 'artifact' || sourceBytes > routePolicy.maxInlineBytes || hasLongLine) {
+  if (!artifactAdmitted && (route.route === 'summary' || route.route === 'artifact'
+    || sourceBytes > routePolicy.maxInlineBytes || hasLongLine)) {
+    route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'artifact-admission-limit' };
+    inline = truncateUtf8(inlineView(
+      modelText,
+      routePolicy.maxInlineBytes,
+      routePolicy.headBytes,
+      routePolicy.tailBytes,
+      routePolicy.maxColumns,
+    ), normalizedPolicy.maxInlineBytes);
+  } else if (route.route === 'summary' || route.route === 'artifact' || sourceBytes > routePolicy.maxInlineBytes || hasLongLine) {
     const sourceDigest = sha256(redacted.text);
     artifact = {
       schema: 'sando-artifact/v1',
@@ -226,6 +238,10 @@ export function optimizeToolOutput({
   const result = {
     inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION,
     redactionProfileDigest: profile?.digest ?? null, stats,
+    disclosure: buildResultDisclosure({
+      toolName, route: route.route, reason: route.source, inline,
+      redactedText: redacted.text, inputBytes: Buffer.byteLength(input), redactedBytes: sourceBytes, artifact,
+    }),
   };
   if (artifact) result.artifact = artifact;
   return result;

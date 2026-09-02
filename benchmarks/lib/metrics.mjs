@@ -33,6 +33,13 @@ function provenanceValue(run, field) { return Object.hasOwn(run, field) ? run[fi
 
 function auditResolvedModel(run) { return run.audit.resolvedModel; }
 
+function incompleteProviderEvidence(run) {
+  return run.quality === 'fail'
+    && run.tokenAccounting === 'provider-reported'
+    && run.providerUsage === undefined
+    && run.audit?.tokenAccounting?.providerObserved === false;
+}
+
 function validateAudit(run) {
   const audit = run.audit;
   if (!record(audit) || !record(audit.measurement) || !record(audit.tokenAccounting)) {
@@ -62,7 +69,8 @@ function validateAudit(run) {
   if (!Object.hasOwn(accounting, 'source') || !Object.hasOwn(accounting, 'providerObserved')
     || accounting.source !== run.tokenAccounting
     || typeof accounting.providerObserved !== 'boolean'
-    || accounting.providerObserved !== (run.tokenAccounting === 'provider-reported')
+    || (accounting.providerObserved !== (run.tokenAccounting === 'provider-reported')
+      && !incompleteProviderEvidence(run))
     || (run.tokenAccounting === 'estimate' && accounting.formula !== 'ceil(UTF-8 bytes / 4)')) {
     throw new TypeError('benchmark audit contradicts token accounting provenance');
   }
@@ -94,6 +102,7 @@ function validateAudit(run) {
 function validateProviderEvidence(run) {
   const providerUsage = run.providerUsage;
   if (run.tokenAccounting === 'provider-reported') {
+    if (incompleteProviderEvidence(run)) return;
     if (!record(providerUsage) || !safeCounter(providerUsage.inputTokens)) {
       throw new TypeError('provider-reported accounting requires provider usage evidence');
     }

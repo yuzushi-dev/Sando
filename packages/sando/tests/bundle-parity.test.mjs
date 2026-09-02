@@ -14,6 +14,19 @@ const BUNDLES = [
   'adapters/codex/sando/lib',
   'plugins/sando/lib',
 ].map((directory) => path.join(ROOT, directory));
+const GENERATED_MODULES = [
+  'core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'metrics.mjs',
+  'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'adaptive-control.mjs',
+  'paired-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs', 'canary.mjs',
+  'context-footprint.mjs', 'context-classifier.mjs', 'context-capture.mjs', 'context-audit-cli.mjs',
+  'instruction-plan.mjs', 'instruction-plan-cli.mjs', 'f1-telemetry.mjs', 'f4-telemetry.mjs',
+  'result-disclosure.mjs', 'artifact-recovery.mjs', 'artifact-store.mjs', 'artifact-cli.mjs',
+  'gateway-gate.mjs', 'gateway-gate-cli.mjs', 'lazy-mcp-gateway.mjs', 'lazy-mcp-gateway-stdio.mjs',
+  'history-disclosure.mjs', 'exec-capture.mjs', 'context-transform.mjs', 'history-budget.mjs',
+  'history-dedupe.mjs', 'history-shake.mjs', 'history-structure.mjs', 'proxy.mjs', 'proxy-metrics.mjs',
+  'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs',
+  'user-prompt-submit.mjs', 'version.mjs',
+];
 
 test('standalone bundles match canonical routing metadata and behavior', async () => {
   const modules = await Promise.all([SOURCE, ...BUNDLES].map((directory) => import(pathToFileURL(path.join(directory, 'core.mjs')))));
@@ -26,8 +39,8 @@ test('standalone bundles match canonical routing metadata and behavior', async (
   for (const module of modules.slice(1)) assert.deepEqual(module.optimizeToolOutput(input), expected);
 });
 
-test('generated bundle core, routing, session, statusline, and version files match canonical sources', async () => {
-  for (const file of ['core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'metrics.mjs', 'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'provider-usage.mjs', 'adaptive-control.mjs', 'paired-accounting.mjs', 'accounting-cli.mjs', 'exec-capture.mjs', 'context-transform.mjs', 'history-budget.mjs', 'history-dedupe.mjs', 'history-shake.mjs', 'history-structure.mjs', 'proxy.mjs', 'proxy-metrics.mjs', 'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs', 'user-prompt-submit.mjs', 'version.mjs']) {
+test('all generated bundle modules match canonical sources', async () => {
+  for (const file of GENERATED_MODULES) {
     const expected = await fs.readFile(path.join(SOURCE, file), 'utf8');
     for (const directory of BUNDLES) assert.equal(await fs.readFile(path.join(directory, file), 'utf8'), expected);
   }

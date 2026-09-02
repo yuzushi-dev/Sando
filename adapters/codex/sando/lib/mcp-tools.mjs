@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { recordCoverage } from './coverage.mjs';
 import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './exec-capture.mjs';
+import { ARTIFACT_TOOL_NAME } from './result-disclosure.mjs';
+import { rememberArtifact, recoverStoredArtifact } from './artifact-store.mjs';
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PATTERN_LENGTH = 512;
@@ -49,7 +52,7 @@ export function resolveCodexCommand(env = process.env, fsImpl = fs) {
 const TOOLS = [
   {
     name: 'prepare_tool_output',
-    description: 'Prepare deterministic bounded inline output and an optional redacted artifact payload. Performs no writes or network access.',
+    description: 'Prepare deterministic bounded inline output and optional redacted artifact handle. Full content is recovered with sando_artifact_get.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['toolName', 'output', 'cwd'],
       properties: { toolName: { type: 'string', minLength: 1, maxLength: 128 }, output: {}, cwd: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }, policy: { type: 'object' } },
@@ -58,7 +61,7 @@ const TOOLS = [
   },
   {
     name: 'sando_read',
-    description: 'Read one workspace-relative text file and return redacted, bounded output with an optional artifact payload.',
+    description: 'Read one workspace-relative text file and return redacted, bounded output with an optional artifact handle.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['path', 'cwd'],
       properties: { path: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }, cwd: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }, policy: { type: 'object' } },
@@ -88,6 +91,20 @@ const TOOLS = [
       properties: { command: { type: 'string', minLength: 1, maxLength: 8192 }, workdir: { type: 'string', maxLength: MAX_PATH_LENGTH }, timeoutMs: { type: 'integer', minimum: 1, maximum: 120000 }, interactive: { type: 'boolean' }, policy: { type: 'object' } },
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: ARTIFACT_TOOL_NAME,
+    description: 'Recover a bounded redacted byte or line range from an artifact created in this MCP session.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['ref'],
+      properties: {
+        ref: { type: 'string', pattern: '^sando:sha256:[a-f0-9]{16,64}$' },
+        startByte: { type: 'integer', minimum: 0 }, endByte: { type: 'integer', minimum: 0 },
+        startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 },
+        maxBytes: { type: 'integer', minimum: 1, maximum: 1048576 },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
 ];
 
@@ -245,6 +262,67 @@ function execError(message, reason) {
   return error;
 }
 
+function receiptOutput(buffer, truncated) {
+  const output = textOrBinary(buffer, { truncated });
+  return output.binary ? { encoding: 'base64', data: buffer.toString('base64') } : output.text;
+}
+
+function writeExecReceipt(env, { command, root, workdir, run }) {
+  const configuredDir = env?.SANDO_EXEC_RECEIPT_DIR;
+  if (!configuredDir) return;
+  if (typeof configuredDir !== 'string' || configuredDir.includes('\0') || !path.isAbsolute(configuredDir)) {
+    throw execError('SANDO_EXEC_RECEIPT_DIR must be an absolute real directory', 'invalid-receipt-directory');
+  }
+
+  let receiptDir;
+  try {
+    const normalized = path.resolve(configuredDir);
+    const stat = fs.lstatSync(configuredDir);
+    const real = fs.realpathSync(configuredDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || real !== normalized) throw new Error('invalid receipt directory');
+    receiptDir = real;
+  } catch {
+    throw execError('SANDO_EXEC_RECEIPT_DIR must be an absolute real directory', 'invalid-receipt-directory');
+  }
+
+  const receipt = {
+    schema: 'sando-exec-receipt/v1',
+    run_id: randomUUID(),
+    command,
+    workdir: path.relative(root, workdir).split(path.sep).join('/') || '.',
+    stdout: receiptOutput(run.stdout, run.stdoutTruncated),
+    stderr: receiptOutput(run.stderr, run.stderrTruncated),
+    stdout_sha256: createHash('sha256').update(run.stdout).digest('hex'),
+    stderr_sha256: createHash('sha256').update(run.stderr).digest('hex'),
+    stdout_bytes: run.stdoutBytes,
+    stderr_bytes: run.stderrBytes,
+    exit_code: run.exitCode,
+    signal: run.exitSignal,
+    timed_out: run.timedOut,
+    cancelled: run.cancelled,
+    stdout_truncated: run.stdoutTruncated,
+    stderr_truncated: run.stderrTruncated,
+    truncated: run.truncated,
+  };
+  const temporaryPath = path.join(receiptDir, `.${randomUUID()}.tmp`);
+  const receiptPath = path.join(receiptDir, `${randomUUID()}.json`);
+  let handle;
+  try {
+    handle = fs.openSync(temporaryPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+    fs.writeFileSync(handle, `${JSON.stringify(receipt)}\n`);
+    fs.fsyncSync(handle);
+    fs.closeSync(handle);
+    handle = undefined;
+    fs.renameSync(temporaryPath, receiptPath);
+  } catch (error) {
+    if (handle !== undefined) {
+      try { fs.closeSync(handle); } catch {}
+    }
+    try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+    throw execError(`sando_exec receipt unavailable: ${error.message}`, 'receipt-write-failed');
+  }
+}
+
 function sandboxState(meta) {
   const state = meta?.[CODEX_SANDBOX_META];
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw execError('sando_exec requires Codex sandbox metadata', 'missing-sandbox-metadata');
@@ -301,7 +379,7 @@ async function runSandboxedCommand({ state, root, workdir, command, timeoutMs, m
   return outcome;
 }
 
-async function execTool(args = {}, meta, signal) {
+async function execTool(args = {}, meta, signal, env = process.env) {
   if (!meta || typeof meta !== 'object' || !meta[CODEX_SANDBOX_META]) {
     throw execError('sando_exec requires Codex sandbox metadata', 'missing-sandbox-metadata');
   }
@@ -315,6 +393,7 @@ async function execTool(args = {}, meta, signal) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EXEC_TIMEOUT_MS) throw execError('timeoutMs is invalid', 'invalid-timeout');
   const policy = normalizePolicy(args.policy);
   const run = await runSandboxedCommand({ state, root, workdir, command: args.command, timeoutMs, maxBytes: Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES), signal });
+  writeExecReceipt(env, { command: args.command, root, workdir, run });
   const stdout = textOrBinary(run.stdout, { truncated: run.stdoutTruncated });
   const stderr = textOrBinary(run.stderr, { truncated: run.stderrTruncated });
   const binaryOutput = stdout.binary || stderr.binary;
@@ -337,6 +416,7 @@ export function callMcpTool(name, args, env = process.env) {
     if (name === 'prepare_tool_output') result = prepare(args?.toolName, args?.output, args?.cwd, args?.policy);
     else if (name === 'sando_read') result = readTool(args);
     else if (name === 'sando_grep') result = grepTool(args);
+    else if (name === ARTIFACT_TOOL_NAME) result = recoverStoredArtifact(args);
     else if (name === 'sando_exec') {
       sandboxState(undefined);
       throw execError('sando_exec requires asynchronous MCP dispatch', 'async-dispatch-required');
@@ -348,6 +428,7 @@ export function callMcpTool(name, args, env = process.env) {
     }
     throw error;
   }
+  if (result?.artifact) rememberArtifact(result.artifact);
   recordMcpCoverage(name, env);
   return result;
 }
@@ -355,11 +436,12 @@ export function callMcpTool(name, args, env = process.env) {
 export async function callMcpToolAsync(name, args, env = process.env, meta, signal) {
   if (name !== 'sando_exec') return callMcpTool(name, args, env);
   let result;
-  try { result = await execTool(args, meta, signal); }
+  try { result = await execTool(args, meta, signal, env); }
   catch (error) {
     try { recordCoverage({ buckets: ['bypassed'], reason: error?.coverageReason || 'runner-error', route: 'sando_exec', toolName: 'Bash', env }); } catch {}
     throw error;
   }
+  if (result?.artifact) rememberArtifact(result.artifact);
   recordMcpCoverage(name, env);
   return result;
 }

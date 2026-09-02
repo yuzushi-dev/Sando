@@ -16,7 +16,7 @@ import {
 } from '../live/adapters.mjs';
 import * as liveRunner from '../live/run-live.mjs';
 import { parseModelProbeResult } from '../live/e2e-run.mjs';
-import { buildCodexToolArgs, CODEX_TOOL_MEASUREMENT } from '../live/codex-e2e-run.mjs';
+import { buildCodexE2EEnv, buildCodexToolArgs, CODEX_TOOL_MEASUREMENT } from '../live/codex-e2e-run.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -95,6 +95,24 @@ test('failure reports preserve repository Git provenance outside repository cwd'
     process.chdir(previousCwd);
     await fs.rm(outside, { recursive: true, force: true });
   }
+});
+
+test('failed live runs remain reportable when provider usage is unavailable', async () => {
+  const failed = liveRunner.failureRun({
+    host: 'codex',
+    scenario: { id: 'terminal-noise' },
+    repetition: 0,
+    variant: 'baseline',
+    prompt: 'prompt',
+    args: ['exec', 'prompt'],
+    result: { stdout: '', stderr: 'provider unavailable' },
+    clientVersion: 'codex-test',
+    message: 'provider unavailable',
+  });
+  const output = await reportWithRuns([failed]);
+  assert.equal(output.status, 'blocked');
+  assert.equal(output.runs[0].error, 'provider unavailable');
+  assert.equal(output.runs[0].audit.tokenAccounting.providerObserved, false);
 });
 
 test('unlimited Claude budget bypasses the per-call budget requirement', () => {
@@ -365,6 +383,45 @@ test('builds paired Codex tool commands with MCP only in the optimized arm', () 
   assert.ok(optimized.includes('mcp_servers.sando.args=["/tmp/sando/mcp/server.mjs"]'));
   assert.equal(optimized.at(-1), 'run it');
   assert.equal(CODEX_TOOL_MEASUREMENT, 'end-to-end-tools');
+});
+
+test('passes the receipt directory to the optimized MCP server through Codex config', () => {
+  const receiptDirectory = '/tmp/sando receipts';
+  const optimized = buildCodexToolArgs({
+    prompt: 'run it', model: 'codex-test', optimized: true, route: 'mcp',
+    serverPath: '/tmp/sando/mcp/server.mjs', receiptDirectory,
+  });
+
+  const optimizedAll = buildCodexToolArgs({
+    prompt: 'run it', model: 'codex-test', optimized: true, route: 'all',
+    serverPath: '/tmp/sando/mcp/server.mjs', receiptDirectory,
+  });
+  const baseline = buildCodexToolArgs({
+    prompt: 'run it', model: 'codex-test', optimized: false, route: 'mcp',
+    serverPath: '/tmp/sando/mcp/server.mjs', receiptDirectory,
+  });
+  const optimizedCli = buildCodexToolArgs({ prompt: 'run it', model: 'codex-test', optimized: true, route: 'cli', receiptDirectory });
+
+  const receiptOverride = `mcp_servers.sando.env.SANDO_EXEC_RECEIPT_DIR=${JSON.stringify(receiptDirectory)}`;
+  assert.ok(optimized.includes(receiptOverride));
+  assert.ok(optimizedAll.includes(receiptOverride));
+  assert.equal(baseline.includes(receiptOverride), false);
+  assert.equal(optimizedCli.includes(receiptOverride), false);
+});
+
+test('keeps receipt env propagation scoped to optimized MCP routes', () => {
+  const baseEnv = { SANDO_EXEC_RECEIPT_DIR: '/inherited/receipt', SANDO_POLICY: 'old' };
+  const receiptDirectory = '/tmp/sando-receipts';
+
+  const optimizedMcp = buildCodexE2EEnv({ variant: 'optimized', route: 'mcp', baseEnv, receiptDirectory });
+  const optimizedAll = buildCodexE2EEnv({ variant: 'optimized', route: 'all', baseEnv, receiptDirectory });
+  const optimizedCli = buildCodexE2EEnv({ variant: 'optimized', route: 'cli', baseEnv, receiptDirectory });
+  const baselineMcp = buildCodexE2EEnv({ variant: 'baseline', route: 'mcp', baseEnv, receiptDirectory });
+
+  assert.equal(optimizedMcp.SANDO_EXEC_RECEIPT_DIR, receiptDirectory);
+  assert.equal(optimizedAll.SANDO_EXEC_RECEIPT_DIR, receiptDirectory);
+  assert.equal(Object.hasOwn(optimizedCli, 'SANDO_EXEC_RECEIPT_DIR'), false);
+  assert.equal(Object.hasOwn(baselineMcp, 'SANDO_EXEC_RECEIPT_DIR'), false);
 });
 
 test('builds paired Codex CLI commands with hooks enabled and no MCP server', () => {

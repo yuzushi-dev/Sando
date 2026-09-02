@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { auditMetadata, digestPrompt } from '../lib/audit.mjs';
 import { assertQualityGate, summarizeRuns } from '../lib/metrics.mjs';
 import { createProviderProxy } from '../../packages/sando/src/proxy.mjs';
-import { formatChildFailure, parseClaudeUsage, parseCodexUsage } from './adapters.mjs';
+import { formatChildFailure, parseCodexUsage } from './adapters.mjs';
 import { countInteractions } from './interaction-counts.mjs';
 import { parseModelProbeResult } from './e2e-run.mjs';
 

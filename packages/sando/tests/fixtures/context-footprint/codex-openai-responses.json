@@ -1,0 +1,12 @@
+{
+  "schema": "sando-context-capture/v1",
+  "host": "codex",
+  "requestFormat": "openai-responses",
+  "body": { "state": "observed", "content": "CODEX_SYSTEM\nCODEX_MCP\nCODEX_PROMPT\n" },
+  "segments": [
+    { "category": "host-instructions", "source": "codex-host", "content": "CODEX_SYSTEM\n" },
+    { "category": "mcp-deferred", "source": "codex-mcp", "content": "CODEX_MCP\n" },
+    { "category": "user-prompt", "source": "user", "content": "CODEX_PROMPT\n" }
+  ],
+  "toolSearch": { "state": "disabled" }
+}

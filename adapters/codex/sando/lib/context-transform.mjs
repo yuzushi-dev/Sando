@@ -3,6 +3,7 @@ import { dedupeHistory } from './history-dedupe.mjs';
 import { selectHistoryCandidates, validateMaxHistoryTokens } from './history-budget.mjs';
 import { shakeHistoricalResult } from './history-shake.mjs';
 import { compactHistoricalStructure } from './history-structure.mjs';
+import { buildHistoryDisclosure } from './history-disclosure.mjs';
 
 const SUPERSEDED = '[sando superseded by newer read]';
 const USELESS = '[sando elided useless success]';
@@ -321,7 +322,7 @@ function suffixTokensByPosition(body) {
   return suffix;
 }
 
-export function transformProviderRequest({ provider, body, policy, idleMs } = {}) {
+export function transformProviderRequest({ provider, body, policy, idleMs, redactionProfile } = {}) {
   const clone = structuredClone(body);
   const estimatedInputTokens = estimate(body);
   const selectedProvider = provider ?? detectProviderBody(body);
@@ -331,6 +332,13 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
   let deduplicatedResults = 0;
   let compactedStructures = 0;
   let shakenResults = 0;
+  const disclosures = [];
+  const disclose = (record, reason, originalText, visibleText, recovery = 'rerun-tool') => {
+    if (typeof originalText !== 'string' || typeof visibleText !== 'string') return;
+    disclosures.push(buildHistoryDisclosure({
+      toolName: record.toolName, reason, originalText, visibleText, recovery, redactionProfile,
+    }));
+  };
   const maxHistoryTokens = object(policy) && Object.hasOwn(policy, 'maxHistoryTokens')
     ? validateMaxHistoryTokens(policy.maxHistoryTokens)
     : null;
@@ -400,6 +408,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
       if (!newer) continue;
       if (cacheProtected(old.result, reclaimedTokens(old.text, SUPERSEDED))) { cacheProtectedSkips += 1; continue; }
       replaceResult(old.result.item, old.result.key, SUPERSEDED);
+      disclose({ toolName: old.call.name }, 'superseded-read', old.text, SUPERSEDED);
       supersededReads += 1;
     }
 
@@ -410,6 +419,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
       if (text === SUPERSEDED || resultError(result.item, text) || !useless(text)) continue;
       if (cacheProtected(result, reclaimedTokens(text, USELESS))) { cacheProtectedSkips += 1; continue; }
       replaceResult(result.item, result.key, USELESS);
+      disclose({ toolName: calls.get(id).name }, 'useless-success', text, USELESS);
       elidedUselessSuccesses += 1;
     }
 
@@ -427,6 +437,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
       if (cacheProtected(original.entry, reclaimedTokens(
         resultText(original.output) ?? '', resultText(reduced.output) ?? ''))) { cacheProtectedSkips += 1; continue; }
       replaceResult(original.entry.item, original.entry.key, reduced.output);
+      disclose(original, 'duplicate-history', resultText(original.output) ?? '', resultText(reduced.output) ?? '', 'newer-result');
       deduplicatedResults += 1;
     }
 
@@ -443,6 +454,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
       if (compacted === text) continue;
       if (cacheProtected(record.entry, reclaimedTokens(text, compacted))) { cacheProtectedSkips += 1; continue; }
       replaceResult(record.entry.item, record.entry.key, compacted);
+      disclose(record, 'repeated-lines', text, compacted);
       compactedStructures += 1;
     }
 
@@ -460,6 +472,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
         if (!shaken.changed) continue;
         if (cacheProtected(record.entry, reclaimedTokens(text, shaken.text))) { cacheProtectedSkips += 1; continue; }
         replaceResult(record.entry.item, record.entry.key, shaken.text);
+        disclose(record, 'history-shake', text, shaken.text);
         shakenResults += 1;
       }
     }
@@ -475,6 +488,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
     body: clone,
     changed: reasons.length > 0,
     reasons,
+    disclosures,
     stats: {
       estimatedInputTokens,
       estimatedOutputTokens: estimate(clone),
@@ -483,6 +497,9 @@ export function transformProviderRequest({ provider, body, policy, idleMs } = {}
       deduplicatedResults,
       compactedStructures,
       shakenResults,
+      historyDisclosureCount: disclosures.length,
+      historyDisclosureOriginalBytes: disclosures.reduce((total, item) => total + item.bytes.original, 0),
+      historyDisclosureVisibleBytes: disclosures.reduce((total, item) => total + item.bytes.visible, 0),
       budgetTriggered,
       cacheProtectedSkips,
       cacheRewriteRatio: cacheWarm ? cacheRewriteRatio : null,
