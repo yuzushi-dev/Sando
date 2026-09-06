@@ -38,6 +38,54 @@ function tokens(command) {
   push();
   return result;
 }
+// Codex does not hand the hook a bare command. Depending on version it passes an argv
+// array (["/bin/bash","-lc","cat f.txt"]) or the same wrapper as a single string. Both
+// used to be rejected before classification even began — `tokens` returns null for a
+// non-string, and a wrapped string classifies as the shell binary — so every command on
+// Codex was bypassed and nothing was ever routed. Measured against Codex 0.153.
+const SHELL_WRAPPERS = new Set([
+  'sh', 'bash', 'zsh', 'dash',
+  '/bin/sh', '/bin/bash', '/bin/zsh', '/bin/dash',
+  '/usr/bin/sh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/dash',
+]);
+
+// -c, -lc, -lic … the flag bundle always ends in `c` for "read the command from the
+// next argument".
+function isShellCommandFlag(value) {
+  return typeof value === 'string' && /^-[a-z]*c$/.test(value);
+}
+
+/** The inner command of a `<shell> -lc "<command>"` triple, or null. */
+function unwrapShellArgv(argv) {
+  if (!Array.isArray(argv) || argv.length !== 3) return null;
+  const [shell, flag, inner] = argv;
+  if (!SHELL_WRAPPERS.has(shell) || !isShellCommandFlag(flag)) return null;
+  return typeof inner === 'string' ? inner : null;
+}
+
+/**
+ * Tokens for the command the user actually asked for, unwrapping one level of shell.
+ *
+ * The inner command is tokenized by the same `tokens`, so the metacharacter rejection
+ * that keeps pipes, redirects and globs out of the routed set still applies — unwrapping
+ * widens what is recognised, never what is considered safe.
+ */
+function commandTokens(command) {
+  if (Array.isArray(command)) {
+    const inner = unwrapShellArgv(command);
+    if (inner !== null) return tokens(inner);
+    // A plain argv array: accept it only if every element is a token `tokens` would have
+    // produced itself, so an array cannot smuggle in what a string could not.
+    if (command.length === 0 || !command.every((item) => typeof item === 'string')) return null;
+    const rejoined = command.map((item) => shellQuote(item)).join(' ');
+    return tokens(rejoined);
+  }
+  const direct = tokens(command);
+  if (direct === null) return null;
+  const inner = unwrapShellArgv(direct);
+  return inner === null ? direct : tokens(inner);
+}
+
 function safeRoot(cwd, workdir) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) return null;
   let root;
@@ -96,9 +144,9 @@ export function classifyShellCommand({ toolName, toolInput, cwd } = {}) {
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return bypass('invalid-input');
   const root = safeRoot(cwd, toolInput.workdir);
   if (!root) return bypass('unsafe-cwd');
-  const commandTokens = tokens(toolInput.command);
-  if (!commandTokens?.length) return bypass('ambiguous-shell');
-  return classifyTokens(commandTokens, root);
+  const parsed = commandTokens(toolInput.command);
+  if (!parsed?.length) return bypass('ambiguous-shell');
+  return classifyTokens(parsed, root);
 }
 
 function metric(result, toolName, env) {

