@@ -26,6 +26,8 @@ Built-ins stay enabled. Profiles are declarative and local to the current projec
 
 The library requires Node.js `>=22.22.0 <23` and has no runtime dependencies. Installing it does not install or enable the plugin. The plugin remains the supported host surface; this package exports the bounded output/disclosure runtime, context footprint audit, F1/F3/F4 evidence APIs, provider usage report, paired accounting, and explicit proxy API. Host hooks and MCP registration remain outside the package API.
 
+The provider proxy is pass-through unless request transformation is explicitly enabled.
+
 `computeWeightedUsage` and `summarizePairedSessions` keep mechanical reduction, weighted estimates, provider-reported cost, and paired-session evidence separate. The library does not install hooks, register MCP servers, or make routing/backoff decisions for a host.
 
 For plugin installation, see the [main project README](https://github.com/yuzushi-dev/Sando#readme).

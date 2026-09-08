@@ -87,13 +87,13 @@ test('supersedes OpenAI Chat Completions Reads and preserves malformed arguments
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Read', arguments: '{"file_path":"same"}' } }] },
-      { role: 'tool', tool_call_id: 'old', content: 'old body' },
+      { role: 'tool', tool_call_id: 'old', content: 'old body', status: 'completed', ok: true },
       { role: 'assistant', tool_calls: [
         { id: 'bad', type: 'function', function: { name: 'Read', arguments: '{bad json' } },
         { id: 'new', type: 'function', function: { name: 'Read', arguments: '{"file_path":"same"}' } },
       ] },
       { role: 'tool', tool_call_id: 'bad', content: 'must stay' },
-      { role: 'tool', tool_call_id: 'new', content: 'new body' },
+      { role: 'tool', tool_call_id: 'new', content: 'new body', status: 'completed', ok: true },
     ],
   };
 
@@ -109,10 +109,10 @@ test('supports OpenAI Responses function_call and function_call_output items', (
     model: 'codex-fixture-model',
     input: [
       { type: 'function_call', call_id: 'old', name: 'Read', arguments: '{"file_path":"same"}' },
-      { type: 'function_call_output', call_id: 'old', output: 'old body' },
+      { type: 'function_call_output', call_id: 'old', output: 'old body', status: 'completed', ok: true },
       { type: 'message', role: 'user', content: 'continue' },
       { type: 'function_call', call_id: 'new', name: 'Read', arguments: '{"file_path":"same"}' },
-      { type: 'function_call_output', call_id: 'new', output: 'new body' },
+      { type: 'function_call_output', call_id: 'new', output: 'new body', status: 'completed', ok: true },
     ],
   };
 
@@ -128,10 +128,10 @@ test('supports Codex custom_tool_call history in Responses requests', () => {
   const body = {
     input: [
       { type: 'custom_tool_call', call_id: 'old', name: 'exec', input: 'printf old' },
-      { type: 'custom_tool_call_output', call_id: 'old', output: [{ type: 'input_text', text: `${'proxy-noise\n'.repeat(500)}SANDO_PROXY_HEAD_FACT` }] },
+      { type: 'custom_tool_call_output', call_id: 'old', output: [{ type: 'input_text', text: `${'proxy-noise\n'.repeat(500)}SANDO_PROXY_HEAD_FACT` }], status: 'completed', ok: true },
       { type: 'message', role: 'user', content: 'continue' },
       { type: 'custom_tool_call', call_id: 'new', name: 'exec', input: 'printf new' },
-      { type: 'custom_tool_call_output', call_id: 'new', output: [{ type: 'input_text', text: 'SANDO_PROXY_FINAL_FACT' }] },
+      { type: 'custom_tool_call_output', call_id: 'new', output: [{ type: 'input_text', text: 'SANDO_PROXY_FINAL_FACT' }], status: 'completed', ok: true },
     ],
   };
 
@@ -155,12 +155,12 @@ test('lists only historical successful provider results as semantic candidates',
     model: 'codex-fixture-model',
     input: [
       { type: 'custom_tool_call', call_id: 'old', name: 'Bash', input: { command: 'npm test' } },
-      { type: 'custom_tool_call_output', call_id: 'old', output: 'old successful output' },
+      { type: 'custom_tool_call_output', call_id: 'old', output: 'old successful output', status: 'completed', ok: true },
       { type: 'custom_tool_call', call_id: 'error', name: 'Bash', input: { command: 'npm test' } },
-      { type: 'custom_tool_call_output', call_id: 'error', output: 'error: network failed' },
+      { type: 'custom_tool_call_output', call_id: 'error', output: 'error: network failed', status: 'completed' },
       { type: 'message', role: 'user', content: 'continue' },
       { type: 'custom_tool_call', call_id: 'current', name: 'Bash', input: { command: 'git status' } },
-      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output' },
+      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output', status: 'completed', ok: true },
     ],
   };
 
@@ -176,11 +176,47 @@ test('lists only historical successful provider results as semantic candidates',
   }]);
 });
 
+test('keeps opaque OpenAI results lossless without explicit success evidence', () => {
+  const output = 'permission denied\n'.repeat(20);
+  const body = { messages: [
+    { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'old', content: output },
+    { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'new', content: output },
+  ] };
+
+  assert.deepEqual(transformProviderRequest({ provider: 'openai-chat', body }).body, body);
+
+  const noOutput = structuredClone(body);
+  noOutput.messages[1].content = 'Command completed successfully with no output.';
+  assert.deepEqual(transformProviderRequest({ provider: 'openai-chat', body: noOutput }).body, noOutput);
+});
+
+test('allows each historical transform family to be disabled independently', () => {
+  const output = 'same matches '.repeat(20);
+  const body = { messages: [
+    { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Grep', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'old', content: output, status: 'completed', ok: true },
+    { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Grep', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'new', content: output, status: 'completed', ok: true },
+  ] };
+  const result = transformProviderRequest({ provider: 'openai-chat', body, policy: {
+    strategies: { exactDuplicate: false, repeatedLines: false },
+  } });
+
+  assert.deepEqual(result.body, body);
+  assert.equal(result.changed, false);
+  assert.throws(
+    () => transformProviderRequest({ provider: 'openai-chat', body, policy: { strategies: [] } }),
+    /strategies must be an object/,
+  );
+});
+
 test('elides only recognizable historical no-output successes', () => {
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'ok', type: 'function', function: { name: 'Bash', arguments: '{"command":"true"}' } }] },
-      { role: 'tool', tool_call_id: 'ok', content: 'Command completed successfully with no output.' },
+      { role: 'tool', tool_call_id: 'ok', content: 'Command completed successfully with no output.', status: 'completed', ok: true },
       { role: 'assistant', content: 'noted' },
       { role: 'tool', tool_call_id: 'unknown', content: 'Command completed successfully with no output.' },
     ],
@@ -255,9 +291,9 @@ test('deduplicates an older identical historical tool result', () => {
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Grep', arguments: '{"pattern":"x"}' } }] },
-      { role: 'tool', tool_call_id: 'old', content: output },
+      { role: 'tool', tool_call_id: 'old', content: output, status: 'completed', ok: true },
       { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Grep', arguments: '{"pattern":"x"}' } }] },
-      { role: 'tool', tool_call_id: 'new', content: output },
+      { role: 'tool', tool_call_id: 'new', content: output, status: 'completed', ok: true },
     ],
   };
 
@@ -277,9 +313,9 @@ test('compacts repeated lines only in an older historical Bash result', () => {
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Bash', arguments: '{"command":"make"}' } }] },
-      { role: 'tool', tool_call_id: 'old', content: 'warning\nwarning\nwarning\nwarning\n' },
+      { role: 'tool', tool_call_id: 'old', content: 'warning\nwarning\nwarning\nwarning\n', status: 'completed', ok: true },
       { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Bash', arguments: '{"command":"date"}' } }] },
-      { role: 'tool', tool_call_id: 'new', content: 'current\n' },
+      { role: 'tool', tool_call_id: 'new', content: 'current\n', status: 'completed', ok: true },
     ],
   };
 
@@ -296,9 +332,9 @@ test('gates the additional history reductions at 80% of maxHistoryTokens', () =>
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Grep', arguments: '{"pattern":"x"}' } }] },
-      { role: 'tool', tool_call_id: 'old', content: 'same matches '.repeat(40) },
+      { role: 'tool', tool_call_id: 'old', content: 'same matches '.repeat(40), status: 'completed', ok: true },
       { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Grep', arguments: '{"pattern":"x"}' } }] },
-      { role: 'tool', tool_call_id: 'new', content: 'same matches '.repeat(40) },
+      { role: 'tool', tool_call_id: 'new', content: 'same matches '.repeat(40), status: 'completed', ok: true },
     ],
   };
 
@@ -317,9 +353,9 @@ test('shakes large historical Bash output only after the history budget trigger'
   const body = {
     messages: [
       { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Bash', arguments: '{"command":"build"}' } }] },
-      { role: 'tool', tool_call_id: 'old', content: oldOutput },
+      { role: 'tool', tool_call_id: 'old', content: oldOutput, status: 'completed', ok: true },
       { role: 'assistant', tool_calls: [{ id: 'new', type: 'function', function: { name: 'Bash', arguments: '{"command":"date"}' } }] },
-      { role: 'tool', tool_call_id: 'new', content: 'current' },
+      { role: 'tool', tool_call_id: 'new', content: 'current', status: 'completed', ok: true },
     ],
   };
 

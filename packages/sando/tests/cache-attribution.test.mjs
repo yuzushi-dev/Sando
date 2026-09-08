@@ -27,6 +27,27 @@ test('a turn with cache reads is a hit and carries no cause', () => {
   assert.equal(result.cacheReadTokens, 5000);
 });
 
+test('provider input tokens are the complete prompt and are not double-counted', () => {
+  const result = attributeTurn({
+    current: turn({ cached: 400, write: 100, fresh: 1000 }),
+    previous: turn(),
+  });
+  assert.equal(result.totalPromptTokens, 1000);
+  assert.equal(result.freshInputTokens, 500);
+  assert.equal(result.effectiveInputTokens, 600);
+});
+
+test('an explicit zero promptTokens alias is not replaced by inputTokens', () => {
+  const current = turn({ cached: 0, write: 0, fresh: 1000 });
+  current.usage.promptTokens = 0;
+  const result = attributeTurn({
+    current,
+    previous: turn(),
+  });
+  assert.equal(result.promptTokens, 0);
+  assert.equal(result.totalPromptTokens, 0);
+});
+
 test('the first turn of a session is a cold start, not a defect', () => {
   const result = attributeTurn({ current: turn(), previous: null });
   assert.equal(result.hit, false);

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
+import { cleanupArtifacts } from './artifact-lifecycle.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import {
@@ -11,6 +12,13 @@ import {
 import { PLUGIN_VERSION } from './version.mjs';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
+
+function artifactPresent(target) {
+  let stat;
+  try { stat = fs.lstatSync(target); } catch { return false; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return false;
+  try { return fs.realpathSync(target) === target; } catch { return false; }
+}
 
 /** Only counts (never content, paths, or IDs). */
 function recordHookTelemetry({ host, env, policy, optimization }) {
@@ -69,6 +77,7 @@ function artifactPath(cwd, artifact) {
     if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('artifact directory is unsafe');
     if (!stat) fs.mkdirSync(target, { mode: 0o700 });
   }
+  cleanupArtifacts(directory);
   const name = `${artifact.sourceDigest.slice('sha256:'.length)}.txt`;
   const destination = path.join(directory, name);
   const temporary = path.join(directory, `.${name}.${process.pid}.${randomUUID()}`);
@@ -82,6 +91,8 @@ function artifactPath(cwd, artifact) {
     fs.rmSync(temporary, { force: true });
   }
   fs.chmodSync(destination, 0o600);
+  cleanupArtifacts(directory, { preserveName: name });
+  if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
   return path.posix.join('.sando/sando', 'artifacts', name);
 }
 

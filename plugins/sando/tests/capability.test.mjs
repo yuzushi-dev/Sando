@@ -17,7 +17,7 @@ test('Codex probe marks tool-output replacement as unavailable', () => {
   assert.equal(result.mcp.available, true);
   assert.equal(result.mcp.displacesBuiltIns, false);
   assert.deepEqual(result.preToolUse, { available: true, canRewriteInput: true, canRewriteToolOutput: false });
-  assert.deepEqual(result.cliRouting, { available: true, routes: ['literal-read', 'literal-grep'], transparent: true });
+  assert.deepEqual(result.cliRouting, { available: true, routes: ['literal-read', 'literal-grep'], transparent: false, inputRewriteOptIn: true });
   assert.deepEqual(result.postToolUse, { available: true, observational: true, feedbackFallback: true, canRewriteToolOutput: false });
   assert.equal(result.preModelToolOutputReplacement, false);
   assert.equal(result.providerSavings, false);
@@ -34,7 +34,7 @@ test('bundled capability probes report the same truthful boundary', () => {
     assert.equal(probe.preModelToolOutputReplacement, false);
     assert.equal(probe.providerSavings, false);
     assert.equal(probe.status, hooksAvailable ? 'partial' : 'unavailable');
-    assert.deepEqual(probe.cliRouting, { available: hooksAvailable, routes: ['literal-read', 'literal-grep'], transparent: hooksAvailable });
+    assert.deepEqual(probe.cliRouting, { available: hooksAvailable, routes: ['literal-read', 'literal-grep'], transparent: false, inputRewriteOptIn: true });
     assert.deepEqual(probe.wrapperMcpTools, { Read: 'impossible', Grep: 'impossible', Bash: 'impossible' });
   }
 });

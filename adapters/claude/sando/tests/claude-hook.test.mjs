@@ -117,10 +117,28 @@ test('Claude receipt hashes the exact structured replacement payload', (t) => {
   assert.equal(replacement.extra, 'preserved');
   const event = normalizeEvent(input);
   const optimization = optimizeToolOutput({ toolName: event.toolName, output: event.output, cwd, policy });
-  const receipt = createReceipt({ host: 'claude', event, optimization, replacement });
+  const serialized = JSON.stringify(replacement);
+  const measuredOptimization = { ...optimization, inline: serialized, stats: {
+    ...optimization.stats,
+    inlineBytes: Buffer.byteLength(serialized),
+    estimatedInlineTokens: Math.ceil(Buffer.byteLength(serialized) / 4),
+  } };
+  const receipt = createReceipt({ host: 'claude', event, optimization: measuredOptimization, replacement });
 
   assert.equal(receipt.inlineDigest, digest(stableJson(replacement)));
   assert.equal(metrics.records[0].receiptDigest, receipt.digest);
+});
+
+test('Claude metrics count the exact structured updatedToolOutput payload', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-structured-metrics-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { output, metrics } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd,
+    tool_response: { stdout: 'x'.repeat(7000), stderr: 'y'.repeat(7000), interrupted: false, isImage: false },
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 16_000, redact: false });
+  const replacement = output.hookSpecificOutput.updatedToolOutput;
+  const emittedTokens = Math.ceil(Buffer.byteLength(JSON.stringify(replacement), 'utf8') / 4);
+  assert.equal(metrics.records[0].estimatedInlineTokens, emittedTokens);
 });
 
 test('Claude apply redacts secrets in preserved structured string fields', (t) => {

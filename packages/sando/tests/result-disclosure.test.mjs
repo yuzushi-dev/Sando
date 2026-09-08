@@ -13,6 +13,7 @@ import {
   recoverArtifactContent,
   recoverArtifactFromWorkspace,
 } from '../index.mjs';
+import { cleanupArtifacts } from '../src/artifact-lifecycle.mjs';
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '../../..');
 
@@ -126,4 +127,56 @@ test('artifact recovery rejects a tampered handle and bounds byte ranges', () =>
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test('artifact cleanup expires safe artifacts and respects a byte bound', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-artifact-cleanup-'));
+  const directory = path.join(cwd, 'artifacts');
+  fs.mkdirSync(directory);
+  const old = path.join(directory, `${'a'.repeat(64)}.txt`);
+  const fresh = path.join(directory, `${'b'.repeat(64)}.txt`);
+  const overflow = path.join(directory, `${'c'.repeat(64)}.txt`);
+  fs.writeFileSync(old, 'old');
+  fs.writeFileSync(fresh, 'fresh');
+  fs.writeFileSync(overflow, 'keep');
+  const now = 2_000_000;
+  fs.utimesSync(old, 1_000, 1_000);
+  fs.utimesSync(fresh, 1_999_000, 1_999_000);
+  fs.utimesSync(overflow, 1_998_000, 1_998_000);
+  const report = cleanupArtifacts(directory, { now, ttlMs: 100_000, maxBytes: 5 });
+  assert.equal(report.removed, 2);
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(fresh), true);
+  assert.equal(fs.existsSync(overflow), false);
+});
+
+test('artifact cleanup never removes unresolved or symlink targets', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-artifact-cleanup-safe-'));
+  const directory = path.join(cwd, 'artifacts');
+  fs.mkdirSync(directory);
+  const target = path.join(cwd, 'outside.txt');
+  const link = path.join(directory, `${'c'.repeat(64)}.txt`);
+  fs.writeFileSync(target, 'outside');
+  fs.symlinkSync(target, link);
+  const report = cleanupArtifacts(directory, { now: 2_000_000, ttlMs: 0, maxBytes: 0 });
+  assert.equal(report.removed, 0);
+  assert.equal(fs.existsSync(target), true);
+  assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+});
+
+test('artifact cleanup preserves the new artifact when timestamps tie', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-artifact-preserve-'));
+  const directory = path.join(cwd, 'artifacts');
+  fs.mkdirSync(directory);
+  const old = `${'f'.repeat(64)}.txt`;
+  const fresh = `${'0'.repeat(64)}.txt`;
+  fs.writeFileSync(path.join(directory, old), 'old');
+  fs.writeFileSync(path.join(directory, fresh), 'new');
+  fs.utimesSync(path.join(directory, old), 1000, 1000);
+  fs.utimesSync(path.join(directory, fresh), 1000, 1000);
+
+  cleanupArtifacts(directory, { now: 1000, ttlMs: 10_000, maxBytes: 3, preserveName: fresh });
+
+  assert.equal(fs.existsSync(path.join(directory, old)), false);
+  assert.equal(fs.readFileSync(path.join(directory, fresh), 'utf8'), 'new');
 });

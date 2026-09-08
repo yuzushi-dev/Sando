@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
+import { createReceipt, estimateTokens, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
+import { cleanupArtifacts } from './artifact-lifecycle.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import {
@@ -11,6 +12,13 @@ import {
 import { PLUGIN_VERSION } from './version.mjs';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
+
+function artifactPresent(target) {
+  let stat;
+  try { stat = fs.lstatSync(target); } catch { return false; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return false;
+  try { return fs.realpathSync(target) === target; } catch { return false; }
+}
 
 function recordHookTelemetry({ host, env, policy, optimization }) {
   try {
@@ -65,6 +73,7 @@ function artifactPath(cwd, artifact) {
     if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('artifact directory is unsafe');
     if (!stat) fs.mkdirSync(target, { mode: 0o700 });
   }
+  cleanupArtifacts(directory);
   const name = `${artifact.sourceDigest.slice('sha256:'.length)}.txt`;
   const destination = path.join(directory, name);
   const temporary = path.join(directory, `.${name}.${process.pid}.${randomUUID()}`);
@@ -78,7 +87,24 @@ function artifactPath(cwd, artifact) {
     fs.rmSync(temporary, { force: true });
   }
   fs.chmodSync(destination, 0o600);
+  cleanupArtifacts(directory, { preserveName: name });
+  if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
   return path.posix.join('.sando/sando', 'artifacts', name);
+}
+
+function optimizationForEmission(optimization, replacement) {
+  if (replacement === undefined) return optimization;
+  const serialized = typeof replacement === 'string' ? replacement : JSON.stringify(replacement);
+  if (typeof serialized !== 'string') return optimization;
+  return {
+    ...optimization,
+    inline: serialized,
+    stats: {
+      ...optimization.stats,
+      inlineBytes: Buffer.byteLength(serialized),
+      estimatedInlineTokens: estimateTokens(serialized),
+    },
+  };
 }
 
 export function runHookCli({ host, env = process.env } = {}) {
@@ -115,9 +141,10 @@ export function runHookCli({ host, env = process.env } = {}) {
         });
       }
       failureStage = 'output';
-      const receipt = createReceipt({ host, event, optimization, replacement: shaped });
-      try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
-      recordHookTelemetry({ host, env, policy, optimization });
+      const measuredOptimization = optimizationForEmission(optimization, shaped);
+      const receipt = createReceipt({ host, event, optimization: measuredOptimization, replacement: shaped });
+      try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: measuredOptimization, receipt }); } catch {}
+      recordHookTelemetry({ host, env, policy, optimization: measuredOptimization });
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
         return;

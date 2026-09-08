@@ -6,7 +6,7 @@
 
 Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversized tool output under control, preserves complete redacted artifacts when they fit the admission limit, and provides bounded local tool surfaces. It runs locally and makes no LLM calls.
 
-Release notes: [Sando 0.4.2](docs/changelogs/0.4.2.md).
+Release notes: [Sando 0.4.3](docs/changelogs/0.4.3.md).
 
 ## Install the plugin
 
@@ -56,7 +56,7 @@ SANDO_EXPERIMENT_ARM=control \
 codex
 ```
 
-Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` (the default). Use the same experiment and optional `SANDO_EXPERIMENT_WORKLOAD` for both arms. Generate the accounting report from the installed Codex plugin:
+Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` and must opt into transparent CLI routing with `SANDO_CLI_ROUTING=1`. Use the same experiment and optional `SANDO_EXPERIMENT_WORKLOAD` for both arms. Generate the accounting report from the installed Codex plugin:
 
 ```bash
 /path/to/installed/sando/bin/sando accounting --json
@@ -113,7 +113,7 @@ to the authorized paired runner outputs.
 
 ## Result progressive disclosure
 
-Large Read, Grep, Bash/log, and MCP results expose a bounded preview plus a `sando-result-disclosure/v1` record. The record contains redacted byte counts, provenance, elision markers, and a digest handle; it never contains the full payload. Recover a bounded byte or line range from an installed workspace artifact with:
+The library and MCP result APIs expose a bounded preview plus a `sando-result-disclosure/v1` record. The record contains redacted byte counts, provenance, elision markers, and a digest handle; it never contains the full payload. Claude and Codex hook responses remain host-native and do not include disclosure metadata. Recover a bounded byte or line range from an installed workspace artifact with:
 
 ```bash
 /path/to/installed/sando/bin/sando artifact get --root . --ref sando:sha256:... --start-line 1 --end-line 40 --json
@@ -124,6 +124,9 @@ Large Read, Grep, Bash/log, and MCP results expose a bounded preview plus a `san
 redacted result exceeds it, Sando keeps only a bounded preview, does not issue an
 artifact handle, and marks recovery unavailable instead of pretending a partial
 artifact is complete.
+On artifact writes, Sando removes entries older than seven days and caps retained
+artifacts at 64 MiB. Cleanup only removes regular content-addressed files and never
+follows symlinks.
 
 MCP results expose the read-only `sando_artifact_get` tool for artifacts kept in that MCP process. Claude PostToolUse and Codex artifact paths preserve their existing host boundaries; errors, current results, IDs, order, batches, and binary status remain untouched.
 
@@ -150,6 +153,7 @@ The plugin also includes the context/history transformer and an explicit proxy l
 
 ```bash
 SANDO_UPSTREAM_URL=https://api.example.test \
+SANDO_PROXY_TRANSFORM=1 \
 SANDO_CONTEXT_POLICY='{"maxHistoryTokens":1000}' \
 /path/to/installed/sando/bin/sando-proxy
 ```
@@ -159,8 +163,9 @@ Point the provider client at the printed local URL. The proxy records request-le
 For the opt-in F1 footprint record, also set `SANDO_CONTEXT_FOOTPRINT_PATH`,
 `SANDO_CONTEXT_FOOTPRINT_HOST` (`claude` or `codex`), and an explicit
 `SANDO_CONTEXT_SESSION_KEY`. The record contains no request content; without a
-session key the initial-context capture is skipped. Set
-`SANDO_PROXY_TRANSFORM=0` when the proxy is used only as a capture front-end.
+session key the initial-context capture is skipped. Request transformation is
+off by default and requires `SANDO_PROXY_TRANSFORM=1`. Individual historical
+transform families can be disabled with `SANDO_CONTEXT_POLICY.strategies`.
 For the local Grafana cockpit, set `SANDO_F1_TELEMETRY=1` and send to the
 loopback-only `SANDO_F1_TELEMETRY_ENDPOINT=http://127.0.0.1:4319/v1/logs`;
 only coverage and size buckets leave the capture process.

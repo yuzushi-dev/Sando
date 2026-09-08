@@ -43,7 +43,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     contextCapturePath: env.SANDO_CONTEXT_FOOTPRINT_PATH,
     contextCaptureHost: env.SANDO_CONTEXT_FOOTPRINT_HOST,
     contextSessionKey: env.SANDO_CONTEXT_SESSION_KEY,
-    transformProviderRequests: env.SANDO_PROXY_TRANSFORM !== '0',
+    transformProviderRequests: env.SANDO_PROXY_TRANSFORM === '1',
     env,
   });
   process.stdout.write(`${JSON.stringify({

@@ -8,6 +8,22 @@ import test from 'node:test';
 import { classifyShellCommand } from '../lib/enforcement.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
+const HOOKS = [
+  path.join(root, 'hooks/pre-tool-use.mjs'),
+  path.resolve(root, '../../../plugins/sando/hooks/pre-tool-use.mjs'),
+];
+
+function invokePreToolUse(hook, cwd, env = {}) {
+  return spawnSync(process.execPath, [hook], {
+    cwd,
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg -F -- needle fixture.txt' }, cwd,
+    }),
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, ...env },
+  });
+}
 
 test('classifies only proven literal Read and Grep commands', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-enforce-'));
@@ -51,7 +67,7 @@ test('PreToolUse transparently rewrites an eligible built-in to the local CLI', 
       tool_input: { command: 'cat -- fixture.txt' }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_COVERAGE_PATH: coveragePath },
+    env: { ...process.env, SANDO_CLI_ROUTING: '1', SANDO_COVERAGE_PATH: coveragePath },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -66,6 +82,70 @@ test('PreToolUse transparently rewrites an eligible built-in to the local CLI', 
   assert.match(routed.stdout, /needle/);
   const coverage = JSON.parse(fs.readFileSync(coveragePath, 'utf8'));
   assert.deepEqual(coverage.counts, { eligible: 1, routed: 1, transformed: 1, blocked: 0, bypassed: 0 });
+});
+
+test('PreToolUse leaves eligible native rg and grep commands untouched by default', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-off-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+  const result = spawnSync(process.execPath, [path.join(root, 'hooks/pre-tool-use.mjs')], {
+    cwd,
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg -F -- needle fixture.txt' }, cwd,
+    }),
+    encoding: 'utf8',
+    env: { ...process.env },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {});
+});
+
+test('experiment metadata alone never enables CLI routing', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-experiment-only-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+
+  for (const hook of HOOKS) {
+    const result = invokePreToolUse(hook, cwd, { SANDO_EXPERIMENT: 'trial' });
+    assert.equal(result.status, 0, `${hook}: ${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout), {}, hook);
+  }
+});
+
+test('an apply experiment arm alone never enables CLI routing', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-arm-only-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+
+  for (const hook of HOOKS) {
+    const result = invokePreToolUse(hook, cwd, { SANDO_EXPERIMENT_ARM: 'apply' });
+    assert.equal(result.status, 0, `${hook}: ${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout), {}, hook);
+  }
+});
+
+test('routing=0 wins over experiment metadata while routing=1 opts in', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-switch-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+
+  for (const hook of HOOKS) {
+    const disabled = invokePreToolUse(hook, cwd, {
+      SANDO_CLI_ROUTING: '0', SANDO_EXPERIMENT: 'trial', SANDO_EXPERIMENT_ARM: 'apply',
+    });
+    assert.equal(disabled.status, 0, `${hook}: ${disabled.stderr}`);
+    assert.deepEqual(JSON.parse(disabled.stdout), {}, `${hook}: disabled`);
+
+    const enabled = invokePreToolUse(hook, cwd, {
+      SANDO_CLI_ROUTING: '1', SANDO_EXPERIMENT: 'trial', SANDO_EXPERIMENT_ARM: 'apply',
+    });
+    assert.equal(enabled.status, 0, `${hook}: ${enabled.stderr}`);
+    const output = JSON.parse(enabled.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'allow', `${hook}: enabled`);
+    assert.match(output.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/, `${hook}: enabled`);
+  }
 });
 
 test('PreToolUse records an ambiguous shell command as bypass', (t) => {

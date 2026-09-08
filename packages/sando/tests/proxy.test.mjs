@@ -47,6 +47,7 @@ test('proxy transforms repeated Anthropic tool results and preserves streaming r
   const proxy = await createProviderProxy({
     upstream: `http://127.0.0.1:${upstreamAddress.port}`,
     policy: { maxHistoryTokens: 10_000 },
+    transformProviderRequests: true,
   });
   t.after(async () => {
     await proxy.close();
@@ -76,6 +77,34 @@ test('proxy transforms repeated Anthropic tool results and preserves streaming r
   assert.equal(received.body.messages[1].content[0].content, '[sando superseded by newer read]');
   assert.equal(received.body.messages[1].content[0].tool_use_id, 'read-old');
   assert.equal(received.body.messages[3].content[0].content, 'current file body');
+});
+
+test('proxy is pass-through unless request transformation is explicitly enabled', async (t) => {
+  let received;
+  const upstream = http.createServer(async (request, response) => {
+    received = JSON.parse(await readBody(request));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}` });
+  t.after(async () => {
+    await proxy.close();
+    await close(upstream);
+  });
+  const body = { messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'old', name: 'Read', input: { file_path: 'a' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old', content: 'old' }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'new', name: 'Read', input: { file_path: 'a' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'new', content: 'new' }] },
+  ] };
+
+  const response = await fetch(`${proxy.url}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify(body),
+  });
+  await response.text();
+  assert.deepEqual(received, body);
 });
 
 test('proxy fails open for an ambiguous request body', async (t) => {
@@ -140,6 +169,7 @@ test('proxy can observe semantic candidates without changing the forwarded body'
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
     upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    transformProviderRequests: true,
     semanticCompactor: async (candidate) => {
       candidates.push(candidate);
       return { status: 'candidate', cacheHit: false, netSavedTokens: 3, latencyMs: 4 };
@@ -154,9 +184,9 @@ test('proxy can observe semantic candidates without changing the forwarded body'
     model: 'fixture',
     input: [
       { type: 'custom_tool_call', call_id: 'old', name: 'Bash', input: { command: 'npm test' } },
-      { type: 'custom_tool_call_output', call_id: 'old', output: 'old output' },
+      { type: 'custom_tool_call_output', call_id: 'old', output: 'old output', status: 'completed', ok: true },
       { type: 'custom_tool_call', call_id: 'current', name: 'Bash', input: { command: 'git status' } },
-      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output' },
+      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output', status: 'completed', ok: true },
     ],
   };
   const response = await fetch(`${proxy.url}/v1/responses`, {
@@ -186,6 +216,7 @@ test('semantic observer failure does not undo deterministic proxy reduction', as
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
     upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    transformProviderRequests: true,
     semanticCompactor: async () => { throw new Error('adapter unavailable'); },
   });
   t.after(async () => {
@@ -225,6 +256,7 @@ test('shadow observer runs after forwarding and cannot delay the provider respon
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
     upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    transformProviderRequests: true,
     semanticCompactor: async () => {
       await gate;
       return { status: 'candidate', cacheHit: false, netSavedTokens: 1 };
@@ -240,9 +272,9 @@ test('shadow observer runs after forwarding and cannot delay the provider respon
     model: 'fixture',
     input: [
       { type: 'custom_tool_call', call_id: 'old', name: 'Bash', input: { command: 'npm test' } },
-      { type: 'custom_tool_call_output', call_id: 'old', output: 'old output' },
+      { type: 'custom_tool_call_output', call_id: 'old', output: 'old output', status: 'completed', ok: true },
       { type: 'custom_tool_call', call_id: 'current', name: 'Bash', input: { command: 'git status' } },
-      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output' },
+      { type: 'custom_tool_call_output', call_id: 'current', output: 'current output', status: 'completed', ok: true },
     ],
   };
   const response = await Promise.race([
@@ -251,7 +283,7 @@ test('shadow observer runs after forwarding and cannot delay the provider respon
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
-    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 1000)),
   ]);
 
   assert.notEqual(response, 'timed-out');
@@ -272,6 +304,7 @@ test('proxy persists provider-reported usage and transform stats when metricsPat
   const proxy = await createProviderProxy({
     upstream: `http://127.0.0.1:${upstreamAddress.port}`,
     policy: { maxHistoryTokens: 10_000 },
+    transformProviderRequests: true,
     metricsPath,
   });
   t.after(async () => {

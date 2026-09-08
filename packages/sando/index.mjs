@@ -90,6 +90,11 @@ export {
   recoverArtifactFromWorkspace,
 } from './src/artifact-recovery.mjs';
 export { runArtifactCli } from './src/artifact-cli.mjs';
+export {
+  DEFAULT_ARTIFACT_MAX_BYTES,
+  DEFAULT_ARTIFACT_TTL_MS,
+  cleanupArtifacts,
+} from './src/artifact-lifecycle.mjs';
 export { buildF1TelemetryEvent, publishF1Telemetry } from './src/f1-telemetry.mjs';
 export {
   F4_EVENT_SCHEMA,

@@ -76,6 +76,12 @@ function resultError(item, text) {
   return /^\s*(?:error|failed|failure)\b[:\s-]*/i.test(text);
 }
 
+function resultSuccess(item, provider, text) {
+  if (resultError(item, text)) return false;
+  if (provider === 'anthropic') return item.is_error !== true;
+  return item.ok === true || ['completed', 'success', 'succeeded'].includes(item.status);
+}
+
 function useless(text) {
   return USELESS_SUCCESSES.has(text.trim().toLowerCase());
 }
@@ -186,13 +192,14 @@ const COLLECTORS = {
   'openai-responses': collectResponses,
 };
 
-function historyRecords(entries, calls) {
+function historyRecords(entries, calls, provider) {
   return entries.flatMap((entry) => {
     if (entry.kind !== 'result') return [];
     const call = calls.get(entry.id);
     const text = resultText(entry.item[entry.key]);
     if (!call || text === null) return [];
     const isError = resultError(entry.item, text);
+    const safe = resultSuccess(entry.item, provider, text);
     return [{
       id: entry.id,
       toolName: call.name,
@@ -200,7 +207,7 @@ function historyRecords(entries, calls) {
       output: entry.item[entry.key],
       current: entry.current,
       historical: !entry.current,
-      safe: !isError,
+      safe,
       isError,
       position: entry.position,
       estimatedTokens: estimateTokens(text),
@@ -225,7 +232,28 @@ function collectHistoryRecords(provider, body) {
     calls.delete(id);
     results.delete(id);
   }
-  return historyRecords(entries, calls);
+  return historyRecords(entries, calls, provider);
+}
+
+const DEFAULT_STRATEGIES = Object.freeze({
+  supersededRead: true,
+  producerUseless: true,
+  exactDuplicate: true,
+  repeatedLines: true,
+  historyShake: true,
+});
+
+function strategyPolicy(policy) {
+  if (!object(policy) || !Object.hasOwn(policy, 'strategies')) return DEFAULT_STRATEGIES;
+  if (!object(policy.strategies)) throw new TypeError('strategies must be an object');
+  const strategies = { ...DEFAULT_STRATEGIES };
+  for (const [name, enabled] of Object.entries(policy.strategies)) {
+    if (!Object.hasOwn(strategies, name) || typeof enabled !== 'boolean') {
+      throw new TypeError(`invalid context strategy: ${name}`);
+    }
+    strategies[name] = enabled;
+  }
+  return strategies;
 }
 
 export function detectProviderBody(body, headers = {}) {
@@ -326,6 +354,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
   const clone = structuredClone(body);
   const estimatedInputTokens = estimate(body);
   const selectedProvider = provider ?? detectProviderBody(body);
+  const strategies = strategyPolicy(policy);
   const collector = COLLECTORS[selectedProvider];
   let supersededReads = 0;
   let elidedUselessSuccesses = 0;
@@ -397,10 +426,10 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       const identity = readIdentity(call.name, call.input);
       const text = result && resultText(result.item[result.key]);
       if (!result || !identity || text === null) continue;
-      if (!resultError(result.item, text)) reads.push({ call, result, identity, text });
+      if (resultSuccess(result.item, selectedProvider, text)) reads.push({ call, result, identity, text });
     }
     reads.sort((a, b) => a.call.position - b.call.position);
-    for (let index = 0; index < reads.length; index += 1) {
+    for (let index = 0; strategies.supersededRead && index < reads.length; index += 1) {
       const old = reads[index];
       if (old.result.current) continue;
       const newer = reads.slice(index + 1).find((candidate) =>
@@ -412,23 +441,23 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       supersededReads += 1;
     }
 
-    for (const [id, result] of results) {
+    for (const [id, result] of strategies.producerUseless ? results : []) {
       if (!calls.has(id) || result.current) continue;
       const text = resultText(result.item[result.key]);
       if (text === null) continue;
-      if (text === SUPERSEDED || resultError(result.item, text) || !useless(text)) continue;
+      if (text === SUPERSEDED || !resultSuccess(result.item, selectedProvider, text) || !useless(text)) continue;
       if (cacheProtected(result, reclaimedTokens(text, USELESS))) { cacheProtectedSkips += 1; continue; }
       replaceResult(result.item, result.key, USELESS);
       disclose({ toolName: calls.get(id).name }, 'useless-success', text, USELESS);
       elidedUselessSuccesses += 1;
     }
 
-    const records = historyRecords(entries, calls);
+    const records = historyRecords(entries, calls, selectedProvider);
     const candidates = maxHistoryTokens === null
       ? records.filter((record) => record.safe && record.historical)
       : selectHistoryCandidates({ bodyTokens: estimatedInputTokens, maxHistoryTokens, candidates: records });
     const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-    const reductions = dedupeHistory(records);
+    const reductions = strategies.exactDuplicate ? dedupeHistory(records) : { entries: [] };
     const recordsById = new Map(records.map((record) => [record.id, record]));
     for (const reduced of reductions.entries) {
       if (!candidateIds.has(reduced.id)) continue;
@@ -441,7 +470,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       deduplicatedResults += 1;
     }
 
-    for (const record of records) {
+    for (const record of strategies.repeatedLines ? records : []) {
       if (!candidateIds.has(record.id)) continue;
       const text = resultText(record.entry.item[record.entry.key]);
       if (text === null) continue;
@@ -458,7 +487,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       compactedStructures += 1;
     }
 
-    if (maxHistoryTokens !== null && budgetTriggered) {
+    if (strategies.historyShake && maxHistoryTokens !== null && budgetTriggered) {
       for (const record of records) {
         if (!candidateIds.has(record.id)) continue;
         const text = resultText(record.entry.item[record.entry.key]);

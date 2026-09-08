@@ -408,7 +408,7 @@ async function observeSemanticCandidates({ provider, candidates, semanticCompact
 export async function createProviderProxy({
   upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   semanticCompactor, metricsPath, contextCapturePath, contextCaptureHost, contextSessionKey,
-  f1TelemetryPublisher = publishF1Telemetry, transformProviderRequests = true,
+  f1TelemetryPublisher = publishF1Telemetry, transformProviderRequests = false,
   env = process.env,
 } = {}) {
   const upstreamUrl = assertUpstream(upstream);
@@ -504,10 +504,10 @@ export async function createProviderProxy({
                 env, provider, transformed,
                 beforeText: rawBody.toString('utf8'), afterText: body.toString('utf8'),
               });
-              lastStats = { provider, ...transformed.stats, mechanicalContextTrimmedBytes, changed: transformed.changed, reasons: transformed.reasons };
+              lastStats = { provider, ...transformed.stats, mechanicalContextTrimmedBytes, changed: transformed.changed, reasons: transformed.reasons, disclosures: transformed.disclosures };
               recordProvider = provider;
               recordModel = typeof parsed?.model === 'string' ? parsed.model : null;
-              recordStats = { ...transformed.stats, mechanicalContextTrimmedBytes };
+              recordStats = { ...transformed.stats, mechanicalContextTrimmedBytes, disclosures: transformed.disclosures };
               if (typeof semanticCompactor === 'function') {
                 const candidates = listSemanticCandidates({ provider, body: transformed.body });
                 const stats = createSemanticStats(candidates);

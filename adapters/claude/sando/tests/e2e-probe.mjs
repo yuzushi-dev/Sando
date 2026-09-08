@@ -49,7 +49,13 @@ try {
 
   const event = normalizeEvent(input);
   const optimization = optimizeToolOutput({ toolName: event.toolName, output: event.output, cwd, policy });
-  const receipt = createReceipt({ host: 'claude', event, optimization, replacement });
+  const serialized = JSON.stringify(replacement);
+  const measuredOptimization = { ...optimization, inline: serialized, stats: {
+    ...optimization.stats,
+    inlineBytes: Buffer.byteLength(serialized),
+    estimatedInlineTokens: Math.ceil(Buffer.byteLength(serialized) / 4),
+  } };
+  const receipt = createReceipt({ host: 'claude', event, optimization: measuredOptimization, replacement });
   assert.equal(receipt.inlineDigest, digest(stableJson(replacement)));
   const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
   assert.equal(metrics.records[0].receiptDigest, receipt.digest);

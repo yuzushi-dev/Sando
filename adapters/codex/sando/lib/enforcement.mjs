@@ -163,11 +163,14 @@ function metric(result, toolName, env) {
 }
 
 export function runPreToolUse(input, env = process.env) {
-  if (/^(0|false|off|no)$/i.test(env.SANDO_CLI_ROUTING || '')) return {};
   const toolName = input?.tool_name ?? input?.toolName;
   const result = classifyShellCommand({ toolName, toolInput: input?.tool_input ?? input?.toolInput, cwd: input?.cwd });
   if (result.status !== 'eligible') {
     metric(result, toolName, env);
+    return {};
+  }
+  if (env.SANDO_CLI_ROUTING !== '1') {
+    metric(bypass('routing-disabled'), toolName, env);
     return {};
   }
   const arm = pairedArmFromEnv(env);

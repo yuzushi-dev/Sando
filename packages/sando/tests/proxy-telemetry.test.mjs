@@ -72,7 +72,8 @@ test('telemetry disabled: proxy rewrite never touches the counters file', async 
   });
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
-    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 }, env,
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 },
+    transformProviderRequests: true, env,
   });
   t.after(async () => { await proxy.close(); await close(upstream); });
 
@@ -92,7 +93,8 @@ test('telemetry enabled: a rewrite increments rewritesApplied and inputTokensSav
   });
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
-    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 }, env,
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 },
+    transformProviderRequests: true, env,
   });
   t.after(async () => { await proxy.close(); await close(upstream); });
 
@@ -117,7 +119,9 @@ test('telemetry enabled: an OpenAI Responses request is attributed to openai', a
     response.end('{"ok":true}');
   });
   const upstreamAddress = await listen(upstream);
-  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, transformProviderRequests: true, env,
+  });
   t.after(async () => { await proxy.close(); await close(upstream); });
   await fetch(`${proxy.url}/v1/responses`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
@@ -140,7 +144,9 @@ test('malformed proxy JSON records an unknown input failure', async (t) => {
     response.end('{"ok":true}');
   });
   const upstreamAddress = await listen(upstream);
-  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, transformProviderRequests: true, env,
+  });
   t.after(async () => { await proxy.close(); await close(upstream); });
   await fetch(`${proxy.url}/v1/messages`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
@@ -178,7 +184,9 @@ test('a recognized request with nothing to rewrite still records a proxy_summary
     response.end('{"ok":true}');
   });
   const upstreamAddress = await listen(upstream);
-  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, transformProviderRequests: true, env,
+  });
   t.after(async () => { await proxy.close(); await close(upstream); });
 
   await fetch(`${proxy.url}/v1/messages`, {
@@ -220,7 +228,8 @@ test('telemetry failure never affects the proxied response', async (t) => {
   });
   const upstreamAddress = await listen(upstream);
   const proxy = await createProviderProxy({
-    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 }, env,
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, policy: { maxHistoryTokens: 10_000 },
+    transformProviderRequests: true, env,
   });
   t.after(async () => { await proxy.close(); await close(upstream); });
 
@@ -244,7 +253,9 @@ test('DO_NOT_TRACK prevents proxy telemetry despite enabled config', async (t) =
     response.end('{"ok":true}');
   });
   const upstreamAddress = await listen(upstream);
-  const proxy = await createProviderProxy({ upstream: `http://127.0.0.1:${upstreamAddress.port}`, env });
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`, transformProviderRequests: true, env,
+  });
   t.after(async () => { await proxy.close(); await close(upstream); });
   await fetch(`${proxy.url}/v1/messages`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(rewriteFixtureBody()),

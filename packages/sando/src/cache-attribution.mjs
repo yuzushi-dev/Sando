@@ -45,6 +45,10 @@ function counter(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function validCounter(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 /** Stable digest of a JSON-serializable value. Order-sensitive by design: a reordered
  * tool array is a different byte prefix to the provider even if the set is equal. */
 export function shapeDigest(value) {
@@ -88,7 +92,9 @@ export function hasBreakpoint(body) {
  *
  * `current` / `previous` are `{ at, usage, tools, system, messages, body }`, where
  * `usage` is `{ cachedInputTokens, cacheWriteInputTokens, inputTokens }` as recorded
- * in the provider ledger. `previous` is null on the first turn of a session.
+ * in the provider ledger. `inputTokens` is the complete prompt, including cache
+ * reads and writes; `promptTokens` is accepted as its clearer alias. `previous` is
+ * null on the first turn of a session.
  */
 export function attributeTurn({
   current,
@@ -101,8 +107,10 @@ export function attributeTurn({
   const usage = object(current.usage) ? current.usage : {};
   const cacheReadTokens = counter(usage.cachedInputTokens);
   const cacheWriteTokens = counter(usage.cacheWriteInputTokens);
-  const freshInputTokens = counter(usage.inputTokens);
-  const totalPromptTokens = cacheReadTokens + cacheWriteTokens + freshInputTokens;
+  const promptTokens = validCounter(usage.promptTokens) ?? counter(usage.inputTokens);
+  const totalPromptTokens = promptTokens;
+  const effectiveInputTokens = Math.max(0, promptTokens - cacheReadTokens);
+  const freshInputTokens = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
   const hit = cacheReadTokens > 0;
 
   const currentDigests = messageDigests(current.messages);
@@ -112,6 +120,8 @@ export function attributeTurn({
   const detail = {
     cacheReadTokens,
     cacheWriteTokens,
+    promptTokens,
+    effectiveInputTokens,
     freshInputTokens,
     totalPromptTokens,
     divergedAtMessage: divergedAt,

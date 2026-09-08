@@ -31,6 +31,7 @@ test('routes an eligible command without consulting a provider ledger', (t) => {
   const result = runPreToolUse(shellInput(cwd), {
     SANDO_PROVIDER_USAGE_PATH: path.join(cwd, 'provider-usage.json'),
     SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
+    SANDO_CLI_ROUTING: '1',
   });
 
   assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
@@ -52,6 +53,7 @@ test('keeps routing explicit instead of applying evidence-based backoff', (t) =>
     SANDO_PROVIDER_USAGE_PATH: storagePath,
     SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
     SANDO_COVERAGE_PATH: coveragePath,
+    SANDO_CLI_ROUTING: '1',
   });
 
   assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
@@ -88,6 +90,7 @@ test('does not ingest a partial transcript during PreToolUse', (t) => {
   const result = runPreToolUse({ ...shellInput(cwd), transcript_path: transcriptPath, session_id: 'current' }, {
     SANDO_PROVIDER_USAGE_PATH: storagePath,
     SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
+    SANDO_CLI_ROUTING: '1',
   });
 
   assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
@@ -104,6 +107,7 @@ test('fails closed only for invalid explicit arm metadata', (t) => {
   assert.match(runPreToolUse(shellInput(cwd), {
     SANDO_PROVIDER_USAGE_PATH: storagePath,
     SANDO_ADAPTIVE_EXPERIMENT: 'fixture',
+    SANDO_CLI_ROUTING: '1',
   }).hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
   assert.deepEqual(runPreToolUse(shellInput(cwd), {
     SANDO_PROVIDER_USAGE_PATH: path.join(cwd, 'missing.json'),
@@ -130,6 +134,7 @@ for (const [label, command] of [
     const result = runPreToolUse({ tool_name: 'Bash', tool_input: { command }, cwd }, {
       SANDO_EXPERIMENT_ARM: 'apply',
       SANDO_COVERAGE_PATH: path.join(cwd, 'coverage.json'),
+      SANDO_CLI_ROUTING: '1',
     });
 
     assert.match(result.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);

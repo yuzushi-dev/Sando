@@ -2,7 +2,7 @@
 
 This directory contains the self-contained Codex plugin. It bundles the hooks, MCP server, CLI, paired accounting, and optional provider proxy; it does not require the repository package after installation.
 
-The default `apply` arm routes eligible literal reads and searches through bounded local CLI paths. Set `SANDO_EXPERIMENT_ARM=control` for a paired native-control run, using the same `SANDO_EXPERIMENT` and optional `SANDO_EXPERIMENT_WORKLOAD`. Control/treatment selection is explicit, and provider usage does not change routing.
+Transparent CLI routing is off by default. Set `SANDO_CLI_ROUTING=1` to route eligible literal reads and searches through bounded local CLI paths. Set `SANDO_EXPERIMENT_ARM=control` for a paired native-control run, using the same `SANDO_EXPERIMENT` and optional `SANDO_EXPERIMENT_WORKLOAD`.
 
 Inspect the provider report with `bin/sando accounting --json`. The Stop hook writes the provider ledger. It records cache classes, output, reasoning, distinct turns, and provider cost only when the host reports it. Mechanical context trimming and weighted estimates remain separate.
 
@@ -15,13 +15,14 @@ Large result previews expose `sando-result-disclosure/v1`; use the read-only `sa
 The provider proxy is explicit opt-in:
 
 ```sh
-SANDO_UPSTREAM_URL=https://provider.example ./bin/sando-proxy
+SANDO_UPSTREAM_URL=https://provider.example SANDO_PROXY_TRANSFORM=1 ./bin/sando-proxy
 ```
 
 Set `SANDO_CONTEXT_FOOTPRINT_PATH`, `SANDO_CONTEXT_FOOTPRINT_HOST`, and
 `SANDO_CONTEXT_SESSION_KEY` to enable the content-free F1 record for that proxy
-process. Set `SANDO_PROXY_TRANSFORM=0` for capture-only forwarding. Missing
+process. Transformation is pass-through by default and requires
+`SANDO_PROXY_TRANSFORM=1`. Missing
 session keys fail closed; normal Codex traffic is unchanged.
 
 It does not intercept Codex traffic unless configured. `sando_exec` remains sandboxed and bounds retained output without terminating the command when the capture limit is reached. MCP adds a model-visible tool interaction; use the native PreToolUse route where applicable and measure the tradeoff per workload.
-The optional provider proxy reports history elisions as digest-only `sando-history-disclosure/v1` records; history errors and current/batch results are never compacted.
+The optional provider proxy reports history elisions as digest-only `sando-history-disclosure/v1` records; opaque OpenAI results without explicit success evidence, known errors, and current/batch results remain lossless. Historical transform families have independent policy switches.
