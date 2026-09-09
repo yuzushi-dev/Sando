@@ -87,7 +87,7 @@ function artifactPath(cwd, artifact) {
     fs.rmSync(temporary, { force: true });
   }
   fs.chmodSync(destination, 0o600);
-  cleanupArtifacts(directory);
+  cleanupArtifacts(directory, { preserveName: name });
   if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
   return path.posix.join('.sando/sando', 'artifacts', name);
 }

@@ -67,3 +67,51 @@ test('all installed hook bundles emit the contracted hook telemetry shape', () =
     assert.equal(summary.mode, 'observe');
   }
 });
+
+test('canonical and Codex hook bundles preserve the newly written artifact', (t) => {
+  const output = 'x'.repeat(60 * 1024);
+  const policy = JSON.stringify({ mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 100_000, redact: false });
+  const entrypoints = [
+    ['canonical', path.join(ROOT, 'packages/sando/src/hook-cli.mjs'), 'codex'],
+    ['codex adapter', path.join(ROOT, 'adapters/codex/sando/lib/hook-entry.mjs'), 'codex'],
+    ['Codex plugin', path.join(ROOT, 'plugins/sando/lib/hook-entry.mjs'), 'claude'],
+  ];
+
+  for (const [label, entrypoint, host] of entrypoints) {
+    const cwd = fsSync.mkdtempSync(path.join(os.tmpdir(), 'sando-hook-artifact-'));
+    t.after(() => fsSync.rmSync(cwd, { recursive: true, force: true }));
+    const directory = path.join(cwd, '.sando', 'sando', 'artifacts');
+    fsSync.mkdirSync(directory, { recursive: true });
+    const oldName = `${'f'.repeat(64)}.txt`;
+    const oldPath = path.join(directory, oldName);
+    fsSync.writeFileSync(oldPath, 'occupied');
+    fsSync.truncateSync(oldPath, 64 * 1024 * 1024);
+    const future = new Date(Date.now() + 60_000);
+    fsSync.utimesSync(oldPath, future, future);
+
+    const runner = path.join(cwd, 'runner.mjs');
+    const runnerSource = `import { runHookCli } from ${JSON.stringify(pathToFileURL(entrypoint).href)};\nrunHookCli({ host: ${JSON.stringify(host)} });\n`;
+    fsSync.writeFileSync(runner, runnerSource);
+    const input = JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: output, cwd });
+    const result = execFileSync(process.execPath, [runner], {
+      input,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SANDO_POLICY: policy,
+        SANDO_CODEX_FALLBACK: 'feedback',
+        SANDO_METRICS_PATH: path.join(cwd, 'metrics.json'),
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+      },
+    });
+
+    const emitted = JSON.parse(result);
+    if (host === 'codex') assert.equal(emitted.continue, false, label);
+    else assert.equal(emitted.hookSpecificOutput.hookEventName, 'PostToolUse', label);
+    assert.equal(fsSync.existsSync(oldPath), false, label);
+    const artifacts = fsSync.readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.txt$/.test(name));
+    assert.equal(artifacts.length, 1, label);
+    assert.equal(fsSync.readFileSync(path.join(directory, artifacts[0]), 'utf8'), output, label);
+  }
+});
