@@ -64,6 +64,24 @@ test('telemetry disabled by default: no counters file is created', () => {
   assert.equal(fs.existsSync(path.join(dir, 'state', 'sando', 'telemetry-counters.json')), false);
 });
 
+test('Claude leaves external MCP output unchanged', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'mcp__claude_ai_Atlassian__getConfluencePage',
+    tool_response: 'x'.repeat(20_000),
+    cwd: dir,
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_MODE: 'apply' },
+  });
+
+  assert.deepEqual(JSON.parse(output), {});
+  assert.equal(fs.existsSync(path.join(dir, '.sando')), false);
+});
+
 test('enabled telemetry counts a tool call with a redaction', () => {
   const { dir, env, configPath, countersPath } = tempEnv();
   enableTelemetry(configPath);

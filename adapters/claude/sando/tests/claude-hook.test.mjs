@@ -50,6 +50,25 @@ test('Claude defaults to apply when no mode is configured', (t) => {
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
 });
 
+test('Claude leaves external MCP output unchanged', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-mcp-pass-through-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [hook], {
+    input: JSON.stringify({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__claude_ai_Atlassian__getConfluencePage',
+      tool_response: 'x'.repeat(20_000),
+      cwd,
+    }),
+    encoding: 'utf8',
+    env: { ...process.env, DO_NOT_TRACK: '1' },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {});
+  assert.equal(fs.existsSync(path.join(cwd, '.sando')), false);
+});
+
 test('Claude PostToolUse applies structural Read routing and respects selectors', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-read-routing-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));

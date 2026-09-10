@@ -113,6 +113,10 @@ export function runHookCli({ host, env = process.env } = {}) {
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
+      if (host === 'claude' && event.toolName.startsWith('mcp__')) {
+        process.stdout.write('{}\n');
+        return;
+      }
       failureStage = 'redaction';
       const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
       failureStage = 'optimization';
