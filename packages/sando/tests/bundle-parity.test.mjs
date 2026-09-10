@@ -15,6 +15,7 @@ const BUNDLES = [
   'plugins/sando/lib',
 ].map((directory) => path.join(ROOT, directory));
 const GENERATED_MODULES = [
+  'slice.mjs',
   'core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'metrics.mjs',
   'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'adaptive-control.mjs',
   'paired-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs',

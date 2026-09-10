@@ -363,6 +363,32 @@ function safeExecWorkdir(root, workdir) {
   return candidate;
 }
 
+export function codexSandboxKey(meta) {
+  const { state, root } = sandboxState(meta);
+  return `${root}\0${JSON.stringify(state)}`;
+}
+
+export function spawnCodexSandboxedProcess({ command, args = [], cwd, meta, spawnImpl = spawn }) {
+  if (typeof command !== 'string' || !path.isAbsolute(command) || command.includes('\0')) {
+    throw execError('sandbox command must be an absolute executable path', 'invalid-sandbox-command');
+  }
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) {
+    throw execError('sandbox command arguments are invalid', 'invalid-sandbox-command');
+  }
+  const { state, root } = sandboxState(meta);
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) {
+    throw execError('sandbox cwd must be an absolute directory', 'invalid-workdir');
+  }
+  const relative = path.relative(root, cwd);
+  if (path.isAbsolute(relative) || relative.split(path.sep).includes('..')) {
+    throw execError('cwd escapes sandbox cwd', 'invalid-workdir');
+  }
+  const workdir = safeExecWorkdir(root, relative || undefined);
+  return spawnImpl(resolveCodexCommand(), ['sandbox', '--sandbox-state-json', JSON.stringify(state), '--', command, ...args], {
+    cwd: workdir, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+  });
+}
+
 function shellArgs(root, workdir, command) {
   if (process.platform === 'win32') {
     if (/["&|<>^]/.test(workdir)) throw execError('workdir contains shell syntax', 'invalid-workdir');

@@ -1,6 +1,6 @@
 {
   "name": "sando",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
   "author": {
     "name": "Sando contributors"
@@ -13,7 +13,7 @@
     "developerName": "Independent",
     "category": "Developer Tools",
     "capabilities": [
-      "Read-only MCP tools",
+      "Bounded read MCP tools and opt-in Slice symbol editing",
       "Sandboxed non-interactive terminal MCP tool",
       "PostToolUse observation",
       "Deterministic receipts",

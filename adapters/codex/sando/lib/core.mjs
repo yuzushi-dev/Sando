@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stripVTControlCharacters } from 'node:util';
 
 import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
@@ -9,6 +10,10 @@ const DEFAULT_POLICY = Object.freeze({
   maxColumns: 768, redact: true,
 });
 const POLICY_FIELDS = new Set(Object.keys(DEFAULT_POLICY));
+const SEVERE_DIAGNOSTIC_LINE = /\b(?:error|fail(?:ed|ure)?|exception|fatal|panic|traceback|assertion)\b/i;
+const WARNING_LINE = /\bwarning\b/i;
+const MAX_DIAGNOSTIC_LINES = 8;
+const MAX_DIAGNOSTIC_LINE_BYTES = 256;
 
 function sha256(text) {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`;
@@ -76,20 +81,54 @@ function capColumns(text, maxColumns) {
   return text.split('\n').map((line) => truncateLine(line, maxColumns)).join('\n');
 }
 
-function middleView(text, maxBytes, headBytes, tailBytes) {
+function middleView(text, maxBytes, headBytes, tailBytes, salvageDiagnostics) {
   if (Buffer.byteLength(text) <= maxBytes) return text;
   const marker = '[middle elided]';
   const markerBytes = Buffer.byteLength(marker);
   if (maxBytes <= markerBytes) return truncateUtf8(marker, maxBytes);
   const available = maxBytes - markerBytes;
   const requested = Math.max(1, headBytes) + Math.max(1, tailBytes);
-  const head = Math.max(1, Math.floor(available * Math.max(1, headBytes) / requested));
-  const tail = Math.max(1, available - head);
-  return `${truncateUtf8(text, head)}${marker}${suffixUtf8(text, tail)}`;
+  if (!salvageDiagnostics) {
+    const head = Math.max(1, Math.floor(available * Math.max(1, headBytes) / requested));
+    const tail = Math.max(1, available - head);
+    return `${truncateUtf8(text, head)}${marker}${suffixUtf8(text, tail)}`;
+  }
+  const totalBytes = Buffer.byteLength(text);
+  const diagnosticBudget = Math.max(0, Math.floor(available / 2) - 2);
+  const minimumEdgeBytes = available - diagnosticBudget - 2;
+  const minimumHead = Math.max(1, Math.floor(minimumEdgeBytes * Math.max(1, headBytes) / requested));
+  const minimumTail = Math.max(1, minimumEdgeBytes - minimumHead);
+  const severe = [];
+  const warnings = [];
+  let offset = 0;
+  const lines = text.split('\n');
+  for (const [index, line] of lines.entries()) {
+    const lineBytes = Buffer.byteLength(line);
+    if (offset >= minimumHead && offset + lineBytes <= totalBytes - minimumTail) {
+      if (SEVERE_DIAGNOSTIC_LINE.test(line)) severe.push(line);
+      else if (WARNING_LINE.test(line)) warnings.push(line);
+    }
+    offset += lineBytes + (index < lines.length - 1 ? 1 : 0);
+  }
+  const diagnostics = [];
+  let diagnosticBytes = 0;
+  for (const line of [...severe, ...warnings].slice(0, MAX_DIAGNOSTIC_LINES)) {
+    const separatorBytes = diagnostics.length ? 1 : 0;
+    const remaining = diagnosticBudget - diagnosticBytes - separatorBytes;
+    if (remaining < 1) break;
+    const salvaged = truncateLine(line, Math.min(MAX_DIAGNOSTIC_LINE_BYTES, remaining));
+    diagnostics.push(salvaged);
+    diagnosticBytes += separatorBytes + Buffer.byteLength(salvaged);
+  }
+  const diagnosticBlock = diagnostics.length ? `\n${diagnostics.join('\n')}\n` : '';
+  const edgeBytes = available - Buffer.byteLength(diagnosticBlock);
+  const head = Math.max(1, Math.floor(edgeBytes * Math.max(1, headBytes) / requested));
+  const tail = Math.max(1, edgeBytes - head);
+  return `${truncateUtf8(text, head)}${marker}${diagnosticBlock}${suffixUtf8(text, tail)}`;
 }
 
-function inlineView(text, maxBytes, headBytes, tailBytes, maxColumns) {
-  return middleView(capColumns(text, maxColumns), maxBytes, headBytes, tailBytes);
+function inlineView(text, maxBytes, headBytes, tailBytes, maxColumns, salvageDiagnostics) {
+  return middleView(capColumns(text, maxColumns), maxBytes, headBytes, tailBytes, salvageDiagnostics);
 }
 
 function structuralRead(text) {
@@ -165,11 +204,17 @@ export function optimizeToolOutput({
   });
   const profile = normalizedPolicy.redact ? resolveRedactionProfile(cwd, redactionProfile) : null;
   const redacted = profile ? profile.redact(input) : { text: input, count: 0 };
+  const cleanedPreview = name === 'bash' ? stripVTControlCharacters(redacted.text) : redacted.text;
+  const previewRedacted = profile && name === 'bash'
+    ? profile.redact(cleanedPreview)
+    : { text: cleanedPreview, count: 0 };
+  const previewText = previewRedacted.text;
+  const sourceText = previewRedacted.count ? previewText : redacted.text;
   let modelText = name === 'bash' && normalizedPolicy.maxColumns >= 32
-    ? collapseRepeatedLines(redacted.text)
-    : redacted.text;
+    ? collapseRepeatedLines(previewText)
+    : previewText;
   if (route.route === 'summary') {
-    const outline = structuralRead(redacted.text);
+    const outline = structuralRead(previewText);
     if (outline) modelText = outline;
     else route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'sando-read-bounded' };
   }
@@ -184,7 +229,7 @@ export function optimizeToolOutput({
       maxColumns: Math.min(normalizedPolicy.maxColumns, route.limits.maxColumns),
     }
     : normalizedPolicy;
-  const sourceBytes = Buffer.byteLength(redacted.text);
+  const sourceBytes = Buffer.byteLength(sourceText);
   let inline = modelText;
   let artifact;
   const artifactAdmitted = sourceBytes <= normalizedPolicy.maxArtifactBytes;
@@ -199,16 +244,17 @@ export function optimizeToolOutput({
       routePolicy.headBytes,
       routePolicy.tailBytes,
       routePolicy.maxColumns,
+      name === 'bash',
     ), normalizedPolicy.maxInlineBytes);
   } else if (route.route === 'summary' || route.route === 'artifact' || sourceBytes > routePolicy.maxInlineBytes || hasLongLine) {
-    const sourceDigest = sha256(redacted.text);
+    const sourceDigest = sha256(sourceText);
     artifact = {
       schema: 'sando-artifact/v1',
       ref: `sando:${sourceDigest.slice(0, 23)}`,
       digest: sourceDigest,
       sourceDigest,
       mediaType: 'text/plain; charset=utf-8',
-      content: redacted.text,
+      content: sourceText,
       bytes: sourceBytes,
       sourceBytes,
       truncated: false,
@@ -221,6 +267,7 @@ export function optimizeToolOutput({
       routePolicy.headBytes,
       routePolicy.tailBytes,
       routePolicy.maxColumns,
+      name === 'bash',
     )}`;
     inline = truncateUtf8(inline, routePolicy.maxInlineBytes);
   }
@@ -232,7 +279,7 @@ export function optimizeToolOutput({
     artifactBytes: artifact?.bytes ?? 0,
     estimatedInputTokens: estimateTokens(input),
     estimatedInlineTokens: estimateTokens(inline),
-    redactions: redacted.count,
+    redactions: redacted.count + previewRedacted.count,
     artifactTruncated: artifact?.truncated ?? false,
   };
   const result = {
@@ -240,7 +287,7 @@ export function optimizeToolOutput({
     redactionProfileDigest: profile?.digest ?? null, stats,
     disclosure: buildResultDisclosure({
       toolName, route: route.route, reason: route.source, inline,
-      redactedText: redacted.text, inputBytes: Buffer.byteLength(input), redactedBytes: sourceBytes, artifact,
+      redactedText: sourceText, inputBytes: Buffer.byteLength(input), redactedBytes: sourceBytes, artifact,
     }),
   };
   if (artifact) result.artifact = artifact;

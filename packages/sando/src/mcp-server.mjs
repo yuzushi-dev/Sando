@@ -8,6 +8,7 @@ import { exposeMcpResult, recoverStoredArtifact } from './artifact-store.mjs';
 import { optimizeToolOutput } from './core.mjs';
 import { ARTIFACT_TOOL_NAME } from './result-disclosure.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
+import { createSliceBridge, isSliceTool, SLICE_TOOLS, SliceRpcError } from './slice.mjs';
 
 const TOOL = {
   name: 'prepare_tool_output',
@@ -35,38 +36,70 @@ const ARTIFACT_TOOL = {
 const TOOLS = [TOOL, ARTIFACT_TOOL];
 
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
-function error(id, code, message) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }; }
+function error(id, code, message, data) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
+function requestKey(id) { return `${typeof id}:${JSON.stringify(id)}`; }
 
-function dispatch(message) {
+async function dispatch(message, bridge, active) {
   if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return error(message?.id, -32600, 'Invalid Request');
+  if (message.method === 'notifications/cancelled') {
+    active.get(requestKey(message.params?.requestId))?.abort();
+    return null;
+  }
   if (message.id === undefined) return null;
   if (message.method === 'initialize') return response(message.id, {
     protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'sando', version: PLUGIN_VERSION },
   });
   if (message.method === 'ping') return response(message.id, {});
-  if (message.method === 'tools/list') return response(message.id, { tools: TOOLS });
+  const tools = [...TOOLS, ...SLICE_TOOLS()];
+  if (message.method === 'tools/list') return response(message.id, { tools });
   if (message.method === 'tools/call') {
-    if (!TOOLS.some((tool) => tool.name === message.params?.name)) return error(message.id, -32602, 'Unknown tool');
+    if (!tools.some((tool) => tool.name === message.params?.name)) return error(message.id, -32602, 'Unknown tool');
+    const controller = new AbortController();
+    active.set(requestKey(message.id), controller);
     try {
+      if (isSliceTool(message.params.name)) {
+        return response(message.id, await bridge.call(message.params.name, message.params.arguments, { signal: controller.signal }));
+      }
       const result = message.params.name === TOOL.name
         ? optimizeToolOutput(message.params.arguments)
         : recoverStoredArtifact(message.params.arguments);
       const exposed = message.params.name === TOOL.name ? exposeMcpResult(result) : result;
       return response(message.id, { content: [{ type: 'text', text: exposed.inline ?? exposed.content }], structuredContent: exposed, isError: false });
     } catch (cause) {
+      if (cause instanceof SliceRpcError) return error(message.id, cause.code, cause.message, cause.data);
       return response(message.id, { content: [{ type: 'text', text: cause instanceof Error ? cause.message : 'invalid tool input' }], isError: true });
-    }
+    } finally { active.delete(requestKey(message.id)); }
   }
   return error(message.id, -32601, 'Method not found');
 }
 
 export function startMcpServer() {
   const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const bridge = createSliceBridge();
+  const active = new Map();
+  const pending = new Set();
   lines.on('line', (line) => {
-    let output;
-    try { output = dispatch(JSON.parse(line)); } catch { output = error(null, -32700, 'Parse error'); }
-    if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+    let message;
+    try { message = JSON.parse(line); } catch { process.stdout.write(`${JSON.stringify(error(null, -32700, 'Parse error'))}\n`); return; }
+    const task = dispatch(message, bridge, active).then((output) => {
+      if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+    }).catch(() => process.stdout.write(`${JSON.stringify(error(message?.id, -32603, 'Internal error'))}\n`));
+    pending.add(task);
+    void task.finally(() => pending.delete(task));
   });
+  lines.once('close', async () => { await Promise.allSettled(pending); bridge.close(); });
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    lines.close();
+    for (const controller of active.values()) controller.abort();
+    bridge.close();
+    await Promise.allSettled(pending);
+    process.exit(0);
+  };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) startMcpServer();

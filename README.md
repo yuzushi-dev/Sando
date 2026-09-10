@@ -8,6 +8,53 @@ Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversiz
 
 Release notes: [Sando 0.4.3](docs/changelogs/0.4.3.md).
 
+Development branch: `release/0.5.0`.
+
+## Slice: symbol reads and opt-in writes
+
+Slice connects Sando's MCP to a separately built native symbol engine. The native
+binary is not included in the plugin. Configure the MCP server environment with
+an absolute executable path and a canonical workspace directory:
+
+```bash
+SANDO_SLICE_BINARY=/absolute/path/to/native-engine
+SANDO_SLICE_ROOT=/absolute/path/to/workspace
+SANDO_SLICE_WRITE=1
+```
+
+Without a valid binary and root, no Slice tools are advertised. Omit
+`SANDO_SLICE_WRITE` for read-only use. Codex runs the engine inside the host's
+managed restricted sandbox; missing sandbox metadata is refused.
+
+Read tools are `sando_slice_for`, `sando_slice_find_symbol`,
+`sando_slice_find_referencing_symbols`, and `sando_slice_fetch_body` (at most 400
+body-relative lines per call). Writes are `sando_slice_replace_symbol_body` and
+`sando_slice_insert_after_symbol`.
+
+Find the symbol, fetch its body, then pass its `sym#…@…` identifier as the write's
+`handle`. Plain names are not accepted for writes. Replacement covers exactly
+the fetched definition span: preserve modifiers such as `export` that sit
+outside it instead of adding them again. Stale handles are refused; read again
+and reconsider the edit. Insertion before a definition is not exposed.
+
+Slice applies Sando's project redaction rules to results and errors. Redacted
+source is marked as non-round-trippable and its handle cannot be used for replacement.
+The engine's handles, freshness metadata, and edit receipts are otherwise preserved.
+`post_check` provides static feedback, not a test run; run project tests after
+editing. If a write is interrupted or loses its response, inspect the file
+before retrying: cancellation does not imply rollback.
+
+Native integration checks use temporary workspaces:
+
+```bash
+SANDO_SLICE_TEST_BINARY=/absolute/path/to/native-engine npm test
+```
+
+Bash previews also remove ANSI formatting and retain bounded error diagnostics
+from omitted output, prioritizing failures over warnings. Full admitted
+artifacts retain the original redacted output; ANSI formatting is also removed
+there when necessary to redact a credential split by escape sequences.
+
 ## Install the plugin
 
 Install Sando from the host marketplace. Each marketplace source includes its hooks and bundles, so installation needs no build step.

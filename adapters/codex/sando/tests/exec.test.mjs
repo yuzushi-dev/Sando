@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import { callMcpTool, callMcpToolAsync, MCP_TOOLS, resolveCodexCommand } from '../lib/mcp-tools.mjs';
@@ -231,3 +232,43 @@ test('sando_exec rejects an unsandboxed Codex state', { skip: CODEX_HOST_SKIP },
   await assert.rejects(callMcpToolAsync('sando_exec', { command: 'printf unsafe' }, { SANDO_COVERAGE_PATH: coveragePath }, meta), /managed restricted/i);
   assert.equal(readCoverage(coveragePath).counts.bypassed, 1);
 });
+
+for (const entry of ['../mcp/server.mjs', '../../../../plugins/sando/mcp/server.mjs']) {
+  test(`MCP shutdown terminates active exec children: ${entry}`, {
+    skip: process.platform === 'linux' ? CODEX_HOST_SKIP : 'requires Linux sandbox', timeout: 10_000,
+  }, async (t) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-shutdown-'));
+    const pidFile = path.join(cwd, 'child.pid');
+    const program = `process.on("SIGTERM",()=>{});require("node:fs").writeFileSync("child.pid",String(process.pid));setInterval(()=>{},1000);/* ${path.basename(cwd)} */`;
+    const hostChildren = () => fs.readdirSync('/proc').filter((pid) => {
+      if (!/^\d+$/.test(pid)) return false;
+      try {
+        const args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+        return args[1] === '-e' && args[2] === program;
+      } catch { return false; }
+    });
+    const server = spawn(process.execPath, [path.resolve(import.meta.dirname, entry)], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    server.stdout.on('data', (chunk) => { output += chunk; });
+    server.stderr.resume();
+    t.after(() => {
+      server.kill('SIGKILL');
+      for (const pid of hostChildren()) { try { process.kill(Number(pid), 'SIGKILL'); } catch {} }
+      fs.rmSync(cwd, { recursive: true, force: true });
+    });
+    server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+      name: 'sando_exec', arguments: { command: `exec ${JSON.stringify(process.execPath)} -e '${program}'` },
+      _meta: sandboxMeta(cwd),
+    } })}\n`);
+    const deadline = Date.now() + 5_000;
+    while (!fs.existsSync(pidFile) && Date.now() < deadline) await delay(20);
+    assert.ok(fs.existsSync(pidFile), output);
+    assert.equal(hostChildren().length, 1, 'sandbox child must be identified in the host PID namespace');
+    const exited = new Promise((resolve) => server.once('exit', resolve));
+    server.kill('SIGTERM');
+    await exited;
+    assert.deepEqual(hostChildren(), [], 'exec child survived MCP shutdown');
+  });
+}
