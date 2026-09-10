@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { readTelemetryConfig } from '../src/telemetry.mjs';
+import { PLUGIN_VERSION } from '../src/version.mjs';
 
 const HOOK_CLI_PATH = fileURLToPath(new URL('../src/hook-cli.mjs', import.meta.url));
 
@@ -119,7 +120,8 @@ test('invalid hook input records an input failure summary without raw error data
   });
   const state = JSON.parse(fs.readFileSync(countersPath, 'utf8'));
   assert.deepEqual(Object.values(state.counters), [{
-    day: Object.values(state.counters)[0].day, event: 'hook_failure_summary', host: 'claude', failureStage: 'input', count: 1,
+    day: Object.values(state.counters)[0].day, pluginVersion: PLUGIN_VERSION,
+    event: 'hook_failure_summary', host: 'claude', failureStage: 'input', count: 1,
   }]);
 });
 

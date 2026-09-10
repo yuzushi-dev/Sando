@@ -320,9 +320,10 @@ function publicRow(row) {
 }
 
 function bucketEntry(entry, pluginVersion) {
+  const recordedVersion = entry.pluginVersion ?? pluginVersion;
   if (entry.event === 'hook_summary') {
     return {
-      schema_version: SCHEMA_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
+      schema_version: SCHEMA_VERSION, event: 'hook_summary', day_utc: entry.day, plugin_version: recordedVersion,
       host: entry.host, mode: entry.mode,
       tool_calls_bucket: countBucket(entry.toolCalls ?? 0),
       capped_outputs_bucket: countBucket(entry.cappedOutputs ?? 0),
@@ -331,41 +332,53 @@ function bucketEntry(entry, pluginVersion) {
     };
   }
   if (entry.event === 'proxy_summary') return {
-    schema_version: SCHEMA_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
+    schema_version: SCHEMA_VERSION, event: 'proxy_summary', day_utc: entry.day, plugin_version: recordedVersion,
     provider: entry.provider ?? 'unknown', mode: entry.mode ?? 'enforce',
     rewrites_applied_bucket: countBucket(entry.rewritesApplied ?? 0),
     rewrites_skipped_cache_bucket: countBucket(entry.rewritesSkippedCache ?? 0),
     input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
   };
   if (entry.event === 'hook_failure_summary') return {
-    schema_version: SCHEMA_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
+    schema_version: SCHEMA_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: recordedVersion,
     host: entry.host, failure_stage: entry.failureStage,
   };
   return {
-    schema_version: SCHEMA_VERSION, event: 'proxy_failure_summary', day_utc: entry.day, plugin_version: PLUGIN_VERSION,
+    schema_version: SCHEMA_VERSION, event: 'proxy_failure_summary', day_utc: entry.day, plugin_version: recordedVersion,
     provider: entry.provider, failure_stage: entry.failureStage,
   };
 }
 
 /** Accumulates raw per-day counts in memory/on disk; values are only bucketed (and thus
  *  only ever leave the machine) once `closeDay` closes a finished UTC day. */
-export function incrementCounter({ statePaths, day, event, host, provider, mode, failureStage, deltas = {} }) {
+export function incrementCounter({ statePaths, day, pluginVersion = PLUGIN_VERSION, event, host, provider, mode, failureStage, deltas = {} }) {
   if (!['hook_summary', 'proxy_summary', 'hook_failure_summary', 'proxy_failure_summary'].includes(event)) {
     throw new Error('incrementCounter: invalid event');
   }
   const isProxy = event.startsWith('proxy_');
   const dimension = isProxy ? provider : host;
-  const key = event.includes('failure')
-    ? [day, event, dimension, failureStage ?? ''].join('|')
-    : [day, event, dimension, mode ?? ''].join('|');
+  if (!SHARED_FIELDS.plugin_version(pluginVersion)) throw new Error('incrementCounter: invalid plugin version');
+  const suffix = event.includes('failure') ? failureStage ?? '' : mode ?? '';
+  const key = [day, pluginVersion, event, dimension, suffix].join('|');
+  const legacyKey = [day, event, dimension, suffix].join('|');
   ensureDirectory(path.dirname(statePaths.counters));
   withLock(`${statePaths.counters}.lock`, () => {
     const state = readCounters(statePaths.counters);
-    const existing = state.counters[key] ?? {
-      day, event, ...(isProxy ? { provider: dimension } : { host: dimension }),
+    const legacy = state.counters[legacyKey];
+    let existing = state.counters[key];
+    if (legacy && !legacy.pluginVersion) {
+      if (existing) {
+        for (const [field, value] of Object.entries(legacy)) {
+          if (Number.isInteger(value) && value >= 0) existing[field] = (existing[field] ?? 0) + value;
+        }
+      } else existing = legacy;
+      delete state.counters[legacyKey];
+    }
+    existing ??= {
+      day, pluginVersion, event, ...(isProxy ? { provider: dimension } : { host: dimension }),
       ...(event.endsWith('_summary') && !event.includes('failure') ? { mode: mode ?? null } : {}),
       ...(event.includes('failure') ? { failureStage } : {}),
     };
+    existing.pluginVersion = pluginVersion;
     for (const [field, value] of Object.entries(deltas)) {
       if (!Number.isInteger(value) || value < 0) throw new Error(`incrementCounter: invalid delta ${field}`);
       existing[field] = (existing[field] ?? 0) + value;
@@ -375,23 +388,25 @@ export function incrementCounter({ statePaths, day, event, host, provider, mode,
   });
 }
 
-export function recordFailure({ statePaths, day, event, host, provider, failureStage }) {
+export function recordFailure({ statePaths, day, pluginVersion = PLUGIN_VERSION, event, host, provider, failureStage }) {
   incrementCounter({
-    statePaths, day, event, host, provider, failureStage, deltas: { count: 1 },
+    statePaths, day, pluginVersion, event, host, provider, failureStage, deltas: { count: 1 },
   });
 }
 
 /** Queues a single non-aggregate activity marker for this UTC day and host. */
-export function recordActiveDay({ statePaths, day, pluginVersion, host }) {
+export function recordActiveDay({ statePaths, day, pluginVersion = PLUGIN_VERSION, host }) {
   const marker = {
-    schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: PLUGIN_VERSION, host,
+    schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: pluginVersion, host,
   };
   const validatedMarker = validateEvent(marker);
-  const activeDayKey = `${day}|${host}`;
+  const activeDayKey = `${day}|${pluginVersion}|${host}`;
+  const legacyActiveDayKey = `${day}|${host}`;
   ensureDirectory(path.dirname(statePaths.counters));
   withLock(`${statePaths.counters}.lock`, () => {
     const state = readCounters(statePaths.counters);
     const activeDays = state.active_days;
+    if (Object.hasOwn(activeDays, legacyActiveDayKey)) delete activeDays[legacyActiveDayKey];
     const cutoff = Date.parse(`${day}T00:00:00Z`) - (ACTIVE_DAY_RETENTION_DAYS - 1) * 86_400_000;
     for (const [key, recordedDay] of Object.entries(activeDays)) {
       if (Date.parse(`${recordedDay}T00:00:00Z`) < cutoff) delete activeDays[key];

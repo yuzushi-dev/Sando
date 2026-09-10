@@ -25,6 +25,7 @@ function runHook(input, cwd, policy, extraEnv = {}) {
   const metricsPath = path.join(cwd, 'metrics.json');
   const env = {
     ...process.env,
+    DO_NOT_TRACK: '1',
     SANDO_METRICS_PATH: metricsPath,
     ...extraEnv,
   };
@@ -191,7 +192,7 @@ test('Claude surfaces an invalid project redaction profile', (t) => {
   const result = spawnSync(process.execPath, [hook], {
     input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd, tool_response: 'ok' }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_POLICY: JSON.stringify({ mode: 'apply', redact: true }) },
+    env: { ...process.env, DO_NOT_TRACK: '1', SANDO_POLICY: JSON.stringify({ mode: 'apply', redact: true }) },
   });
 
   assert.equal(result.status, 2);
@@ -199,9 +200,21 @@ test('Claude surfaces an invalid project redaction profile', (t) => {
   assert.deepEqual(JSON.parse(result.stdout), {});
 });
 
-test('fixture probe validates replacement, artifact resolution, and receipt alignment', () => {
+test('fixture probe validates replacement without writing public telemetry', (t) => {
   const probe = path.join(root, 'tests/e2e-probe.mjs');
-  const result = spawnSync(process.execPath, [probe], { encoding: 'utf8' });
+  const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-probe-telemetry-'));
+  t.after(() => fs.rmSync(telemetryRoot, { recursive: true, force: true }));
+  const configHome = path.join(telemetryRoot, 'config');
+  const stateHome = path.join(telemetryRoot, 'state');
+  const configPath = path.join(configHome, 'sando', 'telemetry.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
+    schema_version: 1, enabled: true, prompted_consent_version: 1, consent_version: 1,
+    consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:1/v1/logs',
+  }));
+  const result = spawnSync(process.execPath, [probe], {
+    encoding: 'utf8', env: { ...process.env, DO_NOT_TRACK: '1', XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome },
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
     probe: 'claude-post-tool-use',
@@ -211,4 +224,5 @@ test('fixture probe validates replacement, artifact resolution, and receipt alig
     artifactResolved: true,
     receiptAligned: true,
   });
+  assert.equal(fs.existsSync(path.join(stateHome, 'sando', 'telemetry-counters.json')), false);
 });

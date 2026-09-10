@@ -31,6 +31,7 @@ function recordProxyTelemetry({ env, provider, transformed, beforeText, afterTex
     incrementCounter({
       statePaths,
       day: todayUtc(),
+      pluginVersion: PLUGIN_VERSION,
       event: 'proxy_summary',
       provider: telemetryProvider(provider),
       mode: 'enforce',
@@ -52,7 +53,7 @@ function recordProxyFailure({ env, provider, failureStage }) {
     const statePaths = defaultTelemetryStatePaths(env);
     const day = todayUtc();
     recordFailure({
-      statePaths, day, event: 'proxy_failure_summary',
+      statePaths, day, pluginVersion: PLUGIN_VERSION, event: 'proxy_failure_summary',
       provider: telemetryProvider(provider), failureStage,
     });
     closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });

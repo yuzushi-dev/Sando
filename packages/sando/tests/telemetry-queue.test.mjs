@@ -19,17 +19,23 @@ function tempStatePaths() {
   return { counters: path.join(dir, 'telemetry-counters.json'), queue: path.join(dir, 'telemetry-queue.jsonl') };
 }
 
-test('incrementCounter accumulates raw counts per day/host/mode and closeDay buckets them', () => {
+test('incrementCounter keeps same-day counters partitioned by plugin version', () => {
   const statePaths = tempStatePaths();
-  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1, redactions: 1 } });
-  incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1, cappedOutputs: 1, bytesSaved: 5000 } });
-  const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' });
-  assert.equal(closed.length, 1);
-  assert.deepEqual(closed[0], {
-    schema_version: 2, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: PLUGIN_VERSION,
-    host: 'claude', mode: 'enforce',
-    tool_calls_bucket: '2_to_5', capped_outputs_bucket: 'one', bytes_saved_bucket: '4_to_16k', input_tokens_saved_bucket: 'lt_4k',
-  });
+  incrementCounter({ statePaths, day: '2026-08-25', pluginVersion: '0.4.2', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1, redactions: 1 } });
+  incrementCounter({ statePaths, day: '2026-08-25', pluginVersion: '0.4.3', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 2, cappedOutputs: 1, bytesSaved: 5000 } });
+  const closed = closeDay({ statePaths, day: '2026-08-25', pluginVersion: '9.9.9' });
+  assert.deepEqual(closed, [
+    {
+      schema_version: 2, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: '0.4.2',
+      host: 'claude', mode: 'enforce',
+      tool_calls_bucket: 'one', capped_outputs_bucket: 'zero', bytes_saved_bucket: 'lt_4k', input_tokens_saved_bucket: 'lt_4k',
+    },
+    {
+      schema_version: 2, event: 'hook_summary', day_utc: '2026-08-25', plugin_version: '0.4.3',
+      host: 'claude', mode: 'enforce',
+      tool_calls_bucket: '2_to_5', capped_outputs_bucket: 'one', bytes_saved_bucket: '4_to_16k', input_tokens_saved_bucket: 'lt_4k',
+    },
+  ]);
 });
 
 test('closeDay removes the closed day from raw counters so it is not double-counted', () => {
@@ -40,12 +46,52 @@ test('closeDay removes the closed day from raw counters so it is not double-coun
   assert.deepEqual(again, []);
 });
 
+test('incrementCounter migrates a legacy unversioned counter into the current version', () => {
+  const statePaths = tempStatePaths();
+  fs.mkdirSync(path.dirname(statePaths.counters), { recursive: true });
+  fs.writeFileSync(statePaths.counters, JSON.stringify({
+    schema_version: 1,
+    counters: {
+      '2026-08-25|hook_summary|claude|enforce': {
+        day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', toolCalls: 1,
+      },
+    },
+    active_days: {},
+  }));
+  incrementCounter({ statePaths, day: '2026-08-25', pluginVersion: '0.4.3', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
+  const counters = JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).counters;
+  assert.deepEqual(Object.keys(counters), ['2026-08-25|0.4.3|hook_summary|claude|enforce']);
+  assert.equal(Object.values(counters)[0].toolCalls, 2);
+});
+
+test('incrementCounter merges coexisting legacy and versioned counters without losing deltas', () => {
+  const statePaths = tempStatePaths();
+  fs.mkdirSync(path.dirname(statePaths.counters), { recursive: true });
+  fs.writeFileSync(statePaths.counters, JSON.stringify({
+    schema_version: 1,
+    counters: {
+      '2026-08-25|hook_summary|claude|enforce': {
+        day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', toolCalls: 2, bytesSaved: 100,
+      },
+      '2026-08-25|0.4.3|hook_summary|claude|enforce': {
+        day: '2026-08-25', pluginVersion: '0.4.3', event: 'hook_summary', host: 'claude', mode: 'enforce', toolCalls: 3, bytesSaved: 200,
+      },
+    },
+    active_days: {},
+  }));
+  incrementCounter({ statePaths, day: '2026-08-25', pluginVersion: '0.4.3', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1, bytesSaved: 50 } });
+  const counters = JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).counters;
+  assert.deepEqual(Object.keys(counters), ['2026-08-25|0.4.3|hook_summary|claude|enforce']);
+  assert.equal(Object.values(counters)[0].toolCalls, 6);
+  assert.equal(Object.values(counters)[0].bytesSaved, 350);
+});
+
 test('closeDay keeps counters when queue persistence fails', () => {
   const statePaths = tempStatePaths();
   incrementCounter({ statePaths, day: '2026-08-25', event: 'hook_summary', host: 'claude', mode: 'enforce', deltas: { toolCalls: 1 } });
   fs.mkdirSync(statePaths.queue, { recursive: true });
   assert.throws(() => closeDay({ statePaths, day: '2026-08-25', pluginVersion: '0.5' }));
-  assert.equal(JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).counters['2026-08-25|hook_summary|claude|enforce'].toolCalls, 1);
+  assert.equal(JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).counters[`2026-08-25|${PLUGIN_VERSION}|hook_summary|claude|enforce`].toolCalls, 1);
 });
 
 test('closeFinishedDays closes old counters and launches a detached flush with only network env', () => {
@@ -153,6 +199,26 @@ test('recordActiveDay queues one marker per UTC day and host', () => {
   assert.equal(rows.length, 1);
   assert.deepEqual(toOtlpLogs(rows).resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map((a) => a.key).sort(), ['day_utc', 'event', 'host', 'plugin_version', 'schema_version']);
   assert.equal(rows[0].event, 'active_day');
+});
+
+test('recordActiveDay queues one marker per plugin version on the same day', () => {
+  const statePaths = tempStatePaths();
+  recordActiveDay({ statePaths, day: '2026-08-25', pluginVersion: '0.4.2', host: 'claude' });
+  recordActiveDay({ statePaths, day: '2026-08-25', pluginVersion: '0.4.3', host: 'claude' });
+  assert.deepEqual(loadBatch({ statePaths, max: 100, lease: false }).map((row) => row.plugin_version), ['0.4.2', '0.4.3']);
+});
+
+test('recordActiveDay conservatively emits the current version when migrating a legacy marker', () => {
+  const statePaths = tempStatePaths();
+  fs.mkdirSync(path.dirname(statePaths.counters), { recursive: true });
+  fs.writeFileSync(statePaths.counters, JSON.stringify({
+    schema_version: 1, counters: {}, active_days: { '2026-08-25|claude': '2026-08-25' },
+  }));
+  recordActiveDay({ statePaths, day: '2026-08-25', pluginVersion: '0.4.3', host: 'claude' });
+  assert.deepEqual(loadBatch({ statePaths, lease: false }).map((row) => row.plugin_version), ['0.4.3']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePaths.counters, 'utf8')).active_days, {
+    '2026-08-25|0.4.3|claude': '2026-08-25',
+  });
 });
 
 test('recordActiveDay stays idempotent after the queue is flushed', () => {

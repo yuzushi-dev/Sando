@@ -31,6 +31,7 @@ function recordHookTelemetry({ host, env, policy, optimization }) {
     incrementCounter({
       statePaths,
       day: todayUtc(),
+      pluginVersion: PLUGIN_VERSION,
       event: 'hook_summary',
       host,
       mode: policy.mode === 'apply' ? 'enforce' : policy.mode === 'dry-run' ? 'dry_run' : 'observe',
@@ -54,7 +55,7 @@ function recordHookFailure({ host, env, failureStage }) {
     const statePaths = defaultTelemetryStatePaths(env);
     const day = todayUtc();
     recordActiveDay({ statePaths, day, pluginVersion: PLUGIN_VERSION, host });
-    recordFailure({ statePaths, day, event: 'hook_failure_summary', host, failureStage });
+    recordFailure({ statePaths, day, pluginVersion: PLUGIN_VERSION, event: 'hook_failure_summary', host, failureStage });
     closeFinishedDays({ statePaths, configPath, day, pluginVersion: PLUGIN_VERSION });
   } catch { /* telemetry is best-effort and must never affect hook output */ }
 }

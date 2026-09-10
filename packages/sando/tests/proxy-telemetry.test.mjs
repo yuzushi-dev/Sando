@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { createProviderProxy } from '../src/proxy.mjs';
 import { defaultTelemetryStatePaths, readTelemetryConfig } from '../src/telemetry.mjs';
+import { PLUGIN_VERSION } from '../src/version.mjs';
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -172,7 +173,8 @@ test('an upstream failure records the detected provider and upstream stage', asy
   const state = JSON.parse(fs.readFileSync(statePaths.counters, 'utf8'));
   const failure = Object.values(state.counters).find((row) => row.event === 'proxy_failure_summary');
   assert.deepEqual(failure, {
-    day: failure.day, event: 'proxy_failure_summary', provider: 'anthropic', failureStage: 'upstream', count: 1,
+    day: failure.day, pluginVersion: PLUGIN_VERSION,
+    event: 'proxy_failure_summary', provider: 'anthropic', failureStage: 'upstream', count: 1,
   });
 });
 

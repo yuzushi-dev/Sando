@@ -97,7 +97,7 @@ test('canonical and Codex hook bundles preserve the newly written artifact', (t)
       input,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...process.env, DO_NOT_TRACK: '1',
         SANDO_POLICY: policy,
         SANDO_CODEX_FALLBACK: 'feedback',
         SANDO_METRICS_PATH: path.join(cwd, 'metrics.json'),

@@ -15,6 +15,16 @@ test('Sando surfaces use the renamed package and plugin paths', () => {
   assert.ok(fs.existsSync(path.join(root, 'adapters/codex/sando/.mcp.json')));
 });
 
+test('repository test scripts run inside isolated XDG homes', () => {
+  const rootPackage = json('package.json');
+  const packagePackage = json('packages/sando/package.json');
+  assert.equal(rootPackage.scripts['test:package'], 'node scripts/test-suite.mjs package');
+  assert.equal(rootPackage.scripts['test:bundles'], 'node scripts/test-suite.mjs bundles');
+  assert.equal(packagePackage.scripts.test, 'node --test tests/*.test.mjs');
+  assert.match(fs.readFileSync(path.join(root, 'scripts/test-suite.mjs'), 'utf8'), /DO_NOT_TRACK: '0'/);
+  assert.match(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), /!scripts\/test-suite\.mjs/);
+});
+
 function json(file) {
   return JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
 }
@@ -35,7 +45,7 @@ test('copied bundles run without the repository package source', (t) => {
       input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: 'cache-ok', cwd: destination }),
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...process.env, DO_NOT_TRACK: '1',
         SANDO_MODE: name === 'claude' ? 'apply' : 'observe',
         SANDO_METRICS_PATH: path.join(cache, `${name}.metrics.json`),
       },
@@ -66,11 +76,11 @@ test('copied bundles expose a standalone JSON metrics report launcher', (t) => {
     };
     const hook = spawnSync(process.execPath, [path.join(destination, hookRelative)], {
       input: JSON.stringify(event), encoding: 'utf8',
-      env: { ...process.env, SANDO_MODE: 'observe', SANDO_METRICS_PATH: storagePath },
+      env: { ...process.env, DO_NOT_TRACK: '1', SANDO_MODE: 'observe', SANDO_METRICS_PATH: storagePath },
     });
     assert.equal(hook.status, 0, `${name}: ${hook.stderr}`);
     const report = spawnSync(process.execPath, [path.join(destination, 'metrics.mjs'), '--json', '--path', storagePath], {
-      encoding: 'utf8', env: { ...process.env, SANDO_METRICS_PATH: storagePath },
+      encoding: 'utf8', env: { ...process.env, DO_NOT_TRACK: '1', SANDO_METRICS_PATH: storagePath },
     });
     assert.equal(report.status, 0, `${name}: ${report.stderr}`);
     const json = JSON.parse(report.stdout);
@@ -122,23 +132,35 @@ test('production routing does not import or invoke evidence-based adaptive backo
   assert.doesNotMatch(JSON.stringify(pluginManifest), /adaptive backoff|automatic backoff/i);
 });
 
-test('PostToolUse hook is fail-open except for invalid policy input', () => {
+test('PostToolUse negative probes do not write public telemetry', (t) => {
   const hook = path.join(root, 'plugins/sando/hooks/post-tool-use.mjs');
+  const telemetryRoot = fs.mkdtempSync('/tmp/sando-test-telemetry-');
+  t.after(() => fs.rmSync(telemetryRoot, { recursive: true, force: true }));
+  const configHome = path.join(telemetryRoot, 'config');
+  const stateHome = path.join(telemetryRoot, 'state');
+  const configPath = path.join(configHome, 'sando', 'telemetry.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
+    schema_version: 1, enabled: true, prompted_consent_version: 1, consent_version: 1,
+    consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:1/v1/logs',
+  }));
+  const env = { ...process.env, DO_NOT_TRACK: '1', XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome };
   const valid = spawnSync(process.execPath, [hook], {
     input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: 'ok', cwd: root }),
-    encoding: 'utf8', env: { ...process.env, SANDO_MODE: 'observe' },
+    encoding: 'utf8', env: { ...env, SANDO_MODE: 'observe' },
   });
   assert.equal(valid.status, 0, valid.stderr);
   assert.deepEqual(JSON.parse(valid.stdout), {});
 
-  const malformed = spawnSync(process.execPath, [hook], { input: '{', encoding: 'utf8' });
+  const malformed = spawnSync(process.execPath, [hook], { input: '{', encoding: 'utf8', env });
   assert.equal(malformed.status, 0);
   assert.deepEqual(JSON.parse(malformed.stdout), {});
 
   const invalidPolicy = spawnSync(process.execPath, [hook], {
-    input: '{}', encoding: 'utf8', env: { ...process.env, SANDO_POLICY: '{"mode":"unsafe"}' },
+    input: '{}', encoding: 'utf8', env: { ...env, SANDO_POLICY: '{"mode":"unsafe"}' },
   });
   assert.equal(invalidPolicy.status, 2);
+  assert.equal(fs.existsSync(path.join(stateHome, 'sando', 'telemetry-counters.json')), false);
 });
 
 test('Claude apply bounds output when the artifact is over the admission limit', (t) => {
@@ -151,7 +173,7 @@ test('Claude apply bounds output when the artifact is over the admission limit',
     }),
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...process.env, DO_NOT_TRACK: '1',
       SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 320, redact: true }),
     },
   });
@@ -174,7 +196,7 @@ test('Claude apply preserves the shape of oversized Bash output', (t) => {
       tool_response: { stdout: 'secret=hidden\n' + 'x'.repeat(600), stderr: '', interrupted: false, isImage: false }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 320, redact: true }) },
+    env: { ...process.env, DO_NOT_TRACK: '1', SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 320, redact: true }) },
   });
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout).hookSpecificOutput.updatedToolOutput;
@@ -191,7 +213,7 @@ test('Codex fallback emits feedback and continue false, never a transparent rewr
     input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: 'codex fallback', cwd: root }),
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...process.env, DO_NOT_TRACK: '1',
       SANDO_POLICY: JSON.stringify({ mode: 'apply' }),
       SANDO_CODEX_FALLBACK: 'feedback',
     },

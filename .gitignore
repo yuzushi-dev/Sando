@@ -56,3 +56,4 @@ docs/changelogs/*
 !scripts/
 scripts/*
 !scripts/sync-bundles.mjs
+!scripts/test-suite.mjs
