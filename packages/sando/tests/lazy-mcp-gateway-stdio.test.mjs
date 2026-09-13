@@ -15,6 +15,14 @@ async function runGateway(gateway, messages) {
   return Buffer.concat(chunks).toString().trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition did not settle');
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 test('stdio entrypoint forwards explicit configured MCPs and remains disabled by default', async () => {
   const gateway = createLazyMcpGateway({ enabled: true, allowlist: ['fixture'], servers: [{
     name: 'fixture',
@@ -92,7 +100,7 @@ test('stdio serializes consecutive input lines and preserves response order', as
   const lines = startLazyMcpGatewayStdio({ gateway, input, output });
   input.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
   await new Promise((resolve) => lines.once('close', resolve));
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await waitFor(() => chunks.length >= 2);
   const responses = Buffer.concat(chunks).toString().trim().split('\n').map((line) => JSON.parse(line));
   assert.deepEqual(responses.map(({ id }) => id), [1, 2]);
   assert.equal(maximum, 1);

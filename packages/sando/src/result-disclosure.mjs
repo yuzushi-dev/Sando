@@ -51,7 +51,7 @@ function bytes(value, name) {
 }
 
 export function buildResultDisclosure({
-  toolName, route, reason, inline, redactedText, inputBytes, redactedBytes, artifact,
+  toolName, route, reason, inline, redactedText, inputBytes, redactedBytes, artifact, elidedRange,
 } = {}) {
   if (typeof toolName !== 'string' || !toolName || typeof route !== 'string' || !route
     || typeof reason !== 'string' || !reason || typeof inline !== 'string' || typeof redactedText !== 'string') {
@@ -79,6 +79,11 @@ export function buildResultDisclosure({
   const recovery = !artifact && reason === 'artifact-admission-limit'
     ? { mode: 'unavailable', bounded: true }
     : undefined;
+  const recoveryCommand = artifact
+    ? (elidedRange && Number.isInteger(elidedRange.startLine) && Number.isInteger(elidedRange.endLine)
+      ? `sando artifact get --ref ${artifact.ref} --start-line ${elidedRange.startLine} --end-line ${elidedRange.endLine}`
+      : `sando artifact get --ref ${artifact.ref} --max-bytes 65536`)
+    : undefined;
   return {
     schema: RESULT_DISCLOSURE_SCHEMA,
     version: RESULT_DISCLOSURE_VERSION,
@@ -96,9 +101,10 @@ export function buildResultDisclosure({
       bytes: artifact.bytes,
       recovery: {
         tool: ARTIFACT_TOOL_NAME,
-        command: `sando artifact get --ref ${artifact.ref} --max-bytes 65536`,
+        command: recoveryCommand,
         bounded: true,
       },
+      ...(elidedRange ? { elidedRange } : {}),
     } : null,
   };
 }

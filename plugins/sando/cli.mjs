@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { materializeArtifact } from './lib/artifacts.mjs';
@@ -12,7 +13,11 @@ import { normalizePolicy, optimizeToolOutput } from './lib/core.mjs';
 import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './lib/exec-capture.mjs';
 import { callMcpTool } from './lib/mcp-tools.mjs';
 
-const EXEC_TIMEOUT_MS = 120_000;
+// Two minutes bounds a read or a grep, but under SANDO_SHELL_WRAP every build and test run
+// passes through here too. Measured over 81,148 real commands the 99th percentile is 31s and
+// the longest is 834s, so the ceiling is raised enough that the wrap never kills work that
+// would otherwise have finished.
+const EXEC_TIMEOUT_MS = 900_000;
 
 function policyFromEnv(env = process.env) {
   const policy = env.SANDO_POLICY ? JSON.parse(env.SANDO_POLICY) : { mode: env.SANDO_MODE || 'apply' };
@@ -26,8 +31,35 @@ function cwdRoot() {
   return root;
 }
 
+// On Codex the CLI replaces the shell command itself, so stdout is read as that command's
+// own result: a leading `[sando] artifact ...` makes `cat f` report the header as the first
+// line of the file. The handle still has to reach the model — it is the only way to recover
+// the elided middle — and stderr visibility in the Codex tool result is not something we can
+// rely on, so the disclosure moves to the last line instead of another stream.
+// The recovery command has to be runnable as printed. `sando` is not on the model's PATH, so the
+// bare name sends it hunting for the binary instead of fetching the elided range; the rewrite
+// already resolves an absolute path for `read`/`grep`, and the hint needs the same treatment.
+const CLI_PATH = path.resolve(import.meta.dirname, 'bin', 'sando');
+
+function executableRecoveryHint(text) {
+  return text.replace('recover: sando artifact get ', `recover: ${CLI_PATH} artifact get `);
+}
+
 function writeResult(result, cwd) {
-  process.stdout.write(`${materializeArtifact(result, cwd)}\n`);
+  const out = executableRecoveryHint(materializeArtifact(result, cwd));
+  const end = result.artifact ? out.indexOf('\n') : -1;
+  if (end === -1) { process.stdout.write(`${out}\n`); return; }
+  process.stdout.write(`${out.slice(end + 1)}\n${out.slice(0, end)}\n`);
+}
+
+const SHELL_WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+
+// `bash -lc "cat f"` is a shell carrying one command; the router needs the command, not the
+// shell. Anything else is passed through as written.
+function routedCommand(argv) {
+  const program = argv[0]?.split('/').pop();
+  if (SHELL_WRAPPERS.has(program) && argv.length === 3 && /^-[a-z]*c$/.test(argv[1])) return argv[2];
+  return argv.join(' ');
 }
 
 function commandArgs(args) {
@@ -48,15 +80,38 @@ async function runExec(args, cwd, policy) {
   const output = binary
     ? `${boundary}${status}\n[binary output withheld]`
     : `${boundary}${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}`;
-  const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy });
+  // The router classifies by what the command reads, so the command has to reach it: without
+  // this a `sando exec -- bash -lc 'cat app.mjs'` is scored as process-output and capped at
+  // 4 KB, where the same read through `sando read` is source and gets 32 KB. A shell wrapper
+  // is unwrapped first, or the router would only ever see `bash`.
+  const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy, toolInput: { command: routedCommand(command) } });
   writeResult(prepared, cwd);
   if (result.exitCode !== 0 || result.exitSignal || result.timedOut) process.exitCode = result.exitCode || 1;
 }
 
+// `--start-line`/`--end-line` carry the bound of a rewritten `head`/`sed`: without them the
+// rewrite would answer a request for 20 lines with the whole file.
+function readBounds(values) {
+  const positional = [];
+  const bounds = {};
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    // `--` separates flags from the path and is not itself an operand.
+    if (value === '--') continue;
+    const key = value === '--start-line' ? 'startLine' : value === '--end-line' ? 'endLine' : null;
+    if (!key) { positional.push(value); continue; }
+    const raw = values[index + 1];
+    if (!/^\d+$/.test(raw ?? '')) throw new Error(`${value} requires a positive integer`);
+    bounds[key] = Number(raw);
+    index += 1;
+  }
+  return { positional, bounds };
+}
+
 function runRead(args, cwd, policy) {
-  const values = commandArgs(args);
-  if (values.length !== 1) throw new Error('read requires one workspace-relative path');
-  writeResult(callMcpTool('sando_read', { path: values[0], cwd, policy }), cwd);
+  const { positional, bounds } = readBounds(commandArgs(args));
+  if (positional.length !== 1) throw new Error('read requires one workspace-relative path');
+  writeResult(callMcpTool('sando_read', { path: positional[0], cwd, policy, ...bounds }), cwd);
 }
 
 function runGrep(args, cwd, policy) {

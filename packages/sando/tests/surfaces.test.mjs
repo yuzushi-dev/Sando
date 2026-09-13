@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import test from 'node:test';
 
+import { validateJsonSchema } from '../src/lazy-mcp-gateway.mjs';
+
 const root = path.resolve(import.meta.dirname, '../../..');
 
 test('Sando surfaces use the renamed package and plugin paths', () => {
@@ -259,7 +261,30 @@ test('MCP server exposes bounded read, grep, and sandboxed exec tools', async (t
   assert.equal(tools[3].name, 'sando_exec');
   assert.equal(tools[3].annotations.readOnlyHint, false);
   assert.equal(tools[4].annotations.readOnlyHint, true);
-  assert.equal(tools[4].inputSchema.properties.maxBytes.maximum, 1_048_576);
+  const artifactSchema = tools[4].inputSchema;
+  assert.equal(artifactSchema.properties.maxBytes.maximum, 1_048_576);
+  // The oneOf/examples block duplicated a check recoverArtifactContent already makes
+  // ('artifact range is ambiguous') and cost more prompt than the rest of the catalog.
+  assert.equal(artifactSchema.oneOf, undefined);
+  assert.equal(artifactSchema.examples, undefined);
+  // Regression guard at the achieved size (1,169 B, down from ~1,750). The
+  // structural assertions above are the meaningful ones; this only catches regrowth.
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(tools[4])) < 1_250,
+    `artifact tool definition is ${Buffer.byteLength(JSON.stringify(tools[4]))} bytes`,
+  );
+  assert.match(tools[4].description, /copy artifact\.handle exactly/i);
+  assert.match(tools[4].description, /this MCP session/i);
+  const sampleRef = 'sando:sha256:0123456789abcdef';
+  assert.equal(validateJsonSchema(artifactSchema, { ref: sampleRef }).valid, true);
+  // Range exclusivity is deliberately no longer a schema constraint: the 3-branch
+  // oneOf that expressed it cost more prompt than the rest of the catalog, and
+  // recoverArtifactContent already rejects mixed ranges at runtime with
+  // 'artifact range is ambiguous' (covered in result-disclosure.test.mjs).
+  // The schema now accepts the shape; the handler is the enforcement point.
+  assert.equal(validateJsonSchema(artifactSchema, { ref: sampleRef, startByte: 0, endByte: 2, startLine: 1 }).valid, true);
+  assert.equal(validateJsonSchema(artifactSchema, { ref: sampleRef, maxBytes: 0 }).valid, false);
+  assert.equal(validateJsonSchema(artifactSchema, { ref: '/tmp/.sando/sando/artifacts/file.txt' }).valid, false);
   assert.equal(messages[2].result.structuredContent.inline, 'ok');
   assert.match(messages[3].result.structuredContent.inline, /\"name\"/);
   assert.match(messages[4].result.structuredContent.inline, /package\.json:/);

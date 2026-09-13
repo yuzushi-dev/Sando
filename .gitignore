@@ -46,14 +46,20 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Keep only versioned changelogs and the bundle synchronizer versioned.
+# Keep versioned changelogs and release/build scripts versioned.
 !docs/
 docs/*
 !docs/changelogs/
 docs/changelogs/*
 !docs/changelogs/*.md
+# The README cites these figures, so the page behind them has to ship with it.
+!docs/measurements.md
 
 !scripts/
 scripts/*
 !scripts/sync-bundles.mjs
 !scripts/test-suite.mjs
+!scripts/build-slice.sh
+# The README tells readers to run these, so they have to ship.
+!scripts/bench-reduction.mjs
+!scripts/bench-codex-shell.mjs

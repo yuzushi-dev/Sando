@@ -145,8 +145,11 @@ export function runHookCli({ host, env = process.env } = {}) {
         });
       }
       failureStage = 'output';
-      const measuredOptimization = optimizationForEmission(optimization, shaped);
-      const receipt = createReceipt({ host, event, optimization: measuredOptimization, replacement: shaped });
+      const modelVisibleOutput = host === 'claude' && policy.mode === 'apply' && shaped === undefined
+        ? event.output
+        : shaped;
+      const measuredOptimization = optimizationForEmission(optimization, modelVisibleOutput);
+      const receipt = createReceipt({ host, event, optimization: measuredOptimization, replacement: modelVisibleOutput });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: measuredOptimization, receipt }); } catch {}
       recordHookTelemetry({ host, env, policy, optimization: measuredOptimization });
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {

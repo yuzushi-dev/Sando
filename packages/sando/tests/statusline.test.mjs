@@ -30,7 +30,15 @@ test('renders provider-reported context savings without a tilde', () => {
     },
     providerUsage: { totalTokens: 5_000_000, turnCount: 4, weightedCostUnits: 2_000_000 },
     totalCostUsd: 10,
-  }, Date.parse(current)), '🥪 saved 2.5M ctx tok (50%)');
+  }, Date.parse(current)), '🥪 saved 2.5M ctx tok');
+});
+
+test('does not render a percentage for provider savings with a different denominator', () => {
+  assert.equal(renderStatusLine({
+    metrics: {
+      updatedAt: current, source: 'provider-reported', savedTokens: 1_000, estimatedInputTokens: 10,
+    },
+  }, Date.parse(current)), '🥪 saved 1k ctx tok');
 });
 
 test('renders estimated savings with compact tokens and percentage', () => {

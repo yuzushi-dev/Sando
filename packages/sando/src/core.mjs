@@ -12,7 +12,17 @@ const DEFAULT_POLICY = Object.freeze({
 const POLICY_FIELDS = new Set(Object.keys(DEFAULT_POLICY));
 const SEVERE_DIAGNOSTIC_LINE = /\b(?:error|fail(?:ed|ure)?|exception|fatal|panic|traceback|assertion)\b/i;
 const WARNING_LINE = /\bwarning\b/i;
+// A test runner puts its totals in the middle of its own output as often as at the end — node's
+// TAP summary lands there whenever a second suite follows. Eliding those lines leaves a model
+// reading a plausible but partial count, with nothing to signal that a block went missing.
+const SUMMARY_LINE = /^\s*(?:#\s*(?:tests|pass|fail|skipped|todo|cancelled|suites)\b|test result:|(?:Tests|Test Suites):\s|=+[^=]*\b\d+\s+(?:passed|failed)\b)/i;
 const MAX_DIAGNOSTIC_LINES = 8;
+// Summaries get a reserved share: in a TAP stream most test names contain "error" or "fail", so
+// severe lines would otherwise crowd out the totals that actually answer the question.
+const MAX_SUMMARY_LINES = 4;
+// A TAP block prints seven counters and only three of them answer "did it pass": keeping the
+// block in source order would spend the quota on `cancelled` and `todo`.
+const HEADLINE_SUMMARY_LINE = /^\s*(?:#\s*(?:tests|pass|fail)\b|test result:|Tests:\s)/i;
 const MAX_DIAGNOSTIC_LINE_BYTES = 256;
 
 function sha256(text) {
@@ -98,6 +108,7 @@ function middleView(text, maxBytes, headBytes, tailBytes, salvageDiagnostics) {
   const minimumEdgeBytes = available - diagnosticBudget - 2;
   const minimumHead = Math.max(1, Math.floor(minimumEdgeBytes * Math.max(1, headBytes) / requested));
   const minimumTail = Math.max(1, minimumEdgeBytes - minimumHead);
+  const summaries = [];
   const severe = [];
   const warnings = [];
   let offset = 0;
@@ -105,14 +116,19 @@ function middleView(text, maxBytes, headBytes, tailBytes, salvageDiagnostics) {
   for (const [index, line] of lines.entries()) {
     const lineBytes = Buffer.byteLength(line);
     if (offset >= minimumHead && offset + lineBytes <= totalBytes - minimumTail) {
-      if (SEVERE_DIAGNOSTIC_LINE.test(line)) severe.push(line);
+      if (SUMMARY_LINE.test(line)) summaries.push(line);
+      else if (SEVERE_DIAGNOSTIC_LINE.test(line)) severe.push(line);
       else if (WARNING_LINE.test(line)) warnings.push(line);
     }
     offset += lineBytes + (index < lines.length - 1 ? 1 : 0);
   }
+  const keptSummaries = [
+    ...summaries.filter((line) => HEADLINE_SUMMARY_LINE.test(line)),
+    ...summaries.filter((line) => !HEADLINE_SUMMARY_LINE.test(line)),
+  ].slice(0, MAX_SUMMARY_LINES);
   const diagnostics = [];
   let diagnosticBytes = 0;
-  for (const line of [...severe, ...warnings].slice(0, MAX_DIAGNOSTIC_LINES)) {
+  for (const line of [...keptSummaries, ...severe, ...warnings].slice(0, MAX_DIAGNOSTIC_LINES)) {
     const separatorBytes = diagnostics.length ? 1 : 0;
     const remaining = diagnosticBudget - diagnosticBytes - separatorBytes;
     if (remaining < 1) break;
@@ -131,11 +147,13 @@ function inlineView(text, maxBytes, headBytes, tailBytes, maxColumns, salvageDia
   return middleView(capColumns(text, maxColumns), maxBytes, headBytes, tailBytes, salvageDiagnostics);
 }
 
+const DECLARATION_REGEX = /^\s*(?:import\b|from\b|export\b|use\b|package\b|(?:async\s+)?(?:def|function)\b|class\b|interface\b|trait\b|impl\b|struct\b|enum\b|namespace\b|module\b|type\b|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=|func\b|(?:pub(?:\([^)]+\))?\s+)?fn\b|(?:(?:public|private|protected|static|abstract|async|get|set)\s+)+[A-Za-z_$][\w$]*\s*\(|@[A-Za-z_])/;
+
 function structuralRead(text) {
   const lines = text.split('\n');
-  const declaration = /^\s*(?:import\b|export\b|(?:async\s+)?function\b|class\b|interface\b|type\s+[A-Za-z_$][\w$]*\s*=|enum\b|namespace\b|module\b|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=|(?:(?:public|private|protected|static|abstract|async|get|set)\s+)+[A-Za-z_$][\w$]*\s*\()/;
-  const selected = lines.flatMap((line, index) => declaration.test(line) ? [`${index + 1}:${line}`] : []);
+  const selected = lines.flatMap((line, index) => DECLARATION_REGEX.test(line) ? [`${index + 1}:${line}`] : []);
   if (!selected.length) return null;
+  if (lines.length >= 100 && selected.length < 2) return null;
   const outline = `[sando read structure: ${selected.length}/${lines.length} lines]\n${selected.join('\n')}`;
   return Buffer.byteLength(outline) + 64 < Buffer.byteLength(text) ? outline : null;
 }
@@ -162,6 +180,134 @@ function readSelector(toolInput) {
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
   return ['offset', 'limit', 'line_start', 'line_end', 'start_line', 'end_line']
     .some((key) => Object.hasOwn(toolInput, key));
+}
+
+const SOURCE_EXTENSIONS = new Set([
+  '.js', '.mjs', '.cjs', '.jsx',
+  '.ts', '.mts', '.cts', '.tsx',
+  '.py', '.pyw',
+  '.go',
+  '.rs',
+  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx',
+  '.java', '.kt', '.kts', '.scala',
+  '.cs', '.fs',
+  '.rb',
+  '.php',
+  '.swift',
+  '.sh', '.bash', '.zsh',
+  '.sql',
+  '.html', '.htm', '.css', '.scss', '.sass', '.less',
+  '.vue', '.svelte',
+  '.lua', '.zig', '.nim',
+]);
+
+const STRUCTURED_EXTENSIONS = new Set([
+  '.json', '.yaml', '.yml', '.toml', '.xml', '.csv',
+]);
+
+function parseReadCommand(command) {
+  if (typeof command !== 'string') return null;
+  const trimmed = command.trim();
+  const match = /^(?:cat|head|tail|sed)\b\s*(.*)$/.exec(trimmed);
+  if (!match) return null;
+  const rest = match[1];
+  if (/[|><;]/.test(rest)) return null;
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+  const last = tokens[tokens.length - 1];
+  const cleanedPath = last.replace(/^['"]|['"]$/g, '');
+  const isSedSelector = /^sed\b/.test(trimmed) && /-n\b/.test(trimmed);
+  const isHeadOrTail = /^(?:head|tail)\b/.test(trimmed);
+  return {
+    filePath: cleanedPath,
+    selector: isSedSelector || isHeadOrTail,
+  };
+}
+
+function resolveSourceClass({ toolName, toolInput }) {
+  const name = typeof toolName === 'string' ? toolName.toLowerCase() : '';
+  if (name === 'grep') return { sourceClass: 'structured', selector: false, filePath: null };
+  let filePath = null;
+  let isSelector = false;
+  if (name === 'read') {
+    filePath = toolInput?.file_path ?? toolInput?.filePath ?? toolInput?.path ?? null;
+    isSelector = readSelector(toolInput);
+  } else if (name === 'bash') {
+    const cmd = typeof toolInput?.command === 'string' ? toolInput.command : null;
+    const parsed = cmd ? parseReadCommand(cmd) : null;
+    if (parsed) {
+      filePath = parsed.filePath;
+      isSelector = parsed.selector;
+    } else {
+      return { sourceClass: 'process-output', selector: false, filePath: null };
+    }
+  } else {
+    return { sourceClass: 'generic', selector: false, filePath: null };
+  }
+
+  if (filePath) {
+    const dotIndex = filePath.lastIndexOf('.');
+    if (dotIndex !== -1) {
+      const ext = filePath.slice(dotIndex).toLowerCase();
+      if (STRUCTURED_EXTENSIONS.has(ext)) return { sourceClass: 'structured-data', selector: isSelector, filePath };
+      if (ext === '.log' || filePath.endsWith('.min.js') || ext === '.map') return { sourceClass: 'bulk', selector: isSelector, filePath };
+      if (SOURCE_EXTENSIONS.has(ext)) return { sourceClass: 'source', selector: isSelector, filePath };
+    }
+  }
+  return { sourceClass: 'source', selector: isSelector, filePath };
+}
+
+const SOURCE_CLASS_LIMITS = Object.freeze({
+  source: Object.freeze({
+    maxInlineBytes: 32 * 1024,
+    headBytes: 20 * 1024,
+    tailBytes: 10 * 1024,
+  }),
+  'structured-data': Object.freeze({
+    maxInlineBytes: 8 * 1024,
+    headBytes: 5 * 1024,
+    tailBytes: 2 * 1024,
+  }),
+  'process-output': Object.freeze({
+    maxInlineBytes: 4 * 1024,
+    headBytes: 2457,
+    tailBytes: 1024,
+  }),
+  bulk: Object.freeze({
+    maxInlineBytes: 4 * 1024,
+    headBytes: 2048,
+    tailBytes: 1024,
+  }),
+  generic: Object.freeze({
+    maxInlineBytes: 4 * 1024,
+    headBytes: 2457,
+    tailBytes: 1024,
+  }),
+});
+
+// Appends the recovery command to the `[sando] artifact ...` line so the model reading a bounded
+// result can see how to get the rest back. Space for it was reserved before the view was cut.
+function withRecoveryHint(inline, artifact, elidedRange) {
+  const header = `[sando] artifact ${artifact.ref} ${artifact.bytes}B`;
+  if (!inline.startsWith(header)) return inline;
+  const range = elidedRange && Number.isInteger(elidedRange.startLine) && Number.isInteger(elidedRange.endLine)
+    ? ` --start-line ${elidedRange.startLine} --end-line ${elidedRange.endLine}`
+    : ' --max-bytes 65536';
+  return `${header} recover: sando artifact get --ref ${artifact.ref}${range}${inline.slice(header.length)}`;
+}
+
+function calculateElidedRange(fullText, inlineText) {
+  const marker = '[middle elided]';
+  const markerIndex = inlineText.indexOf(marker);
+  if (markerIndex === -1) return null;
+  const headPart = inlineText.slice(0, markerIndex);
+  const tailPart = inlineText.slice(markerIndex + marker.length);
+  const totalLines = fullText.split('\n').length;
+  const headLines = headPart.split('\n').length;
+  const tailLines = tailPart.split('\n').length;
+  const startLine = Math.max(1, headLines);
+  const endLine = Math.max(startLine, totalLines - tailLines + 1);
+  return { startLine, endLine };
 }
 
 export function estimateTokens(text) {
@@ -195,10 +341,27 @@ export function optimizeToolOutput({
   const normalizedPolicy = normalizePolicy(policy);
   const input = textOutput(output);
   const name = toolName.toLowerCase();
+  const { sourceClass, selector: detectedSelector } = resolveSourceClass({ toolName, toolInput });
+  const isTargetedSelector = selector ?? (detectedSelector || readSelector(toolInput));
+  let baseInlineBudget = normalizedPolicy.maxInlineBytes;
+  let baseHeadBytes = normalizedPolicy.headBytes;
+  let baseTailBytes = normalizedPolicy.tailBytes;
+
+  if (sourceClass === 'source' || sourceClass === 'structured-data') {
+    const classLimit = SOURCE_CLASS_LIMITS[sourceClass];
+    const hasCustomInline = policy !== undefined && policy !== null
+      && Object.hasOwn(policy, 'maxInlineBytes')
+      && policy.maxInlineBytes !== DEFAULT_POLICY.maxInlineBytes;
+    if (!hasCustomInline) {
+      baseInlineBudget = classLimit.maxInlineBytes;
+      if (!policy || !Object.hasOwn(policy, 'headBytes')) baseHeadBytes = classLimit.headBytes;
+      if (!policy || !Object.hasOwn(policy, 'tailBytes')) baseTailBytes = classLimit.tailBytes;
+    }
+  }
   const derivedLineCount = lineCount ?? (name === 'read' ? input.split(/\r?\n/).length : lineCount);
   const derivedFileBytes = fileBytes ?? (name === 'read' ? Buffer.byteLength(input) : fileBytes);
   let route = planToolRoute({
-    toolName, selector: selector ?? readSelector(toolInput), raw: raw ?? toolInput?.raw === true,
+    toolName, selector: isTargetedSelector, raw: raw ?? toolInput?.raw === true,
     lineCount: derivedLineCount, fileBytes: derivedFileBytes, prose, summarizeProse, summarizeEnabled, grepScope,
     outputBytes: outputBytes ?? Buffer.byteLength(input),
   });
@@ -213,28 +376,45 @@ export function optimizeToolOutput({
   let modelText = name === 'bash' && normalizedPolicy.maxColumns >= 32
     ? collapseRepeatedLines(previewText)
     : previewText;
-  if (route.route === 'summary') {
-    const outline = structuralRead(previewText);
-    if (outline) modelText = outline;
-    else route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'sando-read-bounded' };
-  }
   const routePolicy = route.route === 'artifact' || route.route === 'structured'
     ? {
       ...normalizedPolicy,
+      maxInlineBytes: Math.min(baseInlineBudget, route.route === 'artifact' ? (route.limits.headBytes + route.limits.tailBytes) : baseInlineBudget),
       ...(route.route === 'artifact' ? {
-        maxInlineBytes: Math.min(normalizedPolicy.maxInlineBytes, route.limits.headBytes + route.limits.tailBytes),
-        headBytes: Math.min(normalizedPolicy.headBytes, route.limits.headBytes),
-        tailBytes: Math.min(normalizedPolicy.tailBytes, route.limits.tailBytes),
-      } : {}),
+        headBytes: Math.min(baseHeadBytes, route.limits.headBytes),
+        tailBytes: Math.min(baseTailBytes, route.limits.tailBytes),
+      } : {
+        headBytes: baseHeadBytes,
+        tailBytes: baseTailBytes,
+      }),
       maxColumns: Math.min(normalizedPolicy.maxColumns, route.limits.maxColumns),
     }
-    : normalizedPolicy;
+    : {
+      ...normalizedPolicy,
+      maxInlineBytes: baseInlineBudget,
+      headBytes: baseHeadBytes,
+      tailBytes: baseTailBytes,
+    };
+  const shouldSummarize = route.route === 'summary'
+    || (sourceClass === 'source' && !isTargetedSelector && (derivedLineCount ?? 0) >= 100 && (outputBytes ?? Buffer.byteLength(input)) > routePolicy.maxInlineBytes);
+  if (shouldSummarize) {
+    const outline = structuralRead(previewText);
+    if (outline) {
+      modelText = outline;
+      if (route.route !== 'summary') {
+        route = { route: 'summary', modelVisible: 'elided-structure', source: 'sando-read-summarize' };
+      }
+    } else if (route.route === 'summary') {
+      route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'sando-read-bounded' };
+    }
+  }
   const sourceBytes = Buffer.byteLength(sourceText);
   let inline = modelText;
   let artifact;
   const artifactAdmitted = sourceBytes <= normalizedPolicy.maxArtifactBytes;
   const hasLongLine = routePolicy.maxColumns > 0
     && modelText.split('\n').some((line) => Buffer.byteLength(line) > routePolicy.maxColumns);
+  let recoveryHintAffordable = false;
   if (!artifactAdmitted && (route.route === 'summary' || route.route === 'artifact'
     || sourceBytes > routePolicy.maxInlineBytes || hasLongLine)) {
     route = { route: 'passthrough', modelVisible: 'bounded-output', source: 'artifact-admission-limit' };
@@ -259,16 +439,33 @@ export function optimizeToolOutput({
       sourceBytes,
       truncated: false,
     };
+    // The recovery command has to reach the model, not just the disclosure object: on the CLI
+    // surface the structured disclosure is never rendered, so a bare artifact path leaves the
+    // model to improvise its way back to the elided middle. The exact line range is only known
+    // after the view is cut, so reserve the widest header the range could need and rewrite it
+    // once the range is settled -- reserving after the fact would push the payload over the cap.
     const header = `[sando] artifact ${artifact.ref} ${artifact.bytes}B\n`;
-    const viewBudget = Math.max(1, routePolicy.maxInlineBytes - Buffer.byteLength(header));
-    inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
-      modelText,
-      viewBudget,
-      routePolicy.headBytes,
-      routePolicy.tailBytes,
-      routePolicy.maxColumns,
-      name === 'bash',
-    )}`;
+    const widestLineNumber = String(sourceText.split('\n').length).length;
+    const reservedHeader = Buffer.byteLength(header)
+      + Buffer.byteLength(` recover: sando artifact get --ref ${artifact.ref} --start-line  --end-line `)
+      + (widestLineNumber * 2);
+    // Under a tight cap the hint would cost more room than the content it points at, so it is
+    // only affordable when the whole header stays a small fraction of the budget.
+    recoveryHintAffordable = reservedHeader * 4 <= routePolicy.maxInlineBytes;
+    const viewBudget = Math.max(1, routePolicy.maxInlineBytes - (recoveryHintAffordable ? reservedHeader : Buffer.byteLength(header)));
+    const isOutline = typeof modelText === 'string' && modelText.startsWith('[sando read structure:');
+    if (isOutline && Buffer.byteLength(modelText) <= viewBudget) {
+      inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${modelText}`;
+    } else {
+      inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
+        modelText,
+        viewBudget,
+        routePolicy.headBytes,
+        routePolicy.tailBytes,
+        routePolicy.maxColumns,
+        name === 'bash',
+      )}`;
+    }
     inline = truncateUtf8(inline, routePolicy.maxInlineBytes);
   }
   const stats = {
@@ -282,12 +479,17 @@ export function optimizeToolOutput({
     redactions: redacted.count + previewRedacted.count,
     artifactTruncated: artifact?.truncated ?? false,
   };
+  const elidedRange = artifact && inline.includes('[middle elided]')
+    ? calculateElidedRange(sourceText, inline)
+    : undefined;
+  if (artifact && recoveryHintAffordable) inline = withRecoveryHint(inline, artifact, elidedRange);
   const result = {
     inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION,
     redactionProfileDigest: profile?.digest ?? null, stats,
     disclosure: buildResultDisclosure({
       toolName, route: route.route, reason: route.source, inline,
       redactedText: sourceText, inputBytes: Buffer.byteLength(input), redactedBytes: sourceBytes, artifact,
+      elidedRange,
     }),
   };
   if (artifact) result.artifact = artifact;

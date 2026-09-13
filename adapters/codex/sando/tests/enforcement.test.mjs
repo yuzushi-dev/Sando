@@ -31,10 +31,10 @@ test('classifies only proven literal Read and Grep commands', (t) => {
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
 
   assert.deepEqual(classifyShellCommand({
-    toolName: 'Bash', toolInput: { command: 'cat -- fixture.txt' }, cwd,
+    toolName: 'Bash', toolInput: { command: 'cat -- fixture.txt' }, cwd, env: { SANDO_SHELL_WRAP: '0' },
   }), { status: 'eligible', route: 'sando_read', path: 'fixture.txt' });
   assert.deepEqual(classifyShellCommand({
-    toolName: 'Bash', toolInput: { command: 'rg -F -- needle fixture.txt' }, cwd,
+    toolName: 'Bash', toolInput: { command: 'rg -F -- needle fixture.txt' }, cwd, env: { SANDO_SHELL_WRAP: '0' },
   }), { status: 'eligible', route: 'sando_grep', pattern: 'needle', path: 'fixture.txt' });
 });
 
@@ -50,7 +50,7 @@ test('leaves shell syntax and unsafe targets as measured bypasses', (t) => {
     'cat missing.txt',
   ]) {
     assert.equal(classifyShellCommand({
-      toolName: 'Bash', toolInput: { command }, cwd,
+      toolName: 'Bash', toolInput: { command }, cwd, env: { SANDO_SHELL_WRAP: '0' },
     }).status, 'bypassed', command);
   }
 });
@@ -67,7 +67,7 @@ test('PreToolUse transparently rewrites an eligible built-in to the local CLI', 
       tool_input: { command: 'cat -- fixture.txt' }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_CLI_ROUTING: '1', SANDO_COVERAGE_PATH: coveragePath },
+    env: { ...process.env, SANDO_SHELL_WRAP: '0', SANDO_CLI_ROUTING: '1', SANDO_COVERAGE_PATH: coveragePath },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -76,7 +76,7 @@ test('PreToolUse transparently rewrites an eligible built-in to the local CLI', 
   assert.match(output.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/);
   assert.doesNotMatch(output.hookSpecificOutput.updatedInput.command, /MCP/);
   const routed = spawnSync('/bin/sh', ['-c', output.hookSpecificOutput.updatedInput.command], {
-    cwd, encoding: 'utf8', env: { ...process.env, SANDO_MODE: 'apply' },
+    cwd, encoding: 'utf8', env: { ...process.env, SANDO_SHELL_WRAP: '0', SANDO_MODE: 'apply' },
   });
   assert.equal(routed.status, 0, routed.stderr);
   assert.match(routed.stdout, /needle/);
@@ -95,7 +95,7 @@ test('PreToolUse leaves eligible native rg and grep commands untouched by defaul
       tool_input: { command: 'rg -F -- needle fixture.txt' }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env },
+    env: { ...process.env, SANDO_CLI_ROUTING: '', SANDO_SHELL_WRAP: '0' },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -156,10 +156,10 @@ test('PreToolUse records an ambiguous shell command as bypass', (t) => {
     cwd,
     input: JSON.stringify({
       hook_event_name: 'PreToolUse', tool_name: 'Bash',
-      tool_input: { command: 'cat fixture.txt | sed -n 1,2p' }, cwd,
+      tool_input: { command: 'cat `which fixture.txt`' }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_COVERAGE_PATH: coveragePath },
+    env: { ...process.env, SANDO_SHELL_WRAP: '0', SANDO_COVERAGE_PATH: coveragePath },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -177,7 +177,7 @@ test('PreToolUse keeps an explicit control arm on the native path', (t) => {
     cwd,
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat -- fixture.txt' }, cwd }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_EXPERIMENT_ARM: 'control' },
+    env: { ...process.env, SANDO_SHELL_WRAP: '0', SANDO_EXPERIMENT_ARM: 'control' },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -197,7 +197,8 @@ test('Codex hook manifests install the PreToolUse gate', () => {
 // `ambiguous-shell` and nothing was ever routed: a plugin that installed, fired, and
 // compressed nothing. Measured against a real Terminal-Bench trial, not assumed.
 function classifyIn(cwd, command) {
-  return classifyShellCommand({ toolName: 'Bash', toolInput: { command }, cwd });
+  // The wrap is off here: these cases ask whether the selective classifier recognises a shape.
+  return classifyShellCommand({ toolName: 'Bash', toolInput: { command }, cwd, env: { SANDO_SHELL_WRAP: '0' } });
 }
 
 test('recognises the command shapes Codex actually emits', (t) => {

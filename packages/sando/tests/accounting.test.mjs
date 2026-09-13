@@ -14,6 +14,7 @@ function record({ eventKey, turnId, inputTokens, cachedInputTokens = 0, cacheWri
     sessionId: 'session-1', turnId, at: '2026-08-28T10:00:00.000Z', inputTokens,
     cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens,
     totalTokens: inputTokens + outputTokens,
+    ...(totalCostUsd === undefined ? {} : { costSource: 'host-reported' }),
     ...(totalCostUsd === undefined ? {} : { totalCostUsd }),
   };
 }
@@ -40,7 +41,7 @@ test('provider accounting reports cache classes, reasoning, turns, and blended p
     inputTokens: 150, freshInputTokens: 115, cachedInputTokens: 25, cacheWriteInputTokens: 10,
     outputTokens: 10, reasoningOutputTokens: 4, turnCount: 2,
   });
-  assert.equal(report.cost.status, 'provider-reported');
+  assert.equal(report.cost.status, 'host-reported');
   assert.equal(report.cost.totalCostUsd, 0.3);
   assert.equal(report.cost.effectiveRateUsdPerMillionTokens, 1875);
   assert.equal(report.totalCostUsd, 0.3);
@@ -75,7 +76,7 @@ test('accounting CLI emits the provider report as JSON', () => {
       stderr: { write(value) { errors += value; } },
     });
     assert.equal(errors, '');
-    assert.equal(JSON.parse(output).cost.status, 'provider-reported');
+    assert.equal(JSON.parse(output).cost.status, 'host-reported');
     assert.equal(report.turnCount, 1);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

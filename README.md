@@ -4,20 +4,65 @@
 
 # Sando
 
-Sando is a local plugin for Claude Code and Codex. It keeps repeated and oversized tool output under control, preserves complete redacted artifacts when they fit the admission limit, and provides bounded local tool surfaces. It runs locally and makes no LLM calls.
+Sando is a context-management plugin for Claude Code and Codex. It bounds what a tool result
+costs before that result reaches the model. Large output is truncated to a cap set by the kind
+of content it is, the full bytes are kept on disk with a verified hash, and the lines that
+answer the question are pulled out of the part that was cut, including error lines and test
+totals.
 
-Release notes: [Sando 0.4.3](docs/changelogs/0.4.3.md).
+On Codex that means 90.9% less shell output, measured over 40,000 recorded results. On a
+repository, 264 files fit into a 200,000-token window where 110 fit without it. Every figure
+below is reproducible with a command, against your own corpus.
+
+It acts on tool results only, so it composes with whatever else you run to keep a session
+small, such as output filters or scope rules, without competing for the same step.
+Deterministic local transforms make no LLM calls.
+
+A separate, opt-in experiment archives older tool observations across turns and leaves
+recoverable references in the active history. Controlled provider-boundary replays reduced
+reported input by 28.5% on Codex and effective input by 42.4% on Claude, while natural pilots
+ranged from a 45.3% reduction to a 55.7% increase. Those replays show a conditional mechanism
+and are not a billing claim.
+
+The package also contains earlier output filters, artifact tools and Slice integration, each evaluated separately from the experiment above.
+
+Release notes: [Sando 0.5.0](docs/changelogs/0.5.0.md).
 
 Development branch: `release/0.5.0`.
 
 ## Slice: symbol reads and opt-in writes
 
-Slice connects Sando's MCP to a separately built native symbol engine. The native
-binary is not included in the plugin. Configure the MCP server environment with
-an absolute executable path and a canonical workspace directory:
+Slice connects Sando's MCP to a separately built native symbol engine. Build the
+tested engine from a Sando source checkout with Bash, Git, Make, CMake 3.24+ and GCC 13+
+(C and C++ compilers). The verified target is Ubuntu 24.04 on Linux x86-64;
+other operating systems, architectures and toolchains are not verified by Sando.
 
 ```bash
-SANDO_SLICE_BINARY=/absolute/path/to/native-engine
+# Run from the Sando checkout. The destination must not already exist.
+bash scripts/build-slice.sh "$HOME/sando-slice"
+```
+
+The script fetches [upstream source at commit
+`d90acb2cb3295da8ca0fd33a88e81cb51a8575fb`](https://github.com/redhat-et/ripwire/tree/d90acb2cb3295da8ca0fd33a88e81cb51a8575fb),
+checks the revision and builds with vendored dependencies and CMake downloads
+disabled. It retains the source and its licenses, refuses an existing destination,
+and leaves a failed build in place for diagnosis. Expect several minutes of
+compilation, several GB of RAM, and space for the source and build tree. It does not install hooks,
+modify host configuration or install a binary globally.
+
+Build on the machine where the MCP server runs: the executable uses that system's
+C/C++ runtime libraries. This is a pinned source build, not a promise of identical
+binary bytes across compilers or portability to older distributions. The native
+engine is Apache-2.0, with dependency notices in its `THIRD_PARTY.md` and
+`third_party/` license files; Sando's JavaScript remains MIT. Keep those notices
+with any redistributed native artifact. The plugin and npm library contain no
+native executable.
+
+Configure the MCP server environment with the resulting absolute executable path
+and a canonical workspace directory:
+
+```bash
+SANDO_SLICE_BINARY=/absolute/path/to/sando-slice/build/ripwire
 SANDO_SLICE_ROOT=/absolute/path/to/workspace
 SANDO_SLICE_WRITE=1
 ```
@@ -44,10 +89,12 @@ The engine's handles, freshness metadata, and edit receipts are otherwise preser
 editing. If a write is interrupted or loses its response, inspect the file
 before retrying: cancellation does not imply rollback.
 
-Native integration checks use temporary workspaces:
+Native integration checks use temporary workspaces. The Codex cases additionally
+require the Codex CLI on `PATH` and a working host sandbox (Bubblewrap on Linux);
+they are skipped when Codex is absent. CI provides both and runs every native case:
 
 ```bash
-SANDO_SLICE_TEST_BINARY=/absolute/path/to/native-engine npm test
+SANDO_SLICE_TEST_BINARY="$HOME/sando-slice/build/ripwire" npm test
 ```
 
 Bash previews also remove ANSI formatting and retain bounded error diagnostics
@@ -109,9 +156,9 @@ Treatment sessions use `SANDO_EXPERIMENT_ARM=apply` and must opt into transparen
 /path/to/installed/sando/bin/sando accounting --json
 ```
 
-The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and billed cost when available. It marks replay results as counterfactual and never turns mechanical reduction into a provider-billing claim.
+The paired report exposes control/treatment cache classes, output and reasoning tokens, model turns, native/Sando tool calls, mechanical bytes, and weighted cost units. The separate provider-usage report exposes reported USD cost with its coverage and source when available; a host-reported list estimate is not a billing record. Replay results are marked counterfactual, and mechanical reduction is never turned into a provider-billing claim.
 
-The statusline shows Sando's context tokens saved and the reduction percentage. A leading `~` marks an estimate; provider-reported savings omit it. Provider token accounting remains available through the accounting report.
+The statusline shows mechanically estimated context tokens saved and its reduction percentage. A leading `~` marks the estimate. Provider usage remains available through the accounting report; provider savings are not rendered as a percentage because their denominator is not comparable to the mechanical estimate.
 
 ## Context footprint audit
 
@@ -157,6 +204,40 @@ The evaluator validates the supplied redacted summary structurally; its digest i
 an integrity checksum, not authentication of provider provenance. A `go` result is
 not authorization to build or enable the gateway unless the summary is traced back
 to the authorized paired runner outputs.
+
+## What it saves
+
+On Codex, with `SANDO_CLI_ROUTING=1` set, Sando bounds the output of every shell command before
+it reaches the model. Across more than 40,000 recorded results that is 78.5M tokens of shell
+output reduced to 7.2M, or 90.9%.
+
+```bash
+node scripts/bench-codex-shell.mjs     # the same measurement against your own rollouts
+```
+
+The bytes are kept, not dropped. The full content is written to disk with a verified hash and
+the bounded result carries the command to fetch back whatever was cut, for any result up to the
+1 MiB artifact limit. Beyond that, and beyond the 16 MiB a wrapped command captures, the excess
+is truncated at the source and marked as such.
+
+Here is what that looks like on one command. `npm test` in this repository prints 573 test
+results across two summary blocks, 120 KB in total. Bounded, the model sees 4 KB and still
+answers *573 passed, 0 failed*, because the totals are pulled out of the elided middle along
+with any error lines. Before that salvage existed, the same model read the surviving block and
+answered *100 passed*, with nothing to mark the omission.
+
+On Claude the `PostToolUse` hook bounds tool results without touching how commands run, and the
+optimiser removes 14.5% to 18.9% of that output across two machines. Results from external
+`mcp__*` tools pass through untouched and are excluded from those figures.
+
+On either host, reading files rather than running commands, it fits 264 files into a
+200,000-token window where 110 fit without it. That figure is measured on this repo at
+`release/0.5.0` and reproduces with `node scripts/bench-reduction.mjs` against any git
+checkout.
+
+These are output reductions, one tool result at a time. What a session costs also depends on
+prompt-cache economics, which these numbers do not model. Method, per-corpus variation and the
+measurements behind every number are in [`docs/measurements.md`](docs/measurements.md).
 
 ## Result progressive disclosure
 

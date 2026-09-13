@@ -4,11 +4,13 @@ export const LAZY_MCP_GATEWAY_SCHEMA = 'sando-lazy-mcp-gateway/v1';
 export const GATEWAY_CATALOG_TOOL = 'sando_catalog';
 export const GATEWAY_CALL_TOOL = 'sando_call';
 const MAX_CATALOG_RESULTS = 50;
+const DESCRIBED_CATALOG_RESULTS = 10;
 const GATEWAY_CATALOG_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: {
     query: { type: 'string' },
     limit: { type: 'integer', minimum: 1, maximum: MAX_CATALOG_RESULTS },
+    describe: { type: 'boolean' },
   },
 };
 const GATEWAY_CALL_SCHEMA = {
@@ -182,7 +184,9 @@ export function createLazyMcpGateway(config) {
       tools.set(`${name}/${descriptor.name}`, { ...descriptor, server: name, capability: descriptor.name });
     }
   }
-  async function catalog(query = '', limit = MAX_CATALOG_RESULTS) {
+  async function catalog(query = '', limit, describe = false) {
+    // Schemas are far heavier than names, so describe gets a smaller default.
+    const effectiveLimit = limit ?? (describe ? DESCRIBED_CATALOG_RESULTS : MAX_CATALOG_RESULTS);
     const startedAt = Date.now();
     if (!options.enabled) {
       emitF4Event({ operation: 'catalog', outcome: 'rejected', startedAt });
@@ -197,10 +201,10 @@ export function createLazyMcpGateway(config) {
         for (const [qualified, descriptor] of tools) if (descriptor.server === name) {
           const text = tokens(`${qualified} ${descriptor.description ?? ''} ${name} ${(options.servers.get(name).capabilities ?? []).join(' ')}`);
           const score = queryTokens.reduce((total, token) => total + (text.includes(token) ? 1 : 0), 0);
-          if (!queryTokens.length || score) records.push({ namespace: name, description: String(descriptor.description ?? '').slice(0, 160), server: name, capability: descriptor.capability, name: qualified, score });
+          if (!queryTokens.length || score) records.push({ namespace: name, description: String(descriptor.description ?? '').slice(0, 160), server: name, capability: descriptor.capability, name: qualified, score, ...(describe && descriptor.inputSchema ? { inputSchema: descriptor.inputSchema } : {}) });
         }
       }
-      const result = records.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, Math.min(limit, MAX_CATALOG_RESULTS)).map(({ score, ...record }) => record);
+      const result = records.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, Math.min(effectiveLimit, MAX_CATALOG_RESULTS)).map(({ score, ...record }) => record);
       emitF4Event({ operation: 'catalog', outcome: 'success', startedAt, resultCount: result.length });
       return result;
     } catch (error) {
@@ -261,10 +265,10 @@ export function createLazyMcpGateway(config) {
         emitF4Event({ operation: 'catalog', outcome: 'rejected', startedAt: Date.now() });
         return rpcError(message.id, -32602, `Invalid catalog arguments: ${validation.message}`);
       }
-      return response(message.id, { schema: LAZY_MCP_GATEWAY_SCHEMA, entries: await catalog(arguments_.query, arguments_.limit) });
+      return response(message.id, { schema: LAZY_MCP_GATEWAY_SCHEMA, entries: await catalog(arguments_.query, arguments_.limit, arguments_.describe) });
     }
     if (message.method === 'tools/list') return response(message.id, { tools: [
-      { name: GATEWAY_CATALOG_TOOL, description: 'Search the explicit allowlisted MCP catalog.', inputSchema: GATEWAY_CATALOG_SCHEMA },
+      { name: GATEWAY_CATALOG_TOOL, description: 'Search the explicit allowlisted MCP catalog. Pass describe:true to include each tool argument schema, needed before sando_call.', inputSchema: GATEWAY_CATALOG_SCHEMA },
       { name: GATEWAY_CALL_TOOL, description: 'Call one exact qualified name returned by sando_catalog.', inputSchema: GATEWAY_CALL_SCHEMA },
     ] });
     if (message.method === 'tools/call' && message.params?.name === GATEWAY_CATALOG_TOOL) {
@@ -274,7 +278,7 @@ export function createLazyMcpGateway(config) {
         emitF4Event({ operation: 'catalog', outcome: 'rejected', startedAt: Date.now() });
         return rpcError(message.id, -32602, `Invalid catalog arguments: ${validation.message}`);
       }
-      return response(message.id, { content: [{ type: 'text', text: JSON.stringify(await catalog(arguments_.query, arguments_.limit)) }] });
+      return response(message.id, { content: [{ type: 'text', text: JSON.stringify(await catalog(arguments_.query, arguments_.limit, arguments_.describe)) }] });
     }
     if (message.method === 'tools/call' && message.params?.name === GATEWAY_CALL_TOOL) {
       const validation = validateJsonSchema(GATEWAY_CALL_SCHEMA, message.params?.arguments);

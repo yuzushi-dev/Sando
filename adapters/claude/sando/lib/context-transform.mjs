@@ -1,9 +1,13 @@
+import path from 'node:path';
+
 import { estimateTokens } from './core.mjs';
 import { dedupeHistory } from './history-dedupe.mjs';
 import { selectHistoryCandidates, validateMaxHistoryTokens } from './history-budget.mjs';
 import { shakeHistoricalResult } from './history-shake.mjs';
 import { compactHistoricalStructure } from './history-structure.mjs';
 import { buildHistoryDisclosure } from './history-disclosure.mjs';
+import { prepareHistoryArtifact, persistHistoryArtifact } from './history-archive.mjs';
+import { createRedactionProfile } from './redaction-profile.mjs';
 
 const SUPERSEDED = '[sando superseded by newer read]';
 const USELESS = '[sando elided useless success]';
@@ -12,6 +16,11 @@ const USELESS_SUCCESSES = new Set([
   'no output.',
   '(no output)',
 ]);
+const DEFAULT_REDACTION_PROFILE = createRedactionProfile();
+const DEFAULT_HISTORY_ARCHIVE_RETAIN_RESULTS = 3;
+// A marker is useful only when the historical observation is materially larger
+// than the recovery instructions it replaces. Small results stay inline.
+const DEFAULT_HISTORY_ARCHIVE_MIN_BYTES = 3072;
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -82,8 +91,27 @@ function resultSuccess(item, provider, text) {
   return item.ok === true || ['completed', 'success', 'succeeded'].includes(item.status);
 }
 
+function nativeCodexExecSafety(provider, call, record) {
+  const item = record.entry.item;
+  const output = item[record.entry.key];
+  if (provider !== 'openai-responses' || call?.providerType !== 'function_call'
+    || call.name !== 'exec_command' || item.type !== 'function_call_output') return null;
+  if (typeof output !== 'string') return false;
+  if (item.error !== undefined || item.is_error === true || item.ok === false
+    || (item.status !== undefined && !['completed', 'success', 'succeeded'].includes(item.status))) return false;
+  const lines = output.split(/\r?\n/);
+  const outputLine = lines.indexOf('Output:');
+  if (outputLine < 0) return false;
+  const exits = lines.slice(0, outputLine).filter((line) => line.startsWith('Process exited with code '));
+  return exits.length === 1 && exits[0] === 'Process exited with code 0';
+}
+
 function useless(text) {
   return USELESS_SUCCESSES.has(text.trim().toLowerCase());
+}
+
+function historyArchiveMarker(text) {
+  return /^\[sando archived result sando:sha256:[a-f0-9]{64}; /.test(text) && text.endsWith(']');
 }
 
 function resultText(value) {
@@ -174,7 +202,7 @@ function collectResponses(body) {
     if (['function_call', 'custom_tool_call'].includes(item?.type)) {
       entries.push({
         kind: 'call', id: item.call_id, name: item.name,
-        input: parseArguments(item.arguments ?? item.input), position,
+        input: parseArguments(item.arguments ?? item.input), position, providerType: item.type,
       });
     } else if (['function_call_output', 'custom_tool_call_output'].includes(item?.type)) {
       entries.push({
@@ -241,6 +269,7 @@ const DEFAULT_STRATEGIES = Object.freeze({
   exactDuplicate: true,
   repeatedLines: true,
   historyShake: true,
+  recoverableArchive: false,
 });
 
 function strategyPolicy(policy) {
@@ -350,7 +379,7 @@ function suffixTokensByPosition(body) {
   return suffix;
 }
 
-export function transformProviderRequest({ provider, body, policy, idleMs, redactionProfile } = {}) {
+export function transformProviderRequest({ provider, body, policy, idleMs, redactionProfile, historyArchiveRoot } = {}) {
   const clone = structuredClone(body);
   const estimatedInputTokens = estimate(body);
   const selectedProvider = provider ?? detectProviderBody(body);
@@ -361,6 +390,10 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
   let deduplicatedResults = 0;
   let compactedStructures = 0;
   let shakenResults = 0;
+  let archivedResults = 0;
+  let archiveRedactionSkips = 0;
+  let archiveNoSavingsSkips = 0;
+  let archiveSizeSkips = 0;
   const disclosures = [];
   const disclose = (record, reason, originalText, visibleText, recovery = 'rerun-tool') => {
     if (typeof originalText !== 'string' || typeof visibleText !== 'string') return;
@@ -371,6 +404,22 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
   const maxHistoryTokens = object(policy) && Object.hasOwn(policy, 'maxHistoryTokens')
     ? validateMaxHistoryTokens(policy.maxHistoryTokens)
     : null;
+  const historyArchiveRetainResults = object(policy) && Object.hasOwn(policy, 'historyArchiveRetainResults')
+    ? policy.historyArchiveRetainResults
+    : DEFAULT_HISTORY_ARCHIVE_RETAIN_RESULTS;
+  if (!Number.isSafeInteger(historyArchiveRetainResults) || historyArchiveRetainResults < 0) {
+    throw new TypeError('historyArchiveRetainResults must be a non-negative safe integer');
+  }
+  const historyArchiveMinBytes = object(policy) && Object.hasOwn(policy, 'historyArchiveMinBytes')
+    ? policy.historyArchiveMinBytes
+    : DEFAULT_HISTORY_ARCHIVE_MIN_BYTES;
+  if (!Number.isSafeInteger(historyArchiveMinBytes) || historyArchiveMinBytes < 0) {
+    throw new TypeError('historyArchiveMinBytes must be a non-negative safe integer');
+  }
+  if (strategies.recoverableArchive
+    && (typeof historyArchiveRoot !== 'string' || !path.isAbsolute(historyArchiveRoot))) {
+    throw new TypeError('historyArchiveRoot must be an absolute path');
+  }
   const budgetTriggered = maxHistoryTokens !== null
     && BigInt(estimatedInputTokens) * 5n > BigInt(maxHistoryTokens) * 4n;
   // Don't rewrite warm cached history unless the rewrite reclaims enough of the suffix
@@ -420,6 +469,34 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       results.delete(id);
     }
 
+    const archiveRecords = historyRecords(entries, calls, selectedProvider);
+    const resultEntries = entries.filter((entry) => entry.kind === 'result');
+    const recentEntries = new Set(historyArchiveRetainResults === 0
+      ? []
+      : resultEntries.slice(-historyArchiveRetainResults));
+    const archivedIds = new Set();
+    if (strategies.recoverableArchive) {
+      const profile = redactionProfile ?? DEFAULT_REDACTION_PROFILE;
+      if (!profile || typeof profile.redact !== 'function') throw new TypeError('history archive redaction profile is invalid');
+      for (const record of archiveRecords) {
+        const nativeSafety = nativeCodexExecSafety(selectedProvider, calls.get(record.id), record);
+        const safe = nativeSafety ?? record.safe;
+        if (!safe || !record.historical || recentEntries.has(record.entry)) continue;
+        const text = resultText(record.output);
+        if (text === null || historyArchiveMarker(text)) continue;
+        if (Buffer.byteLength(text, 'utf8') < historyArchiveMinBytes) { archiveSizeSkips += 1; continue; }
+        if (profile.redact(text).text !== text) { archiveRedactionSkips += 1; continue; }
+        const artifact = prepareHistoryArtifact({ root: historyArchiveRoot, content: text });
+        const reclaimed = reclaimedTokens(text, artifact.marker);
+        if (reclaimed === 0) { archiveNoSavingsSkips += 1; continue; }
+        if (cacheProtected(record.entry, reclaimed)) { cacheProtectedSkips += 1; continue; }
+        persistHistoryArtifact(artifact);
+        replaceResult(record.entry.item, record.entry.key, artifact.marker);
+        archivedIds.add(record.id);
+        archivedResults += 1;
+      }
+    }
+
     const reads = [];
     for (const call of calls.values()) {
       const result = results.get(call.id);
@@ -431,7 +508,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
     reads.sort((a, b) => a.call.position - b.call.position);
     for (let index = 0; strategies.supersededRead && index < reads.length; index += 1) {
       const old = reads[index];
-      if (old.result.current) continue;
+      if (old.result.current || archivedIds.has(old.call.id)) continue;
       const newer = reads.slice(index + 1).find((candidate) =>
         covers(candidate.identity, old.identity) && !useless(candidate.text));
       if (!newer) continue;
@@ -442,7 +519,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
     }
 
     for (const [id, result] of strategies.producerUseless ? results : []) {
-      if (!calls.has(id) || result.current) continue;
+      if (!calls.has(id) || result.current || archivedIds.has(id)) continue;
       const text = resultText(result.item[result.key]);
       if (text === null) continue;
       if (text === SUPERSEDED || !resultSuccess(result.item, selectedProvider, text) || !useless(text)) continue;
@@ -454,8 +531,9 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
 
     const records = historyRecords(entries, calls, selectedProvider);
     const candidates = maxHistoryTokens === null
-      ? records.filter((record) => record.safe && record.historical)
-      : selectHistoryCandidates({ bodyTokens: estimatedInputTokens, maxHistoryTokens, candidates: records });
+      ? records.filter((record) => record.safe && record.historical && !archivedIds.has(record.id))
+      : selectHistoryCandidates({ bodyTokens: estimatedInputTokens, maxHistoryTokens, candidates: records })
+        .filter((record) => !archivedIds.has(record.id));
     const candidateIds = new Set(candidates.map((candidate) => candidate.id));
     const reductions = strategies.exactDuplicate ? dedupeHistory(records) : { entries: [] };
     const recordsById = new Map(records.map((record) => [record.id, record]));
@@ -513,6 +591,7 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
   if (deduplicatedResults > 0) reasons.push('duplicate-history');
   if (compactedStructures > 0) reasons.push('repeated-lines');
   if (shakenResults > 0) reasons.push('history-shake');
+  if (archivedResults > 0) reasons.unshift('recoverable-archive');
   return {
     body: clone,
     changed: reasons.length > 0,
@@ -526,6 +605,10 @@ export function transformProviderRequest({ provider, body, policy, idleMs, redac
       deduplicatedResults,
       compactedStructures,
       shakenResults,
+      archivedResults,
+      archiveRedactionSkips,
+      archiveNoSavingsSkips,
+      archiveSizeSkips,
       historyDisclosureCount: disclosures.length,
       historyDisclosureOriginalBytes: disclosures.reduce((total, item) => total + item.bytes.original, 0),
       historyDisclosureVisibleBytes: disclosures.reduce((total, item) => total + item.bytes.visible, 0),

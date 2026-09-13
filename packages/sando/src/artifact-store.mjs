@@ -1,4 +1,4 @@
-import { recoverArtifactContent } from './artifact-recovery.mjs';
+import { recoverArtifactContent, validateArtifactHandle } from './artifact-recovery.mjs';
 
 const MAX_ARTIFACTS = 128;
 const MAX_STORED_BYTES = 64 * 1024 * 1024;
@@ -28,6 +28,7 @@ export function rememberArtifact(artifact) {
 }
 
 export function recoverStoredArtifact(options = {}) {
+  validateArtifactHandle(options.ref);
   const entry = store.get(options.ref);
   if (!entry) throw new Error('artifact handle is unavailable in this MCP session');
   store.delete(options.ref);

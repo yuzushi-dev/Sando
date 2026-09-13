@@ -1,5 +1,6 @@
 import net from 'node:net';
 import http from 'node:http';
+import path from 'node:path';
 import tls from 'node:tls';
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from 'node:zlib';
 
@@ -410,12 +411,17 @@ export async function createProviderProxy({
   upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   semanticCompactor, metricsPath, contextCapturePath, contextCaptureHost, contextSessionKey,
   f1TelemetryPublisher = publishF1Telemetry, transformProviderRequests = false,
+  historyArchiveRoot,
   env = process.env,
 } = {}) {
   const upstreamUrl = assertUpstream(upstream);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError('port is invalid');
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024) throw new TypeError('maxBodyBytes is invalid');
   if (typeof transformProviderRequests !== 'boolean') throw new TypeError('transformProviderRequests is invalid');
+  if (transformProviderRequests && policy?.strategies?.recoverableArchive === true
+    && (typeof historyArchiveRoot !== 'string' || !path.isAbsolute(historyArchiveRoot))) {
+    throw new TypeError('historyArchiveRoot must be an absolute path');
+  }
   let lastStats = null;
   let lastRequestAt = null;
   const capturedContextSessions = new Set();
@@ -498,7 +504,7 @@ export async function createProviderProxy({
               const now = Date.now();
               const idleMs = lastRequestAt === null ? null : now - lastRequestAt;
               lastRequestAt = now;
-              const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs });
+              const transformed = transformProviderRequest({ provider, body: parsed, policy, idleMs, historyArchiveRoot });
               if (transformed.changed) body = Buffer.from(JSON.stringify(transformed.body));
               const mechanicalContextTrimmedBytes = Math.max(0, rawBody.length - body.length);
               recordProxyTelemetry({

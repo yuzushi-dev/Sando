@@ -14,6 +14,7 @@ import {
   recoverArtifactFromWorkspace,
 } from '../index.mjs';
 import { cleanupArtifacts } from '../src/artifact-lifecycle.mjs';
+import { rememberArtifact, recoverStoredArtifact } from '../src/artifact-store.mjs';
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '../../..');
 
@@ -111,6 +112,20 @@ test('artifact line recovery rejects ranges beyond EOF', () => {
   assert.throws(() => recoverArtifactContent({ ref, content, startLine: 2, endLine: 3 }), /line range/i);
 });
 
+test('MCP artifact recovery validates handles and keeps byte and line modes separate', () => {
+  const content = 'first\nsecond\nthird';
+  const sourceDigest = digest(content);
+  const ref = `sando:${sourceDigest}`;
+  rememberArtifact({ ref, content, sourceDigest, sourceBytes: Buffer.byteLength(content) });
+
+  assert.equal(recoverStoredArtifact({ ref, startByte: 0, endByte: 5 }).content, 'first');
+  assert.equal(recoverStoredArtifact({ ref, startLine: 2, endLine: 2 }).content, 'second');
+  assert.throws(() => recoverStoredArtifact({ ref, startByte: 0, startLine: 1 }), /ambiguous/i);
+  assert.throws(() => recoverStoredArtifact({ ref, maxBytes: 0 }), /maxBytes/i);
+  assert.throws(() => recoverStoredArtifact({ ref: '/tmp/.sando/sando/artifacts/file.txt' }), /invalid/i);
+  assert.throws(() => recoverStoredArtifact({ ref: 'sando:sha256:0123456789abcdef' }), /unavailable in this MCP session/i);
+});
+
 test('artifact recovery rejects a tampered handle and bounds byte ranges', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-result-recovery-'));
   try {
@@ -179,4 +194,18 @@ test('artifact cleanup preserves the new artifact when timestamps tie', () => {
 
   assert.equal(fs.existsSync(path.join(directory, old)), false);
   assert.equal(fs.readFileSync(path.join(directory, fresh), 'utf8'), 'new');
+});
+
+test('artifact range exclusivity is enforced by the handler, not only by the schema', () => {
+  const content = 'alpha\nbeta\ngamma';
+  const ref = `sando:${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
+  const handle = `sando:sha256:${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
+
+  assert.throws(
+    () => recoverArtifactContent({ ref: handle, content, startByte: 0, startLine: 1 }),
+    /artifact range is ambiguous/,
+  );
+  assert.equal(recoverArtifactContent({ ref: handle, content, startLine: 2, endLine: 2 }).content, 'beta');
+  assert.equal(recoverArtifactContent({ ref: handle, content, startByte: 0, endByte: 5 }).content, 'alpha');
+  assert.ok(ref);
 });

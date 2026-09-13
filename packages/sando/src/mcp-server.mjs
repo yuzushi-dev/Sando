@@ -21,14 +21,16 @@ const TOOL = {
 };
 const ARTIFACT_TOOL = {
   name: ARTIFACT_TOOL_NAME,
-  description: 'Recover a bounded redacted byte or line range from an artifact created in this MCP session.',
+  description: 'Recover bounded redacted content from an artifact created in this MCP session. Copy artifact.handle exactly into ref (for example, sando:sha256:0123456789abcdef). Omit range fields to select the full artifact; the response remains bounded by maxBytes (default 65536). Otherwise use either 0-based byte offsets or a 1-based inclusive line range, and omit fields for the unused mode.',
   inputSchema: {
     type: 'object', additionalProperties: false, required: ['ref'],
     properties: {
       ref: { type: 'string', pattern: '^sando:sha256:[a-f0-9]{16,64}$' },
-      startByte: { type: 'integer', minimum: 0 }, endByte: { type: 'integer', minimum: 0 },
-      startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 },
-      maxBytes: { type: 'integer', minimum: 1, maximum: 1048576 },
+      startByte: { type: 'integer', minimum: 0, description: '0-based inclusive byte offset.' },
+      endByte: { type: 'integer', minimum: 0, description: '0-based exclusive byte offset.' },
+      startLine: { type: 'integer', minimum: 1, description: '1-based inclusive line number.' },
+      endLine: { type: 'integer', minimum: 1, description: '1-based inclusive line number.' },
+      maxBytes: { type: 'integer', minimum: 1, maximum: 1048576, description: 'Maximum output bytes; omit for the default.' },
     },
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

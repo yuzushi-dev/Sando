@@ -4,7 +4,7 @@ This directory contains the self-contained Codex plugin. It bundles the hooks, M
 
 Transparent CLI routing is off by default. Set `SANDO_CLI_ROUTING=1` to route eligible literal reads and searches through bounded local CLI paths. Set `SANDO_EXPERIMENT_ARM=control` for a paired native-control run, using the same `SANDO_EXPERIMENT` and optional `SANDO_EXPERIMENT_WORKLOAD`.
 
-Inspect the provider report with `bin/sando accounting --json`. The Stop hook writes the provider ledger. It records cache classes, output, reasoning, distinct turns, and provider cost only when the host reports it. Mechanical context trimming and weighted estimates remain separate.
+Inspect the provider report with `bin/sando accounting --json`. The Stop hook writes the provider ledger. It records cache classes, output, reasoning, distinct turns, and host-reported cost only when the host reports it, with source and coverage preserved. A host-reported list estimate is not a billing record. Mechanical context trimming and weighted estimates remain separate.
 
 Run the capture-based, read-only context audit with `bin/sando context audit --host codex --input capture.json --json`. Without an explicit capture, it reports `unavailable`; it does not infer host-owned prompt categories from provider totals.
 
@@ -26,3 +26,5 @@ session keys fail closed; normal Codex traffic is unchanged.
 
 It does not intercept Codex traffic unless configured. `sando_exec` remains sandboxed and bounds retained output without terminating the command when the capture limit is reached. MCP adds a model-visible tool interaction; use the native PreToolUse route where applicable and measure the tradeoff per workload.
 The optional provider proxy reports history elisions as digest-only `sando-history-disclosure/v1` records; opaque OpenAI results without explicit success evidence, known errors, and current/batch results remain lossless. Historical transform families have independent policy switches.
+
+Recoverable history is opt-in and skips eligible results below 3,072 bytes by default. Same-transcript provider replays show conditional input reduction; natural client trajectories remain workload-dependent, so the plugin does not advertise a general savings percentage.

@@ -224,3 +224,43 @@ test('disabled gateway is a safe kill switch', async () => {
   assert.deepEqual(await gateway.catalog('read'), []);
   assert.equal(server.state.connects, 0);
 });
+
+test('catalog omits argument schemas unless describe is requested', async () => {
+  const schema = {
+    type: 'object',
+    required: ['path', 'startLine'],
+    properties: { path: { type: 'string' }, startLine: { type: 'integer', minimum: 1 } },
+  };
+  const server = fixtureServer({ name: 'files', tools: [tool('read', 'read a file', schema)] });
+  const gateway = createLazyMcpGateway({ enabled: true, allowlist: ['files'], servers: [server] });
+
+  const lean = await gateway.catalog('read');
+  assert.equal(lean[0].inputSchema, undefined);
+
+  const described = await gateway.catalog('read', undefined, true);
+  assert.deepEqual(described[0].inputSchema, schema);
+  assert.equal(described[0].name, 'files/read');
+});
+
+test('describe is reachable through the tools/call surface the model uses', async () => {
+  const schema = { type: 'object', required: ['path'], properties: { path: { type: 'string' } } };
+  const server = fixtureServer({ name: 'files', tools: [tool('read', 'read a file', schema)] });
+  const gateway = createLazyMcpGateway({ enabled: true, allowlist: ['files'], servers: [server] });
+
+  const reply = await gateway.handle({
+    jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'sando_catalog', arguments: { query: 'read', describe: true } },
+  });
+  const entries = JSON.parse(reply.result.content[0].text);
+  assert.deepEqual(entries[0].inputSchema, schema);
+});
+
+test('describe lowers the default result count so schemas cannot flood the context', async () => {
+  const many = Array.from({ length: 30 }, (_, index) => tool(`read_${index}`, 'read a file'));
+  const server = fixtureServer({ name: 'files', tools: many });
+  const gateway = createLazyMcpGateway({ enabled: true, allowlist: ['files'], servers: [server] });
+
+  assert.equal((await gateway.catalog('read')).length, 30);
+  assert.equal((await gateway.catalog('read', undefined, true)).length, 10);
+  assert.equal((await gateway.catalog('read', 20, true)).length, 20);
+});

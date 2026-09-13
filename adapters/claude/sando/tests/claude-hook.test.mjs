@@ -111,14 +111,46 @@ test('Claude apply stays fail-open for structured output with non-text stdout', 
   assert.deepEqual(output, {});
 });
 
-test('Claude apply leaves unsupported structured output unchanged', (t) => {
+test('Claude apply records zero mechanical savings when unsupported structured output stays unchanged', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-unsupported-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const { output } = runHook({
+  const toolResponse = { type: 'text', file: { content: 'x'.repeat(6000), numLines: 120 } };
+  const { output, metrics } = runHook({
     hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
-    tool_response: { content: [{ type: 'text', text: 'structured result' }] },
-  }, cwd, { mode: 'apply' });
+    tool_response: toolResponse,
+  }, cwd, { mode: 'apply', maxInlineBytes: 128 });
   assert.deepEqual(output, {});
+  assert.equal(metrics.records[0].estimatedInlineTokens, metrics.records[0].estimatedInputTokens);
+  assert.equal(metrics.records[0].estimatedTransformSavingsTokens, 0);
+
+  const event = normalizeEvent({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
+    tool_response: toolResponse,
+  });
+  const optimization = optimizeToolOutput({
+    toolName: event.toolName, output: event.output, cwd,
+    policy: { mode: 'apply', maxInlineBytes: 128 },
+  });
+  const original = JSON.stringify(toolResponse);
+  const measuredOptimization = { ...optimization, inline: original, stats: {
+    ...optimization.stats,
+    inlineBytes: Buffer.byteLength(original),
+    estimatedInlineTokens: Math.ceil(Buffer.byteLength(original) / 4),
+  } };
+  const receipt = createReceipt({ host: 'claude', event, optimization: measuredOptimization, replacement: toolResponse });
+  assert.equal(metrics.records[0].receiptDigest, receipt.digest);
+});
+
+test('Claude observe mode keeps counterfactual savings for unsupported structured output', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-unsupported-observe-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { output, metrics } = runHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
+    tool_response: { type: 'text', file: { content: 'x'.repeat(6000), numLines: 120 } },
+  }, cwd, { mode: 'observe', maxInlineBytes: 128 });
+
+  assert.deepEqual(output, {});
+  assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
 });
 
 test('Claude receipt hashes the exact structured replacement payload', (t) => {

@@ -33,19 +33,14 @@ function readMetricsSnapshot(metricsPath, { host, sessionId, model } = {}) {
     const records = scopedRecords(state.records, { host, sessionId });
     if (!records.length) return undefined;
     const report = buildMetricsReport({ ...state, records }, { sessionId });
-    const hasProvider = records.some((item) => item.providerReportedSavingsTokens !== null);
-    const hasEstimate = records.some((item) => item.providerReportedSavingsTokens === null);
-    const providerSavings = report.cumulative.providerReportedSavingsTokens;
-    const source = hasProvider && !hasEstimate && providerSavings !== null
-      ? 'provider-reported' : 'estimate';
+    const source = 'estimate';
     const estimatedInputTokens = records.reduce((total, item) => total + item.estimatedInputTokens, 0);
     const latest = [...records].sort((left, right) => left.at.localeCompare(right.at)).at(-1);
     return {
       updatedAt: latestAt(records), source,
       model: model ?? latest?.model,
       estimatedInputTokens,
-      savedTokens: source === 'provider-reported'
-        ? providerSavings : report.cumulative.estimatedTransformSavingsTokens,
+      savedTokens: report.cumulative.estimatedTransformSavingsTokens,
     };
   } catch {
     return undefined;
@@ -85,7 +80,8 @@ function compactTokens(value) {
 export function renderStatusLine({ metrics } = {}) {
   if (!Number.isSafeInteger(metrics?.savedTokens) || metrics.savedTokens < 0
     || !Number.isSafeInteger(metrics?.estimatedInputTokens) || metrics.estimatedInputTokens <= 0) return '🥪 —';
-  const percentage = Math.round(metrics.savedTokens / metrics.estimatedInputTokens * 100);
   const estimate = metrics.source === 'estimate' ? '~' : '';
-  return `🥪 saved ${estimate}${compactTokens(metrics.savedTokens)} ctx tok (${percentage}%)`;
+  const percentage = metrics.source === 'estimate'
+    ? ` (${Math.round(metrics.savedTokens / metrics.estimatedInputTokens * 100)}%)` : '';
+  return `🥪 saved ${estimate}${compactTokens(metrics.savedTokens)} ctx tok${percentage}`;
 }

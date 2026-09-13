@@ -48,7 +48,7 @@ test('Claude statusline preserves Honey and appends Sando savings', (t) => {
   assert.equal(result.stdout.trim(), '🍯 honey:full · 🥪 saved ~40 ctx tok (40%)');
 });
 
-test('Claude statusline displays provider-reported Sando savings', (t) => {
+test('Claude statusline ignores unverified provider savings fields', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-statusline-cost-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const metrics = path.join(directory, 'metrics.json');
@@ -81,7 +81,7 @@ test('Claude statusline displays provider-reported Sando savings', (t) => {
     },
   });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  assert.equal(result.stdout.trim(), '🥪 saved 25 ctx tok (25%)');
+  assert.equal(result.stdout.trim(), '🥪 saved ~25 ctx tok (25%)');
 });
 
 test('Claude statusline accepts a shell-backed existing statusline', (t) => {

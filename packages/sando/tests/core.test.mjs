@@ -147,3 +147,22 @@ test('event normalization and receipts are deterministic across host aliases', a
     createReceipt({ host: 'claude', event, optimization }),
   );
 });
+
+// A test runner that prints one summary block per suite puts the first block's totals in the
+// middle of its own output. Eliding them leaves a plausible partial count — a model reads the
+// surviving block and reports it as the whole run, with nothing marking the omission.
+test('middle elision keeps test-runner totals, not just the last block', async () => {
+  const { optimizeToolOutput } = await core();
+  const noise = Array.from({ length: 400 }, (_, index) => `ok ${index + 1} - a check whose name mentions error and failure`).join('\n');
+  const block = (tests, pass) => `# tests ${tests}\n# suites 0\n# pass ${pass}\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0`;
+  const output = `${block(482, 472)}\n${noise}\n${block(100, 100)}`;
+
+  const result = optimizeToolOutput({
+    toolName: 'Bash', output, cwd: '/work', toolInput: { command: 'npm test' },
+    policy: { mode: 'apply', maxInlineBytes: 2048, headBytes: 700, tailBytes: 700, redact: true },
+  });
+
+  assert.match(result.inline, /middle elided/);
+  assert.match(result.inline, /# tests 482/);
+  assert.match(result.inline, /# pass 472/);
+});

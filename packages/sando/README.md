@@ -28,7 +28,9 @@ The library requires Node.js `>=22.22.0 <23` and has no runtime dependencies. In
 
 The provider proxy is pass-through unless request transformation is explicitly enabled.
 
-`computeWeightedUsage` and `summarizePairedSessions` keep mechanical reduction, weighted estimates, provider-reported cost, and paired-session evidence separate. The library does not install hooks, register MCP servers, or make routing/backoff decisions for a host.
+The recoverable-history strategy is opt-in and keeps eligible results inline when they are below 3,072 bytes by default. Provider-boundary replay measurements are diagnostic paired evidence; they do not predict end-to-end agent behavior or provider billing across workloads.
+
+`computeWeightedUsage` and `summarizePairedSessions` keep mechanical reduction, weighted cost units, and paired-session evidence separate from the provider-usage report's reported cost provenance and coverage. Host-reported list estimates are not billed-cost records. The library does not install hooks, register MCP servers, or make routing/backoff decisions for a host.
 
 For plugin installation, see the [main project README](https://github.com/yuzushi-dev/Sando#readme).
 

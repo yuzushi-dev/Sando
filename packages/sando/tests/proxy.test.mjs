@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createProviderProxy } from '../src/proxy.mjs';
+import { recoverArtifactFromWorkspace } from '../src/artifact-recovery.mjs';
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -34,6 +36,129 @@ async function waitFor(predicate) {
   }
   throw new Error('condition did not settle');
 }
+
+const recoverableArchivePolicy = {
+  strategies: {
+    supersededRead: false,
+    producerUseless: false,
+    exactDuplicate: false,
+    repeatedLines: false,
+    historyShake: false,
+    recoverableArchive: true,
+  },
+  historyArchiveRetainResults: 1,
+  cacheRewriteRatio: 0,
+};
+
+test('proxy persists recoverable history before forwarding the marker', async (t) => {
+  let received;
+  const upstream = http.createServer(async (request, response) => {
+    received = JSON.parse(await readBody(request));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const historyArchiveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-proxy-history-'));
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    policy: recoverableArchivePolicy,
+    transformProviderRequests: true,
+    historyArchiveRoot,
+  });
+  t.after(async () => {
+    await proxy.close();
+    await close(upstream);
+  });
+  const original = Array.from({ length: 500 }, (_, index) =>
+    `${index + 1}: ${index === 417 ? 'SANDO_NEEDLE_418' : `evidence-${index + 1}`} ${'π detail '.repeat(20)}`).join('\n');
+  const body = { input: [
+    { type: 'function_call', call_id: 'old', name: 'Bash', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'old', output: original, status: 'completed', ok: true },
+    { type: 'function_call', call_id: 'current', name: 'Bash', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'current', output: 'current', status: 'completed', ok: true },
+  ] };
+  const response = await fetch(`${proxy.url}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  await response.text();
+
+  const marker = received.input[1].output;
+  assert.match(marker, /full exact text: use native Read on the archive file/);
+  const ref = marker.match(/sando:sha256:[a-f0-9]{64}/)?.[0];
+  assert.ok(ref);
+  const artifactPath = path.join(historyArchiveRoot, '.sando', 'sando', 'artifacts', `${ref.slice('sando:sha256:'.length)}.txt`);
+  assert.match(marker, new RegExp(`use rtk grep -n on archive '${artifactPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  assert.match(marker, /; \d+B, 500 lines;/);
+  assert.match(marker, /--start-line 1 --end-line 80 --max-bytes 8192; bounded, continue with valid line ranges up to 500\]$/);
+  assert.equal(fs.readFileSync(artifactPath, 'utf8').split('\n')[417].includes('SANDO_NEEDLE_418'), true);
+  assert.equal(recoverArtifactFromWorkspace({ cwd: historyArchiveRoot, ref, maxBytes: 1_048_576 }).content, original);
+  const artifactCli = path.join(import.meta.dirname, '..', 'src', 'artifact-cli.mjs');
+  const firstPage = JSON.parse(execFileSync(process.execPath, [
+    artifactCli, 'artifact', 'get', '--root', historyArchiveRoot, '--ref', ref,
+    '--start-line', '1', '--end-line', '80', '--max-bytes', '8192', '--json',
+  ], { encoding: 'utf8' }));
+  assert.deepEqual(firstPage.range, { type: 'lines', start: 1, end: 80 });
+  assert.ok(firstPage.bytes <= 8192);
+  const ranged = JSON.parse(execFileSync(process.execPath, [
+    artifactCli, 'artifact', 'get',
+    '--root', historyArchiveRoot, '--ref', ref, '--start-line', '418', '--end-line', '418',
+    '--max-bytes', '8192', '--json',
+  ], { encoding: 'utf8' }));
+  assert.match(ranged.content, /SANDO_NEEDLE_418/);
+  assert.equal(ranged.range.type, 'lines');
+  assert.equal(ranged.range.start, 418);
+  assert.equal(received.input[3].output, 'current');
+});
+
+test('proxy forwards the original request when history persistence fails', async (t) => {
+  let received;
+  const upstream = http.createServer(async (request, response) => {
+    received = JSON.parse(await readBody(request));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  const historyArchiveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-proxy-history-fail-'));
+  fs.writeFileSync(path.join(historyArchiveRoot, '.sando'), 'unsafe');
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    policy: recoverableArchivePolicy,
+    transformProviderRequests: true,
+    historyArchiveRoot,
+  });
+  t.after(async () => {
+    await proxy.close();
+    await close(upstream);
+  });
+  const body = { messages: [
+    { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'old', content: 'old '.repeat(1200), status: 'completed', ok: true },
+    { role: 'assistant', tool_calls: [{ id: 'current', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'current', content: 'current', status: 'completed', ok: true },
+  ] };
+  const response = await fetch(`${proxy.url}/v1/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  await response.text();
+  assert.deepEqual(received, body);
+});
+
+test('proxy requires an explicit absolute archive root when recoverable history is enabled', async () => {
+  await assert.rejects(
+    createProviderProxy({
+      upstream: 'http://127.0.0.1:1', transformProviderRequests: true,
+      policy: recoverableArchivePolicy,
+    }),
+    /historyArchiveRoot must be an absolute path/,
+  );
+  await assert.rejects(
+    createProviderProxy({
+      upstream: 'http://127.0.0.1:1', transformProviderRequests: true,
+      policy: recoverableArchivePolicy, historyArchiveRoot: 'relative',
+    }),
+    /historyArchiveRoot must be an absolute path/,
+  );
+});
 
 test('proxy transforms repeated Anthropic tool results and preserves streaming response', async (t) => {
   let received;

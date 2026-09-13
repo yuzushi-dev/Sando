@@ -204,13 +204,14 @@ function providerSavings(providerUsage) {
   const value = (names) => names.map((name) => providerUsage[name]).find((candidate) => candidate !== undefined);
   const baseline = value(['baselineInputTokens', 'baseline_input_tokens']);
   const optimized = value(['optimizedInputTokens', 'optimized_input_tokens']);
+  const reported = value(['reportedSavingsTokens', 'reported_savings_tokens']);
+  if (baseline === undefined && optimized === undefined && reported === undefined) return null;
   if (baseline !== undefined || optimized !== undefined) {
     integer(baseline, 'baselineInputTokens');
     integer(optimized, 'optimizedInputTokens');
-    return baseline - optimized;
+    return null;
   }
-  const reported = value(['reportedSavingsTokens', 'reported_savings_tokens']);
-  if (reported !== undefined) return integer(reported, 'reportedSavingsTokens', { min: -Number.MAX_SAFE_INTEGER });
+  integer(reported, 'reportedSavingsTokens', { min: -Number.MAX_SAFE_INTEGER });
   return null;
 }
 

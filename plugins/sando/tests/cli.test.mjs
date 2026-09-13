@@ -24,8 +24,11 @@ test('CLI read bounds, redacts, and persists a recoverable artifact', (t) => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /hidden/);
+  // The disclosure trails the content so stdout's first line stays faithful to the file the
+  // rewritten shell command asked for.
+  assert.doesNotMatch(result.stdout.split('\n')[0], /\[sando\] artifact /);
   const artifact = result.stdout.match(/\.sando\/sando\/artifacts\/[^\s]+\.txt/)?.[0];
-  assert.ok(artifact);
+  assert.ok(artifact, result.stdout);
   assert.equal(fs.readFileSync(path.join(cwd, artifact), 'utf8').includes('secret=[REDACTED]'), true);
   assert.equal(fs.statSync(path.join(cwd, artifact)).mode & 0o777, 0o600);
 });
@@ -88,7 +91,7 @@ test('CLI exposes provider accounting without a routing decision', (t) => {
       host: 'codex', source: 'test', sessionId: 'session-1', turnId: 'turn-1',
       at: '2026-08-28T10:00:00.000Z', inputTokens: 100, cachedInputTokens: 20,
       cacheWriteInputTokens: 10, outputTokens: 5, reasoningOutputTokens: 2,
-      totalTokens: 105, totalCostUsd: 0.02,
+      totalTokens: 105, totalCostUsd: 0.02, costSource: 'host-reported',
     }],
   }));
 
@@ -97,6 +100,6 @@ test('CLI exposes provider accounting without a routing decision', (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.equal(report.cost.status, 'provider-reported');
+  assert.equal(report.cost.status, 'host-reported');
   assert.equal(report.totalCostUsd, 0.02);
 });

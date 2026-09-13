@@ -42,6 +42,13 @@ function input({ id, eventId = id, sessionId, timestamp, host = 'claude', receip
   };
 }
 
+function reportedSavings(baselineInputTokens, optimizedInputTokens) {
+  return {
+    source: 'provider-reported', provider: 'anthropic', model: 'claude-sonnet-5', scope: 'event',
+    attestation: 'fixture-attestation', baselineInputTokens, optimizedInputTokens,
+  };
+}
+
 function record(storagePath, values) {
   return recordMetrics({ storagePath, timezone: 'UTC', ...input(values) });
 }
@@ -70,17 +77,17 @@ test('repeated receipts are counted once and savings aggregate by session', () =
   record(storagePath, {
     id: 'a', sessionId: 's1', timestamp: '2026-01-31T23:59:59.000Z',
     estimatedInputTokens: 100, estimatedInlineTokens: 70,
-    providerUsage: { baselineInputTokens: 100, optimizedInputTokens: 80 },
+    providerUsage: reportedSavings(100, 80),
   });
   record(storagePath, {
     id: 'a', sessionId: 's1', timestamp: '2026-01-31T23:59:59.000Z',
     estimatedInputTokens: 100, estimatedInlineTokens: 70,
-    providerUsage: { baselineInputTokens: 100, optimizedInputTokens: 80 },
+    providerUsage: reportedSavings(100, 80),
   });
   record(storagePath, {
     id: 'b', sessionId: 's1', timestamp: '2026-02-01T00:00:00.000Z',
     estimatedInputTokens: 100, estimatedInlineTokens: 80,
-    providerUsage: { baselineInputTokens: 70, optimizedInputTokens: 50 },
+    providerUsage: reportedSavings(70, 50),
   });
   record(storagePath, {
     id: 'c', sessionId: 's2', timestamp: '2026-02-02T00:00:00.000Z',
@@ -94,13 +101,13 @@ test('repeated receipts are counted once and savings aggregate by session', () =
     eventCount: 3,
     sessionCount: 2,
     estimatedTransformSavingsTokens: 80,
-    providerReportedSavingsTokens: 40,
+    providerReportedSavingsTokens: null,
   });
   assert.deepEqual(report.averagePerSession, {
     sessionCount: 2,
-    providerSessionCount: 1,
+    providerSessionCount: 0,
     estimatedTransformSavingsTokens: 40,
-    providerReportedSavingsTokens: 40,
+    providerReportedSavingsTokens: null,
   });
   assert.equal(report.periods.daily.history.length, 3);
   assert.equal(report.periods.weekly.history.length, 2);
@@ -116,6 +123,18 @@ test('distinct event ids are recorded despite identical receipt digests', () => 
   record(storagePath, { id: 'other-host', host: 'codex', sessionId: 's', timestamp: '2026-02-01T00:00:02.000Z', receiptDigest: 'sha256:shared' });
 
   assert.equal(readMetrics(storagePath).records.length, 3);
+});
+
+test('does not turn caller-supplied savings fields into provider claims', () => {
+  const { storagePath } = tempMetricsPath();
+  record(storagePath, {
+    id: 'unproven', sessionId: 's', timestamp: '2026-02-01T00:00:00.000Z',
+    providerUsage: {
+      source: 'provider-reported', provider: 'anthropic', model: 'claude-sonnet-5', scope: 'event',
+      attestation: 'caller-supplied', baselineInputTokens: 1_000, optimizedInputTokens: 1,
+    },
+  });
+  assert.equal(readMetrics(storagePath).records[0].providerReportedSavingsTokens, null);
 });
 
 test('receipt-backed duplicates remain deduplicated', () => {

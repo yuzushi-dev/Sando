@@ -11,6 +11,7 @@ function help(stdout = process.stdout) {
     + 'Required: SANDO_UPSTREAM_URL=https://api.example.test\n'
     + 'Optional: SANDO_PROXY_HOST=127.0.0.1 SANDO_PROXY_PORT=0\n'
     + '          SANDO_CONTEXT_POLICY=<JSON> SANDO_PROXY_METRICS_PATH=<absolute path>\n'
+    + 'History archive: SANDO_HISTORY_ARCHIVE_ROOT=<absolute workspace path>\n'
     + 'F1 capture: SANDO_CONTEXT_FOOTPRINT_PATH=<absolute path> SANDO_CONTEXT_SESSION_KEY=<key>\n');
 }
 
@@ -44,6 +45,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     contextCaptureHost: env.SANDO_CONTEXT_FOOTPRINT_HOST,
     contextSessionKey: env.SANDO_CONTEXT_SESSION_KEY,
     transformProviderRequests: env.SANDO_PROXY_TRANSFORM === '1',
+    historyArchiveRoot: env.SANDO_HISTORY_ARCHIVE_ROOT,
     env,
   });
   process.stdout.write(`${JSON.stringify({

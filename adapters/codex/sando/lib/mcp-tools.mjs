@@ -61,10 +61,16 @@ const TOOLS = [
   },
   {
     name: 'sando_read',
-    description: 'Read one workspace-relative text file and return redacted, bounded output with an optional artifact handle.',
+    description: 'Read one workspace-relative text file, or an inclusive line range of it, and return redacted, bounded output with an optional artifact handle.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['path', 'cwd'],
-      properties: { path: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }, cwd: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }, policy: { type: 'object' } },
+      properties: {
+        path: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH },
+        cwd: { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH },
+        startLine: { type: 'integer', minimum: 1, description: '1-based inclusive first line; omit to start at the beginning.' },
+        endLine: { type: 'integer', minimum: 1, description: '1-based inclusive last line; omit to read to the end.' },
+        policy: { type: 'object' },
+      },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -94,14 +100,16 @@ const TOOLS = [
   },
   {
     name: ARTIFACT_TOOL_NAME,
-    description: 'Recover a bounded redacted byte or line range from an artifact created in this MCP session.',
+    description: 'Recover bounded redacted content from an artifact created in this MCP session. Copy artifact.handle exactly into ref (for example, sando:sha256:0123456789abcdef). Omit range fields to select the full artifact; the response remains bounded by maxBytes (default 65536). Otherwise use either 0-based byte offsets or a 1-based inclusive line range, and omit fields for the unused mode.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['ref'],
       properties: {
         ref: { type: 'string', pattern: '^sando:sha256:[a-f0-9]{16,64}$' },
-        startByte: { type: 'integer', minimum: 0 }, endByte: { type: 'integer', minimum: 0 },
-        startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 },
-        maxBytes: { type: 'integer', minimum: 1, maximum: 1048576 },
+        startByte: { type: 'integer', minimum: 0, description: '0-based inclusive byte offset.' },
+        endByte: { type: 'integer', minimum: 0, description: '0-based exclusive byte offset.' },
+        startLine: { type: 'integer', minimum: 1, description: '1-based inclusive line number.' },
+        endLine: { type: 'integer', minimum: 1, description: '1-based inclusive line number.' },
+        maxBytes: { type: 'integer', minimum: 1, maximum: 1048576, description: 'Maximum output bytes; omit for the default.' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -165,16 +173,48 @@ function prepare(toolName, output, cwd, policy, hints = {}) {
   return optimizeToolOutput({ toolName, output, cwd: workspaceRoot(cwd), policy: normalized, ...hints });
 }
 
+function lineBound(value, field) {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isInteger(value) || value < 1) invalid(`${field} must be a positive integer`);
+  return value;
+}
+
+// A caller asking for lines 1..20 must not be handed the whole file: `head`/`sed` are rewritten
+// to this tool, and answering a bounded request with an unbounded read both changes the result
+// and inflates the very context the rewrite exists to bound.
+function sliceLines(text, startLine, endLine) {
+  if (startLine === undefined && endLine === undefined) return text;
+  const from = (startLine ?? 1) - 1;
+  const to = endLine ?? Number.MAX_SAFE_INTEGER;
+  if (endLine !== undefined && startLine !== undefined && endLine < startLine) invalid('endLine must not precede startLine');
+  const lines = text.split('\n');
+  // A trailing newline yields a final empty element that is not a line of its own.
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(from, to).join('\n');
+}
+
 function readTool(args = {}) {
   const { root, target, stat } = workspacePath(args.cwd, args.path);
   if (!stat.isFile()) invalid('path must be a regular file');
   const policy = normalizePolicy(args.policy);
+  const startLine = lineBound(args.startLine, 'startLine');
+  const endLine = lineBound(args.endLine, 'endLine');
   const source = readPrefix(target, policy.maxArtifactBytes);
-  const result = prepare('Read', source.text, root, policy, {
-    lineCount: source.text.split(/\r?\n/).length,
+  const selected = sliceLines(source.text, startLine, endLine);
+  // The source-class router keys off the file extension, so the path has to reach it here:
+  // without toolInput every read falls back to the 32 KB `source` budget and a .log never
+  // gets the 4 KB `bulk` cap it is entitled to. The line bounds travel as `start_line`/`end_line`
+  // because that is what the router reads to recognise a targeted read (gate G3).
+  const relativePath = path.relative(root, target).split(path.sep).join('/');
+  const toolInput = { file_path: relativePath };
+  if (startLine !== undefined) toolInput.start_line = startLine;
+  if (endLine !== undefined) toolInput.end_line = endLine;
+  const result = prepare('Read', selected, root, policy, {
+    toolInput,
+    lineCount: selected.split(/\r?\n/).length,
     fileBytes: stat.size,
   });
-  return { ...result, source: { path: path.relative(root, target).split(path.sep).join('/'), truncated: source.truncated } };
+  return { ...result, source: { path: relativePath, truncated: source.truncated } };
 }
 
 function walkFiles(root, target) {

@@ -21,7 +21,7 @@ export function formatAccountingReport(report) {
     `reasoning: ${report.reasoningOutputTokens}`,
     `turns: ${report.turnCount}`,
     `weighted estimate: ${report.weightedCost.costUnits} cost units`,
-    `provider cost: ${report.cost.status === 'provider-reported' ? `$${report.cost.totalCostUsd.toFixed(6)}` : report.cost.status}`,
+    `reported cost: ${report.cost.totalCostUsd === null ? report.cost.status : `$${report.cost.totalCostUsd.toFixed(6)} (${report.cost.status})`}`,
   ];
   if (report.cost.effectiveRateUsdPerMillionTokens !== null) {
     lines.push(`blended effective rate: $${report.cost.effectiveRateUsdPerMillionTokens.toFixed(2)}/M tokens`);

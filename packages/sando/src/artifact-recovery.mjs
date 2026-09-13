@@ -17,6 +17,11 @@ function handleDigest(ref) {
   return match[1];
 }
 
+export function validateArtifactHandle(ref) {
+  handleDigest(ref);
+  return ref;
+}
+
 function integer(value, name, { positive = false } = {}) {
   if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new TypeError(`${name} is invalid`);
   return value;

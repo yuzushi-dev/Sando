@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   appendProviderUsage,
   buildProviderUsageReport,
+  collectProviderUsage,
   defaultProviderUsagePath,
   parseClaudeTranscript,
   parseCodexTranscript,
@@ -38,14 +39,44 @@ test('parses Claude assistant usage and expands cache counters', () => {
   assert.match(records[0].eventKey, /^usage:claude:sha256:/);
 });
 
-test('retains a provider-reported transcript cost for accounting', () => {
+test('uses deduplicated Claude message ids and final result totals as the session aggregate', () => {
+  const assistant = (id, uuid, inputTokens, outputTokens) => JSON.stringify({
+    type: 'assistant', uuid, timestamp: '2026-09-10T18:53:00.000Z',
+    message: { id, usage: { input_tokens: inputTokens, output_tokens: outputTokens } },
+  });
+  const records = parseClaudeTranscript([
+    assistant('msg-1', 'event-1', 10, 2),
+    assistant('msg-1', 'event-2', 10, 2),
+    assistant('msg-2', 'event-3', 20, 3),
+    JSON.stringify({ type: 'result', usage: {
+      input_tokens: 30, cache_creation_input_tokens: 4, cache_read_input_tokens: 6,
+      output_tokens: 50, total_tokens: 90,
+    } }),
+  ].join('\n'), { sessionId: 's1', turnId: 't1' });
+
+  assert.equal(records.length, 1);
+  assert.deepEqual({ ...records[0], eventKey: undefined }, {
+    eventKey: undefined,
+    schema: 'sando-provider-usage/v1', version: 1,
+    host: 'claude', source: 'claude-result', sessionId: 's1', turnId: null,
+    at: '2026-09-10T18:53:00.000Z', inputTokens: 40, cachedInputTokens: 6,
+    cacheWriteInputTokens: 4, outputTokens: 50, reasoningOutputTokens: 0, totalTokens: 90,
+    aggregation: 'session', turnCount: 2,
+  });
+  const report = buildProviderUsageReport({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records });
+  assert.equal(report.inputTokens, 40);
+  assert.equal(report.outputTokens, 50);
+  assert.equal(report.turnCount, 2);
+});
+
+test('retains host-reported transcript cost without calling it billed', () => {
   const records = parseClaudeTranscript([
     JSON.stringify({ type: 'assistant', uuid: 'claude-cost', timestamp: '2026-08-24T10:00:00.000Z', message: { usage: { input_tokens: 10, output_tokens: 2 } } }),
     JSON.stringify({ type: 'result', subtype: 'success', total_cost_usd: 0.03 }),
   ].join('\n'), { sessionId: 's1', turnId: 't1' });
 
   assert.equal(records[0].totalCostUsd, 0.03);
-  assert.equal(buildProviderUsageReport({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records }).cost.status, 'provider-reported');
+  assert.equal(buildProviderUsageReport({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records }).cost.status, 'host-reported');
 });
 
 test('uses the latest cumulative transcript cost once for a growing session', (t) => {
@@ -77,6 +108,81 @@ test('uses the latest cumulative transcript cost once for a growing session', (t
   appendProviderUsage({ storagePath, records: updated });
   report = buildProviderUsageReport(readProviderUsage(storagePath), { sessionId: 's1' });
   assert.equal(report.cost.totalCostUsd, 0.04);
+});
+
+test('keeps cost coverage partial when one session has no reported amount', () => {
+  const makeRecord = (eventKey, sessionId, totalCostUsd) => ({
+    eventKey, schema: 'sando-provider-usage/v1', version: 1,
+    host: 'claude', source: 'test', sessionId, turnId: 't1', at: '2026-08-24T10:00:00.000Z',
+    inputTokens: 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2,
+    reasoningOutputTokens: 0, totalTokens: 12,
+    ...(totalCostUsd === undefined ? {} : { totalCostUsd, costScope: 'session', costSource: 'host-reported' }),
+  });
+  const report = buildProviderUsageReport({
+    schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC',
+    records: [makeRecord('usage:one', 's1', 0.01), makeRecord('usage:two', 's2')],
+  });
+  assert.equal(report.cost.status, 'host-reported');
+  assert.equal(report.cost.coverage, 'partial');
+  assert.equal(report.totalCostUsd, null);
+});
+
+test('does not merge session aggregates that lack a session id', (t) => {
+  const storagePath = tempPath(t);
+  const makeRecord = (eventKey, at) => ({
+    eventKey, schema: 'sando-provider-usage/v1', version: 1,
+    host: 'claude', source: 'claude-result', sessionId: null, turnId: null, at,
+    inputTokens: 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2,
+    reasoningOutputTokens: 0, totalTokens: 12, aggregation: 'session', turnCount: 1,
+  });
+  appendProviderUsage({ storagePath, records: [makeRecord('usage:one', '2026-08-24T10:00:00.000Z')] });
+  appendProviderUsage({ storagePath, records: [makeRecord('usage:two', '2026-08-24T10:01:00.000Z')] });
+  assert.equal(readProviderUsage(storagePath).records.length, 2);
+});
+
+test('does not let a Claude session aggregate hide turns from another provider', () => {
+  const record = (eventKey, host, sessionId, turnId, inputTokens, aggregation, turnCount) => ({
+    eventKey, schema: 'sando-provider-usage/v1', version: 1,
+    host, source: aggregation ? `${host}-result` : `${host}-transcript`, sessionId, turnId,
+    at: '2026-08-24T10:00:00.000Z', inputTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+    outputTokens: 2, reasoningOutputTokens: 0, totalTokens: inputTokens + 2,
+    ...(aggregation ? { aggregation, turnCount } : {}),
+  });
+  const state = {
+    schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records: [
+      record('usage:claude', 'claude', 'claude-session', null, 30, 'session', 2),
+      record('usage:codex-one', 'codex', 'codex-session', 'turn-1', 10),
+      record('usage:codex-two', 'codex', 'codex-session', 'turn-2', 20),
+    ],
+  };
+
+  const report = buildProviderUsageReport(state);
+  assert.equal(report.turnCount, 4);
+  assert.equal(report.eventCount, 3);
+});
+
+test('keeps unknown-session aggregates separate for report totals', () => {
+  const record = (eventKey, inputTokens, totalCostUsd, aggregation, turnCount) => ({
+    eventKey, schema: 'sando-provider-usage/v1', version: 1,
+    host: 'claude', source: aggregation ? 'claude-result' : 'claude-transcript', sessionId: null,
+    turnId: aggregation ? null : eventKey, at: '2026-08-24T10:00:00.000Z', inputTokens,
+    cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0,
+    totalTokens: inputTokens + 2, totalCostUsd, costScope: 'session', costSource: 'host-reported',
+    ...(aggregation ? { aggregation, turnCount } : {}),
+  });
+  const report = buildProviderUsageReport({
+    schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records: [
+      record('usage:unknown-one', 10, 0.01, 'session', 1),
+      record('usage:unknown-two', 20, 0.02, 'session', 1),
+      record('usage:unknown-turn', 30, 0.03),
+    ],
+  });
+
+  assert.equal(report.eventCount, 3);
+  assert.equal(report.sessionCount, 3);
+  assert.equal(report.turnCount, 3);
+  assert.equal(report.totalCostUsd, 0.06);
+  assert.equal(report.cost.coverage, 'complete');
 });
 
 test('parses Codex last token usage without treating cache reads as extra input', () => {
@@ -181,4 +287,47 @@ test('rejects provider records whose reasoning exceeds reported output', (t) => 
 
 test('uses the provider ledger path override', () => {
   assert.equal(defaultProviderUsagePath({ SANDO_PROVIDER_USAGE_PATH: '/tmp/sando-provider.json' }), '/tmp/sando-provider.json');
+});
+
+test('recollecting a timestamp-less Codex event does not duplicate accounting', (t) => {
+  const storagePath = tempPath(t);
+  const transcriptPath = path.join(path.dirname(storagePath), 'codex.jsonl');
+  fs.writeFileSync(transcriptPath, JSON.stringify({
+    type: 'turn.completed', id: 'turn-without-timestamp', usage: {
+      input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0,
+      output_tokens: 2, reasoning_output_tokens: 0, total_tokens: 12,
+    },
+  }));
+
+  collectProviderUsage({ host: 'codex', transcriptPath, sessionId: 'codex-session', turnId: 'turn-1',
+    storagePath, now: '2026-09-11T10:00:00.000Z' });
+  collectProviderUsage({ host: 'codex', transcriptPath, sessionId: 'codex-session', turnId: 'turn-1',
+    storagePath, now: '2026-09-11T10:05:00.000Z' });
+
+  const state = readProviderUsage(storagePath);
+  assert.equal(state.records.length, 1);
+  assert.equal(buildProviderUsageReport(state).eventCount, 1);
+
+  collectProviderUsage({ host: 'codex', transcriptPath, sessionId: 'other-codex-session', turnId: 'turn-1',
+    storagePath, now: '2026-09-11T10:10:00.000Z' });
+  assert.equal(readProviderUsage(storagePath).records.length, 2);
+});
+
+test('recollecting a timestamp-less Claude event does not duplicate accounting', (t) => {
+  const storagePath = tempPath(t);
+  const transcriptPath = path.join(path.dirname(storagePath), 'claude.jsonl');
+  fs.writeFileSync(transcriptPath, JSON.stringify({
+    type: 'assistant', uuid: 'event-without-timestamp', message: {
+      id: 'message-without-timestamp', usage: { input_tokens: 10, output_tokens: 2 },
+    },
+  }));
+
+  collectProviderUsage({ host: 'claude', transcriptPath, sessionId: 'claude-session', turnId: 'turn-1',
+    storagePath, now: '2026-09-11T10:00:00.000Z' });
+  collectProviderUsage({ host: 'claude', transcriptPath, sessionId: 'claude-session', turnId: 'turn-1',
+    storagePath, now: '2026-09-11T10:05:00.000Z' });
+
+  const state = readProviderUsage(storagePath);
+  assert.equal(state.records.length, 1);
+  assert.equal(buildProviderUsageReport(state).eventCount, 1);
 });
