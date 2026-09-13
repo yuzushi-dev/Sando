@@ -3,6 +3,11 @@ import path from 'node:path';
 
 import { recordCoverage } from './coverage.mjs';
 import { pairedArmFromEnv } from './paired-accounting.mjs';
+import {
+  defaultTelemetryConfigPath, defaultTelemetryStatePaths, isDoNotTrack, readTelemetryConfig,
+  recordCoverage as recordCoverageTelemetry,
+} from './telemetry.mjs';
+import { PLUGIN_VERSION } from './version.mjs';
 
 const SHELL_TOOLS = new Set(['Bash', 'exec_command', 'shell_command']);
 const MAX_COMMAND_LENGTH = 8192;
@@ -382,7 +387,22 @@ export function classifyShellCommand({ toolName, toolInput, cwd, env = process.e
   return bypass('ambiguous-shell');
 }
 
+// The local coverage file has carried these counts all along; this is what puts them on the wire
+// beside the reduction they qualify. Best-effort, like every other telemetry path here.
+function coverageTelemetry(result, env) {
+  try {
+    const configPath = defaultTelemetryConfigPath(env);
+    if (!readTelemetryConfig(configPath).enabled || isDoNotTrack(env)) return;
+    const day = new Date().toISOString().slice(0, 10);
+    recordCoverageTelemetry({
+      statePaths: defaultTelemetryStatePaths(env), day, pluginVersion: PLUGIN_VERSION, host: 'codex',
+      routed: result.status === 'eligible', reason: result.reason,
+    });
+  } catch { /* telemetry must never affect the routing decision */ }
+}
+
 function metric(result, toolName, env) {
+  coverageTelemetry(result, env);
   try {
     if (result.status === 'eligible') {
       recordCoverage({
@@ -397,7 +417,9 @@ function metric(result, toolName, env) {
 
 export function runPreToolUse(input, env = process.env) {
   const toolName = input?.tool_name ?? input?.toolName;
-  const result = classifyShellCommand({ toolName, toolInput: input?.tool_input ?? input?.toolInput, cwd: input?.cwd });
+  // `env` has to reach the classifier: it is what decides whether the wrap applies, and reading
+  // process.env here would ignore the environment the caller actually passed.
+  const result = classifyShellCommand({ toolName, toolInput: input?.tool_input ?? input?.toolInput, cwd: input?.cwd, env });
   if (result.status !== 'eligible') {
     metric(result, toolName, env);
     return {};

@@ -29,6 +29,20 @@ const F1_STATUSES = ['complete', 'partial', 'unavailable'];
 const F1_RATIO_BUCKETS = ['zero', 'lt_1pct', '1_to_10pct', 'gt_10pct', 'unavailable'];
 const F1_SIZE_BUCKETS = [...BYTE_BUCKETS, 'unavailable'];
 const F1_INPUT_BUCKETS = [...COUNT_BUCKETS, 'unavailable'];
+// Reduction without coverage reads as better than it is: a day that bounds heavily on the 3% of
+// commands it recognises looks identical to one that bounds everything. These are the reasons the
+// shell classifier already emits, so they are a closed set and carry nothing free-form.
+// Counts alone cannot answer "how much did it reach": 1,276 routed and 43,945 bypassed both land
+// in `gt_100`, and so would the reverse. The ratio is the field that carries the answer.
+export const COVERAGE_RATIO_BUCKETS = ['zero', 'lt_1pct', '1_to_10pct', '10_to_50pct', '50_to_90pct', 'gt_90pct'];
+
+export const COVERAGE_REASONS = [
+  'ambiguous-shell', 'compound-feeds-pipeline', 'compound-has-redirect', 'compound-segment-ambiguous',
+  'grep-shape', 'head-shape', 'invalid-input', 'read-shape', 'routing-disabled', 'sed-shape',
+  'tail-unbounded-from-end', 'unsafe-cwd', 'unsafe-grep-pattern', 'unsafe-grep-target',
+  'unsafe-read-target', 'unsupported-shell', 'unsupported-tool', 'other',
+];
+
 export const FAILURE_STAGES = [
   'policy', 'input', 'redaction', 'optimization', 'artifact', 'output', 'upstream', 'response',
 ];
@@ -37,7 +51,7 @@ const SHARED_FIELDS = {
   schema_version: (value) => value === SCHEMA_VERSION,
   event: (value) => [
     'hook_summary', 'proxy_summary', 'active_day', 'hook_failure_summary', 'proxy_failure_summary',
-    'f1_footprint', 'f4_gateway',
+    'f1_footprint', 'f4_gateway', 'coverage_summary',
   ].includes(value),
   day_utc: (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
   plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
@@ -69,6 +83,14 @@ const PROXY_FAILURE_FIELDS = {
   provider: (value) => PROVIDERS.includes(value),
   failure_stage: (value) => FAILURE_STAGES.includes(value),
 };
+const COVERAGE_FIELDS = {
+  host: (value) => HOSTS.includes(value),
+  routed_bucket: (value) => COUNT_BUCKETS.includes(value),
+  bypassed_bucket: (value) => COUNT_BUCKETS.includes(value),
+  coverage_ratio_bucket: (value) => COVERAGE_RATIO_BUCKETS.includes(value),
+  top_bypass_reason: (value) => COVERAGE_REASONS.includes(value),
+};
+
 const F4_FIELDS = {
   f4_host: (value) => F4_HOSTS.includes(value),
   f4_operation: (value) => F4_OPERATIONS.includes(value),
@@ -91,6 +113,7 @@ function fieldsForEvent(eventType) {
   if (eventType === 'active_day') return ACTIVE_DAY_FIELDS;
   if (eventType === 'hook_failure_summary') return HOOK_FAILURE_FIELDS;
   if (eventType === 'f4_gateway') return F4_FIELDS;
+  if (eventType === 'coverage_summary') return COVERAGE_FIELDS;
   return PROXY_FAILURE_FIELDS;
 }
 
@@ -259,11 +282,11 @@ const LEASE_MS = 5 * 60 * 1000;
 const RETRY_DELAYS_MS = [60_000, 300_000, 1_800_000, 7_200_000, 21_600_000];
 const CHILD_ENV_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'];
 
-function emptyCounters() { return { schema_version: TELEMETRY_CONFIG_VERSION, counters: {}, active_days: {} }; }
+function emptyCounters() { return { schema_version: TELEMETRY_CONFIG_VERSION, counters: {}, active_days: {}, coverage_days: {} }; }
 function readCounters(countersPath) {
   if (!fs.existsSync(countersPath)) return emptyCounters();
   const state = JSON.parse(fs.readFileSync(countersPath, 'utf8'));
-  return { ...state, counters: state.counters ?? {}, active_days: state.active_days ?? {} };
+  return { ...state, counters: state.counters ?? {}, active_days: state.active_days ?? {}, coverage_days: state.coverage_days ?? {} };
 }
 
 function readQueueRows(queuePath) {
@@ -338,6 +361,23 @@ function bucketEntry(entry, pluginVersion) {
     rewrites_skipped_cache_bucket: countBucket(entry.rewritesSkippedCache ?? 0),
     input_tokens_saved_bucket: byteBucket(entry.inputTokensSaved ?? 0),
   };
+  if (entry.event === 'coverage_summary') {
+    const reasons = Object.entries(entry)
+      .filter(([field, count]) => field.startsWith(REASON_PREFIX) && Number.isInteger(count) && count > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const leading = reasons[0]?.[0].slice(REASON_PREFIX.length);
+    const routed = entry.routed ?? 0;
+    const bypassed = entry.bypassed ?? 0;
+    return {
+      schema_version: SCHEMA_VERSION, event: 'coverage_summary', day_utc: entry.day, plugin_version: recordedVersion,
+      host: entry.host,
+      routed_bucket: countBucket(routed),
+      bypassed_bucket: countBucket(bypassed),
+      coverage_ratio_bucket: coverageRatioBucket(routed, routed + bypassed),
+      // A reason this build does not know travels as `other`, never as free text.
+      top_bypass_reason: COVERAGE_REASONS.includes(leading) ? leading : 'other',
+    };
+  }
   if (entry.event === 'hook_failure_summary') return {
     schema_version: SCHEMA_VERSION, event: 'hook_failure_summary', day_utc: entry.day, plugin_version: recordedVersion,
     host: entry.host, failure_stage: entry.failureStage,
@@ -351,7 +391,7 @@ function bucketEntry(entry, pluginVersion) {
 /** Accumulates raw per-day counts in memory/on disk; values are only bucketed (and thus
  *  only ever leave the machine) once `closeDay` closes a finished UTC day. */
 export function incrementCounter({ statePaths, day, pluginVersion = PLUGIN_VERSION, event, host, provider, mode, failureStage, deltas = {} }) {
-  if (!['hook_summary', 'proxy_summary', 'hook_failure_summary', 'proxy_failure_summary'].includes(event)) {
+  if (!['hook_summary', 'proxy_summary', 'hook_failure_summary', 'proxy_failure_summary', 'coverage_summary'].includes(event)) {
     throw new Error('incrementCounter: invalid event');
   }
   const isProxy = event.startsWith('proxy_');
@@ -395,6 +435,33 @@ export function recordFailure({ statePaths, day, pluginVersion = PLUGIN_VERSION,
 }
 
 /** Queues a single non-aggregate activity marker for this UTC day and host. */
+export const REASON_PREFIX = 'reason:';
+
+export function coverageRatioBucket(routed, total) {
+  if (!Number.isInteger(routed) || !Number.isInteger(total) || routed < 0 || total < routed) {
+    throw new Error('coverageRatioBucket: invalid counts');
+  }
+  if (total === 0 || routed === 0) return 'zero';
+  const ratio = routed / total;
+  if (ratio < 0.01) return 'lt_1pct';
+  if (ratio < 0.1) return '1_to_10pct';
+  if (ratio < 0.5) return '10_to_50pct';
+  if (ratio < 0.9) return '50_to_90pct';
+  return 'gt_90pct';
+}
+
+/** One call per classified shell command. Counters close into a single row per day, next to the
+ * reduction they qualify: a large saving on a small share of commands should not read the same as
+ * a large saving on all of them. */
+export function recordCoverage({ statePaths, day, pluginVersion = PLUGIN_VERSION, host, routed, reason }) {
+  const deltas = routed ? { routed: 1 } : { bypassed: 1 };
+  if (!routed) {
+    const label = COVERAGE_REASONS.includes(reason) ? reason : 'other';
+    deltas[`${REASON_PREFIX}${label}`] = 1;
+  }
+  incrementCounter({ statePaths, day, pluginVersion, event: 'coverage_summary', host, deltas });
+}
+
 export function recordActiveDay({ statePaths, day, pluginVersion = PLUGIN_VERSION, host }) {
   const marker = {
     schema_version: SCHEMA_VERSION, event: 'active_day', day_utc: day, plugin_version: pluginVersion, host,

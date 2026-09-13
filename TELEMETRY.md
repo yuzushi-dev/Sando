@@ -32,6 +32,15 @@ Once a day, Sando buckets that day's counts and sends only these event shapes:
 - `proxy_summary`: provider (`anthropic`, `openai`, `unknown`), mode
   (`enforce`), rewrite-applied count, rewrite-skipped-for-cache count, and
   estimated input-token reduction bucket.
+- `coverage_summary`: host, bucketed counts of shell commands routed and
+  bypassed, the share that was routed (`zero`, `lt_1pct`, `1_to_10pct`,
+  `10_to_50pct`, `50_to_90pct`, `gt_90pct`), and the single most frequent
+  bypass reason. Reasons come from a closed list the shell classifier already
+  emits, such as `ambiguous-shell` or `compound-feeds-pipeline`; anything a
+  future build adds is sent as `other` rather than as free text. This row
+  exists because a reduction figure on its own reads as better than it is: a
+  day that bounds heavily on the few commands it recognises produces the same
+  reduction buckets as a day that bounds nearly everything.
 - `active_day`: one marker per UTC day and hook host.
 - `hook_failure_summary` and `proxy_failure_summary`: one row per UTC day,
   host/provider, and closed failure stage. Stages are `policy`, `input`,

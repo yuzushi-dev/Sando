@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { countBucket, byteBucket, FAILURE_STAGES, isDoNotTrack, serializeEvent, validateEvent } from '../src/telemetry.mjs';
+import {
+  countBucket, byteBucket, closeDay, coverageRatioBucket, recordCoverage, COVERAGE_REASONS,
+  FAILURE_STAGES, isDoNotTrack, serializeEvent, validateEvent,
+} from '../src/telemetry.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { PLUGIN_VERSION } from '../src/version.mjs';
 
 function hookEvent(overrides = {}) {
@@ -143,4 +149,51 @@ test('serializeEvent produces a payload at most 2 KiB and round-trips through va
 
 test('serializeEvent rejects an event that fails validation', () => {
   assert.throws(() => serializeEvent(hookEvent({ host: 'gemini' })), /host/);
+});
+
+// A day that bounds heavily on the few commands it recognises produces the same reduction buckets
+// as a day that bounds everything. Without the ratio the two are indistinguishable on the wire,
+// which is how a 2.8% coverage went unnoticed while the reduction numbers looked healthy.
+test('coverage ratio separates a day that reached almost nothing from one that reached almost all', () => {
+  assert.equal(coverageRatioBucket(1276, 1276 + 43945), '1_to_10pct');
+  assert.equal(coverageRatioBucket(43945, 1276 + 43945), 'gt_90pct');
+  assert.equal(coverageRatioBucket(0, 500), 'zero');
+  assert.equal(coverageRatioBucket(0, 0), 'zero');
+  assert.equal(coverageRatioBucket(4, 1000), 'lt_1pct');
+  assert.equal(coverageRatioBucket(300, 1000), '10_to_50pct');
+  assert.equal(coverageRatioBucket(700, 1000), '50_to_90pct');
+  assert.throws(() => coverageRatioBucket(5, 1), /invalid counts/);
+  assert.throws(() => coverageRatioBucket(-1, 10), /invalid counts/);
+});
+
+test('coverage counters close into one row that carries the share, not just the counts', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-coverage-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const statePaths = { counters: path.join(dir, 'counters.json'), queue: path.join(dir, 'queue.jsonl') };
+
+  for (let i = 0; i < 3; i += 1) recordCoverage({ statePaths, day: '2026-09-13', host: 'codex', routed: true });
+  for (let i = 0; i < 60; i += 1) recordCoverage({ statePaths, day: '2026-09-13', host: 'codex', routed: false, reason: 'ambiguous-shell' });
+  for (let i = 0; i < 20; i += 1) recordCoverage({ statePaths, day: '2026-09-13', host: 'codex', routed: false, reason: 'compound-feeds-pipeline' });
+  recordCoverage({ statePaths, day: '2026-09-13', host: 'codex', routed: false, reason: 'a-reason-this-build-never-heard-of' });
+
+  const [row, ...rest] = closeDay({ statePaths, day: '2026-09-13', pluginVersion: '0.5.0' });
+  assert.equal(rest.length, 0, 'one row per day and host');
+  assert.equal(row.coverage_ratio_bucket, '1_to_10pct');
+  assert.equal(row.top_bypass_reason, 'ambiguous-shell');
+  assert.ok(COVERAGE_REASONS.includes(row.top_bypass_reason));
+  assert.deepEqual(validateEvent(row), row);
+  assert.deepEqual(Object.keys(row).sort(), [
+    'bypassed_bucket', 'coverage_ratio_bucket', 'day_utc', 'event', 'host',
+    'plugin_version', 'routed_bucket', 'schema_version', 'top_bypass_reason',
+  ]);
+});
+
+test('an unknown bypass reason is reported as other, never as free text', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-coverage-unknown-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const statePaths = { counters: path.join(dir, 'counters.json'), queue: path.join(dir, 'queue.jsonl') };
+  recordCoverage({ statePaths, day: '2026-09-14', host: 'codex', routed: false, reason: 'invented-by-a-later-build' });
+  const [row] = closeDay({ statePaths, day: '2026-09-14', pluginVersion: '0.5.0' });
+  assert.equal(row.top_bypass_reason, 'other');
+  assert.equal(JSON.stringify(row).includes('invented-by-a-later-build'), false);
 });
