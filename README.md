@@ -11,8 +11,8 @@ answer the question are pulled out of the part that was cut, including error lin
 totals.
 
 On Codex that means 90.9% less shell output, measured over 40,000 recorded results. On a
-repository, 264 files fit into a 200,000-token window where 110 fit without it. Every figure
-below is reproducible with a command, against your own corpus.
+repository, roughly 2.4x as many files fit into a 200,000-token window. Every figure below is
+reproducible with a command, against your own corpus.
 
 It acts on tool results only, so it composes with whatever else you run to keep a session
 small, such as output filters or scope rules, without competing for the same step.
@@ -230,10 +230,10 @@ On Claude the `PostToolUse` hook bounds tool results without touching how comman
 optimiser removes 14.5% to 18.9% of that output across two machines. Results from external
 `mcp__*` tools pass through untouched and are excluded from those figures.
 
-On either host, reading files rather than running commands, it fits 264 files into a
-200,000-token window where 110 fit without it. That figure is measured on this repo at
-`release/0.5.0` and reproduces with `node scripts/bench-reduction.mjs` against any git
-checkout.
+On either host, reading files rather than running commands, about 2.4x as many files fit into a
+200,000-token window. Run `node scripts/bench-reduction.mjs` against any git checkout for the
+exact counts on that corpus; the ratio has held between 2.39x and 2.44x across every commit of
+this repository, while the file counts move with whatever the commit contains.
 
 These are output reductions, one tool result at a time. What a session costs also depends on
 prompt-cache economics, which these numbers do not model. Method, per-corpus variation and the

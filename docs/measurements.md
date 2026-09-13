@@ -32,7 +32,7 @@ giants does not carry the figure, since the ten largest results account for 3.6%
 and the largest 1% for 10.6%. The same measurement on a second, independent corpus gave 95.45%,
 so it is not an artefact of one machine.
 
-## Files into a context window, 110 to 264
+## Files into a context window, about 2.4x
 
 ```bash
 node scripts/bench-reduction.mjs                    # this repository
@@ -47,9 +47,14 @@ Measured on this repository at `release/0.5.0`:
 
 | | files | token-weighted reduction | fires on | median file |
 |---|---:|---:|---:|---:|
-| this repository | 300 | 57.2% | 49.7% | 0.0% |
+| this repository | 300 | 57.3% | 49.7% | 0.0% |
 
-Reads before a 200,000-token window fills: 110 without, 264 with.
+Reads before a 200,000-token window fills: 109 without, 261 with.
+
+The counts move with the commit, since the corpus is the repository's own tracked files: adding
+a few modules, or editing this page, shifts them slightly. The ratio is the stable part, between
+2.39x and 2.44x across every commit measured so far, which is why the README quotes that
+instead.
 
 The spread matters more than the headline. The median file here reduces by nothing at all,
 and four further checkouts gave reductions between 40% and 82% with the same median in two of
