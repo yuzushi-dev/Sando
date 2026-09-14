@@ -64,3 +64,6 @@ scripts/*
 !scripts/bench-reduction.mjs
 !scripts/bench-codex-shell.mjs
 !scripts/bench-wrap-divergence.mjs
+
+# Project instructions for coding agents: local, not distributed with the plugin.
+/CLAUDE.md
