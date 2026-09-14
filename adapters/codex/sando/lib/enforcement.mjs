@@ -424,7 +424,14 @@ export function runPreToolUse(input, env = process.env) {
     metric(result, toolName, env);
     return {};
   }
-  if (env.SANDO_CLI_ROUTING !== '1') {
+  // On, unless explicitly switched off. On Codex the PostToolUse hook cannot rewrite output at
+  // all, so rewriting the command before it runs is the only channel there is: with this off the
+  // plugin bounds nothing on its main surface. What the rewrite preserves — exit codes, signal
+  // deaths, stdin, stderr and the working tree — is measured in docs/measurements.md against
+  // 1,290 recorded commands. `permissionDecision: 'allow'` below is Codex's way of saying this
+  // hook rewrote the input; approval is a separate PermissionRequest event and is not touched.
+  // Set SANDO_CLI_ROUTING=0 to opt out.
+  if (disabled(env.SANDO_CLI_ROUTING)) {
     metric(bypass('routing-disabled'), toolName, env);
     return {};
   }

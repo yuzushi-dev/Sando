@@ -63,3 +63,4 @@ scripts/*
 # The README tells readers to run these, so they have to ship.
 !scripts/bench-reduction.mjs
 !scripts/bench-codex-shell.mjs
+!scripts/bench-wrap-divergence.mjs

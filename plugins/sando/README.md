@@ -2,7 +2,7 @@
 
 This directory contains the self-contained Codex plugin. It bundles the hooks, MCP server, CLI, paired accounting, and optional provider proxy; it does not require the repository package after installation.
 
-Transparent CLI routing is off by default. Set `SANDO_CLI_ROUTING=1` to route eligible literal reads and searches through bounded local CLI paths. Set `SANDO_EXPERIMENT_ARM=control` for a paired native-control run, using the same `SANDO_EXPERIMENT` and optional `SANDO_EXPERIMENT_WORKLOAD`.
+Transparent CLI routing is on by default: eligible commands are routed through bounded local CLI paths, and everything else is wrapped so its output is bounded. Set `SANDO_CLI_ROUTING=0` to opt out. Set `SANDO_EXPERIMENT_ARM=control` for a paired native-control run, using the same `SANDO_EXPERIMENT` and optional `SANDO_EXPERIMENT_WORKLOAD`.
 
 Inspect the provider report with `bin/sando accounting --json`. The Stop hook writes the provider ledger. It records cache classes, output, reasoning, distinct turns, and host-reported cost only when the host reports it, with source and coverage preserved. A host-reported list estimate is not a billing record. Mechanical context trimming and weighted estimates remain separate.
 

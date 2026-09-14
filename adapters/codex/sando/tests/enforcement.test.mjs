@@ -95,38 +95,42 @@ test('PreToolUse leaves eligible native rg and grep commands untouched by defaul
       tool_input: { command: 'rg -F -- needle fixture.txt' }, cwd,
     }),
     encoding: 'utf8',
-    env: { ...process.env, SANDO_CLI_ROUTING: '', SANDO_SHELL_WRAP: '0' },
+    env: { ...process.env, SANDO_CLI_ROUTING: '0', SANDO_SHELL_WRAP: '0' },
   });
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {});
 });
 
-test('experiment metadata alone never enables CLI routing', (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-experiment-only-'));
+test('CLI routing is on without any environment being set', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-default-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
 
   for (const hook of HOOKS) {
-    const result = invokePreToolUse(hook, cwd, { SANDO_EXPERIMENT: 'trial' });
+    const result = invokePreToolUse(hook, cwd, {});
+    assert.equal(result.status, 0, `${hook}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'allow', hook);
+    assert.match(output.hookSpecificOutput.updatedInput.command, /bin[\\/]sando/, hook);
+  }
+});
+
+// The paired control arm is what a measurement compares against, so it has to keep running the
+// native command even though routing is now on by default.
+test('a control experiment arm still bypasses CLI routing', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-control-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+
+  for (const hook of HOOKS) {
+    const result = invokePreToolUse(hook, cwd, { SANDO_EXPERIMENT: 'trial', SANDO_EXPERIMENT_ARM: 'control' });
     assert.equal(result.status, 0, `${hook}: ${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout), {}, hook);
   }
 });
 
-test('an apply experiment arm alone never enables CLI routing', (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-arm-only-'));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
-
-  for (const hook of HOOKS) {
-    const result = invokePreToolUse(hook, cwd, { SANDO_EXPERIMENT_ARM: 'apply' });
-    assert.equal(result.status, 0, `${hook}: ${result.stderr}`);
-    assert.deepEqual(JSON.parse(result.stdout), {}, hook);
-  }
-});
-
-test('routing=0 wins over experiment metadata while routing=1 opts in', (t) => {
+test('routing=0 wins over experiment metadata while routing=1 is redundant', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-routing-switch-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');

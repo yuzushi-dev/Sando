@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -70,7 +71,12 @@ async function runExec(args, cwd, policy) {
   const command = commandArgs(args);
   if (!command.length) throw new Error('exec requires a command');
   const maxBytes = Math.min(policy.maxArtifactBytes, MAX_EXEC_CAPTURE_BYTES);
-  const child = spawn(command[0], command.slice(1), { cwd, env: process.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  // stdin is inherited so a command that reads it behaves as it does unwrapped. The child runs in
+  // its own process group (detached, so a timeout can kill the whole tree), and a detached process
+  // reading from a terminal is stopped with SIGTTIN — so an interactive stdin is left unattached.
+  // Under a hook or an agent, where this wrap actually runs, stdin is a pipe and is passed through.
+  const stdin = process.stdin.isTTY ? 'ignore' : 'inherit';
+  const child = spawn(command[0], command.slice(1), { cwd, env: process.env, detached: process.platform !== 'win32', stdio: [stdin, 'pipe', 'pipe'], windowsHide: true });
   const result = await captureProcess(child, { maxBytes, timeoutMs: EXEC_TIMEOUT_MS });
   const stdout = textOrBinary(result.stdout, { truncated: result.stdoutTruncated });
   const stderr = textOrBinary(result.stderr, { truncated: result.stderrTruncated });
@@ -85,7 +91,12 @@ async function runExec(args, cwd, policy) {
   // is unwrapped first, or the router would only ever see `bash`.
   const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy, toolInput: { command: routedCommand(command) } });
   writeResult(prepared, cwd);
-  if (result.exitCode !== 0 || result.exitSignal || result.timedOut) process.exitCode = result.exitCode || 1;
+  // A child killed by a signal has no exit code, and `|| 1` used to collapse that to a generic
+  // failure: an OOM kill and a timeout both arrived as 1, indistinguishable from a command that
+  // simply returned 1. A shell reports signal death as 128 + signum, so this does too.
+  if (result.exitCode !== null && result.exitCode !== undefined) process.exitCode = result.exitCode;
+  else if (result.exitSignal) process.exitCode = 128 + (os.constants.signals[result.exitSignal] ?? 0);
+  else if (result.timedOut) process.exitCode = 1;
 }
 
 // `--start-line`/`--end-line` carry the bound of a rewritten `head`/`sed`: without them the

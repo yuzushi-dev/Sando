@@ -6,8 +6,8 @@ you can see by how much.
 
 ## Shell output on Codex, 90.9%
 
-This applies when `SANDO_CLI_ROUTING=1` is set; without it the hook measures and rewrites
-nothing.
+CLI routing is on by default; `SANDO_CLI_ROUTING=0` switches it off, and with it off the hook
+rewrites nothing.
 
 ```bash
 node scripts/bench-codex-shell.mjs
@@ -124,3 +124,139 @@ prompt-cache economics, where a rewritten prefix is charged at 1.25x and a cache
 and none of these measurements model that. Under controlled replay on a private transcript
 corpus the median session came out roughly at break-even, with the gain concentrated in side
 chains and long sessions.
+
+## Provider accounting and paired controls
+
+Sando records provider-reported input, cache-read, cache-write, output, reasoning, and turn
+counts at session stop. It also records mechanical context trimming separately. A weighted token
+estimate is diagnostic; provider cost and blended rates are shown only when the provider or host
+reports them.
+
+Run an explicit control session with the plugin still installed:
+
+```bash
+SANDO_EXPERIMENT=read-heavy \
+SANDO_EXPERIMENT_ARM=control \
+codex
+```
+
+Treatment sessions use `SANDO_EXPERIMENT_ARM=apply`, which is the default arm; the control arm
+bypasses routing regardless of `SANDO_CLI_ROUTING`. Use the same experiment and optional `SANDO_EXPERIMENT_WORKLOAD` for
+both arms. Generate the accounting report from the installed Codex plugin:
+
+```bash
+/path/to/installed/sando/bin/sando accounting --json
+```
+
+The paired report exposes control/treatment cache classes, output and reasoning tokens, model
+turns, native/Sando tool calls, mechanical bytes, and weighted cost units. The separate
+provider-usage report exposes reported USD cost with its coverage and source when available; a
+host-reported list estimate is not a billing record. Replay results are marked counterfactual,
+and mechanical reduction is never turned into a provider-billing claim.
+
+The statusline shows mechanically estimated context tokens saved and its reduction percentage. A
+leading `~` marks the estimate. Provider savings are not rendered as a percentage because their
+denominator is not comparable to the mechanical estimate.
+
+## Context footprint audit
+
+The read-only audit measures an explicitly captured initial-context body for Claude Code or
+Codex. It attributes observable bytes to host/project instructions, skills, built-in tools,
+direct/deferred MCP, Sando, history, prompt, provider overhead, and `unknown`. It never uses
+provider totals to invent a category breakdown. If the host body is not exposed, the result is
+`unavailable`.
+
+Run it from an installed Codex bundle:
+
+```bash
+/path/to/installed/sando/bin/sando context audit --host codex --input capture.json --json
+```
+
+The Claude bundle exposes the same command through `node context-audit.mjs`:
+
+```bash
+node /path/to/installed/sando/context-audit.mjs context audit --host claude --input capture.json --json
+```
+
+Without a capture it reports the honest boundary:
+
+```bash
+/path/to/installed/sando/bin/sando context audit --host claude
+```
+
+Capture files use `sando-context-capture/v1`. They contain byte counts or ephemeral content for
+classified segments; reports retain only numeric totals and provenance digests, never paths,
+prompts, or secrets. Mechanical token estimates (`ceil(UTF-8 bytes / 4)`) and provider-reported
+usage are separate evidence classes.
+
+## The cross-turn history experiment
+
+A separate, opt-in surface archives older tool observations across turns, through the provider
+proxy. It is an experiment, not a savings claim. Controlled provider-boundary replays reduced
+reported input by 28.5% on Codex and effective input by 42.4% on Claude. Natural pilots ranged
+much wider, from a 45.3% reduction to a 55.7% *increase*, so the mechanism is conditional on the
+workload. That is why these figures stay out of the README's savings table.
+
+## Does the Codex wrap preserve what it wraps?
+
+CLI routing bounds shell output by rewriting the command before it runs, as
+`sando exec -- bash -lc '<original>'`. That is a change to what executes, not just to what is
+displayed, so turning it on by default needed evidence about behaviour rather than bytes.
+
+```bash
+node scripts/bench-wrap-divergence.mjs            # add --limit N for a short run
+```
+
+The harness runs each command twice, natively and wrapped, in two identical extractions of this
+repository's tracked files, and compares the invariants a session depends on: exit code, death by
+signal, the resulting working tree, and whether the command's output still reaches the caller
+either inline or through the artifact. Output is *meant* to differ, so it is never compared for
+equality.
+
+### Corpus, n=1290
+
+Distinct commands from 40,912 recorded Codex shell calls, filtered to those safe to execute (an
+allowlist of read-only programs; 39,432 rejected).
+
+| Invariant | Result |
+|---|---:|
+| exit code | 1290/1290 |
+| death by signal | 1290/1290 |
+| working tree identical | 1290/1290 |
+| no unexpected mutation | 1290/1290 |
+| stderr reaches the caller | 1290/1290 |
+| output reachable | 1280/1290 |
+
+The ten output cases are commands whose own output is non-deterministic: `node --test`, whose
+`duration_ms` lines already differ by ten lines between two *native* runs, and one `sed` of a file
+outside the fixture. Nothing was lost by the wrap in any of them.
+
+### Probes
+
+The safety filter that makes the corpus executable also excludes the shapes most likely to break,
+so the corpus result alone would be misleading. These are tested directly:
+
+| Probe | Native | Wrapped | |
+|---|---|---|---|
+| exit code 42 | 42 | 42 | preserved |
+| death by SIGTERM | 143 | 143 | preserved |
+| death by SIGKILL | 137 | 137 | preserved |
+| standard input | piped input read | piped input read | preserved |
+| stderr-only output | reaches | reaches | preserved |
+| large output | 108,974 B | bounded, fully recoverable | preserved |
+| binary output | 200 bytes | `[binary output withheld]` | withheld by design |
+
+Two of these were defects, found by the probes and not by the corpus, and both are fixed:
+
+- **Signal death collapsed to exit 1.** `runExec` set `process.exitCode = result.exitCode || 1`,
+  and a child killed by a signal has a null exit code, so an OOM kill (137) and a timeout (143)
+  both arrived as the same generic failure an ordinary command returns. It now reports
+  `128 + signum`, as a shell does.
+- **Standard input was dropped.** The capture spawned with `stdio: ['ignore', …]`, so a command
+  reading stdin saw EOF. It is now inherited — except when stdin is a terminal, because the child
+  runs detached in its own process group and a detached process reading a terminal is stopped with
+  SIGTTIN. Under a hook or an agent, where this wrap runs, stdin is a pipe and is passed through.
+
+Both are covered by regression tests in `tests/exec.test.mjs` in each Codex bundle, verified to
+fail against the previous code. Binary output remains withheld rather than bounded; that is
+deliberate and is visible in the result.

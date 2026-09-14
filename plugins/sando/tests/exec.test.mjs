@@ -209,3 +209,38 @@ test('plugin MCP keeps read-only artifact handling read-only', (t) => {
   assert.equal(fs.existsSync(path.join(cwd, '.sando')), false);
   assert.match(message.result.content[0].text, /sando:/);
 });
+
+// `sando exec` rewrites the command Codex was about to run, so the value a `&&` chain branches on
+// has to survive the rewrite. These cover the CLI entrypoint, which the MCP tool cases above do
+// not reach: both defects below shipped because nothing exercised `runExec`'s own exit path.
+const CLI_BIN = path.resolve(import.meta.dirname, '..', 'bin', 'sando');
+
+function runCli(command, { input } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-exec-cli-'));
+  try {
+    const result = spawnSync(CLI_BIN, ['exec', '--', 'bash', '-lc', command], {
+      cwd, input, encoding: 'utf8', timeout: 20_000,
+    });
+    return { status: result.status, stdout: result.stdout ?? '' };
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+test('exec CLI reports a signal death as 128 + signum, not a generic failure', () => {
+  // `|| 1` used to collapse these: an OOM kill and a timeout both arrived as 1, which is also
+  // what an ordinary failing command returns.
+  assert.equal(runCli('kill -TERM $$').status, 128 + os.constants.signals.SIGTERM);
+  assert.equal(runCli('kill -KILL $$').status, 128 + os.constants.signals.SIGKILL);
+});
+
+test('exec CLI preserves ordinary exit codes', () => {
+  assert.equal(runCli('exit 0').status, 0);
+  assert.equal(runCli('exit 1').status, 1);
+  assert.equal(runCli('exit 42').status, 42);
+});
+
+test('exec CLI passes standard input through to the wrapped command', () => {
+  // stdin was spawned as 'ignore', so a command reading it saw EOF instead of the caller's input.
+  assert.match(runCli('cat', { input: 'hello-from-stdin\n' }).stdout, /hello-from-stdin/);
+});

