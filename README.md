@@ -14,7 +14,12 @@ disk with a verified hash, and the lines that answer the question — error line
 are pulled out of the part that was cut. Deterministic local transforms, no LLM calls.
 
 <p align="center">
-  <img src="plugins/sando/assets/screenshot-terminal.png" alt="Illustrative Sando terminal demo showing bounded output and recoverable context" width="960">
+  <a href="sando-promo.mp4">
+    <img src="plugins/sando/assets/screenshot-terminal.png" alt="Sando demo: bounded output and recoverable context" width="960">
+  </a>
+</p>
+<p align="center">
+  <a href="sando-promo.mp4">▶ Watch the 21-second demo</a>
 </p>
 
 ## Expected savings
