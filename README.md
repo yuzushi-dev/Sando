@@ -4,11 +4,18 @@
 
 # Sando
 
+[![HOL Guard Score](https://img.shields.io/badge/HOL%20Guard%20Score-100%2F100-brightgreen)](https://github.com/yuzushi-dev/Sando/actions/workflows/hol-plugin-scanner.yml)
+[![HOL Plugin Scanner](https://github.com/yuzushi-dev/Sando/actions/workflows/hol-plugin-scanner.yml/badge.svg?branch=main)](https://github.com/yuzushi-dev/Sando/actions/workflows/hol-plugin-scanner.yml)
+
 **Context-management plugin for Claude Code and Codex. It bounds what a tool result costs before that result reaches the model.**
 
 Large output is truncated to a cap set by the kind of content it is, the full bytes are kept on
 disk with a verified hash, and the lines that answer the question — error lines, test totals —
 are pulled out of the part that was cut. Deterministic local transforms, no LLM calls.
+
+<p align="center">
+  <img src="plugins/sando/assets/screenshot-terminal.png" alt="Illustrative Sando terminal demo showing bounded output and recoverable context" width="960">
+</p>
 
 ## Expected savings
 
@@ -58,8 +65,8 @@ Approval is untouched — Codex handles that through a separate `PermissionReque
 - **Bounded tool results.** Every result is capped by content kind before the model sees it.
 - **Nothing is lost.** Full bytes go to a content-addressed store with a verified hash; the
   bounded result carries the command to fetch back whatever was cut.
-- **The answer survives the cut.** `npm test` here prints 573 test results across two summary
-  blocks, 120 KB in total. Bounded, the model sees 4 KB and still answers *573 passed, 0 failed*,
+- **The answer survives the cut.** `npm test` here prints 595 test results across two summary
+  blocks, 120 KB in total. Bounded, the model sees 4 KB and still answers *585 passed, 0 failed*,
   because the totals are salvaged out of the elided middle. Before that salvage existed, the same
   model read the surviving block and answered *100 passed*, with nothing to mark the omission.
 - **Secrets redacted first,** with project-local detectors in `.sando/redaction.json`.

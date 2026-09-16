@@ -84,6 +84,8 @@ older unsent rows are evicted first during an outage.
 
 The endpoint is live. An independent privacy review remains open.
 
+For privacy questions or telemetry requests, contact support@yuzushi.party.
+
 ## Controlling it
 
 When the SessionStart reminder is visible, reply with one exact full message:

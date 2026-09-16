@@ -2,8 +2,18 @@
   "name": "sando",
   "version": "0.5.0",
   "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
+  "homepage": "https://github.com/yuzushi-dev/Sando",
+  "repository": "https://github.com/yuzushi-dev/Sando",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "claude-code",
+    "context-management",
+    "token-optimization"
+  ],
   "author": {
-    "name": "Sando contributors"
+    "name": "Sando contributors",
+    "email": "support@yuzushi.party"
   },
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -12,6 +22,12 @@
     "longDescription": "Reduce repeated tool-output context in Codex with deterministic local routing, provider-usage measurement, and explicit paired control/treatment accounting.",
     "developerName": "Independent",
     "category": "Developer Tools",
+    "websiteURL": "https://github.com/yuzushi-dev/Sando",
+    "privacyPolicyURL": "https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md",
+    "termsOfServiceURL": "https://github.com/yuzushi-dev/Sando/blob/main/TERMS.md",
+    "composerIcon": "./assets/sando-mark.png",
+    "logo": "./assets/sando-mark.png",
+    "screenshots": ["./assets/screenshot-terminal.png"],
     "capabilities": [
       "Bounded read MCP tools and opt-in Slice symbol editing",
       "Sandboxed non-interactive terminal MCP tool",

@@ -10,7 +10,10 @@
       "name": "sando",
       "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
       "source": { "source": "local", "path": "./" },
-      "policy": { "installation": "AVAILABLE" },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
       "category": "Developer Tools",
       "license": "MIT"
     }

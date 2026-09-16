@@ -1,0 +1,17 @@
+# Local state and generated artifacts
+.sando/
+.sando_smoke_state
+node_modules/
+coverage/
+dist/
+build/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.log
+*.tmp
+*.swp
