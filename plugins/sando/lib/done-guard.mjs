@@ -3,12 +3,13 @@
  *
  * Catches premature or unverified claims of "done" when tests, builds,
  * or lints have not passed after code edits.
+ * Supports Italian and English idioms with non-adjacent negation awareness.
  */
 
 import { TypeSafeClient } from './typesafe-client.mjs';
 
 const COMPLETION_RE = /\b(done|fixed|completed|all tests pass|ho risolto|fatto|pronto)\b/i;
-const NEGATIVE_COMPLETION_RE = /\b(not|haven't|hasn't|failed to|yet to|undone|partially)\s+(?:done|fixed|completed|finish|pass)\b|\bnot\s+done\b/i;
+const NEGATIVE_COMPLETION_RE = /\b(non|manca|ancora\s+non|incompleto|not|haven't|hasn't|failed\s+to|yet\s+to|undone|partially)\b[\s\w]{0,25}\b(fatto|risolto|completato|pronto|done|fixed|completed|finish|pass)\b|\bnon\s+(?:è|ho|abbiamo)\s+(?:fatto|risolto|pronto)\b/i;
 
 function offlineDoneCheck(state) {
   const finalMessage = state.final_message || '';
@@ -16,7 +17,7 @@ function offlineDoneCheck(state) {
   const testsPassed = Boolean(state.tests_passed);
   const testsRan = Boolean(state.tests_ran);
 
-  // Check word-boundary completion markers while excluding explicit negations
+  // Check completion markers while respecting English and Italian negations
   const claimsDone = COMPLETION_RE.test(finalMessage) && !NEGATIVE_COMPLETION_RE.test(finalMessage);
 
   let verified = true;

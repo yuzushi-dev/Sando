@@ -2,8 +2,8 @@
  * Stuck-Loop Detector Guard for Sando (PostToolUse Hook).
  *
  * Breaks retry loops when an agent attempts the same failed strategy 3+ times.
- * Includes file-based session persistence across ephemeral hook invocations,
- * homogeneous async return contracts, and multi-field strategy comparisons.
+ * Includes atomic file-based session persistence, TTL expiration, case-insensitive
+ * tool normalization, and robust command comparison.
  */
 
 import fs from 'node:fs';
@@ -11,9 +11,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { TypeSafeClient } from './typesafe-client.mjs';
 
+const FAILURE_TTL_MS = 20 * 60 * 1000; // 20 minutes
+
+function getSessionStateDir() {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 'shared';
+  const stateDir = path.join(os.tmpdir(), `sando-${uid}`);
+  try {
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  } catch {}
+  return stateDir;
+}
+
 function getStoragePath(sessionId) {
   const safeId = (sessionId || 'default').replaceAll(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(os.tmpdir(), `sando-stuck-${safeId}.json`);
+  return path.join(getSessionStateDir(), `stuck-${safeId}.json`);
 }
 
 function loadSessionFailures(storagePath) {
@@ -21,7 +32,11 @@ function loadSessionFailures(storagePath) {
     if (fs.existsSync(storagePath)) {
       const content = fs.readFileSync(storagePath, 'utf8');
       const data = JSON.parse(content);
-      if (Array.isArray(data)) return data;
+      if (Array.isArray(data)) {
+        const now = Date.now();
+        // Discard entries older than TTL
+        return data.filter((item) => typeof item?.timestamp === 'number' && (now - item.timestamp) < FAILURE_TTL_MS);
+      }
     }
   } catch {}
   return [];
@@ -29,7 +44,11 @@ function loadSessionFailures(storagePath) {
 
 function saveSessionFailures(storagePath, failures) {
   try {
-    fs.writeFileSync(storagePath, JSON.stringify(failures.slice(-10)), 'utf8');
+    const dir = path.dirname(storagePath);
+    const tmpPath = path.join(dir, `.tmp-${path.basename(storagePath)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    const validFailures = failures.slice(-10);
+    fs.writeFileSync(tmpPath, JSON.stringify(validFailures), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmpPath, storagePath);
   } catch {}
 }
 
@@ -51,21 +70,20 @@ function offlineStuckCheck(state) {
   }
 
   // Multi-field comparison of strategy: tools, inputs, and error signatures
-  const tools = attempts.map((a) => a.tool);
+  const tools = attempts.map((a) => (a.tool || '').toLowerCase());
   const inputs = attempts.map((a) => normalizeSignature(a.input));
   const errors = attempts.map((a) => normalizeSignature(a.error));
 
   const allSameTool = tools.every((t) => t === tools[0]);
-  
-  // Check if inputs are identical or high similarity
-  const inputMatches = inputs.slice(1).filter((inp) => inp === inputs[0] || inp.slice(0, 30) === inputs[0].slice(0, 30)).length;
+
+  // Full command equality or exact command structure match
+  const inputMatches = inputs.slice(1).filter((inp) => inp === inputs[0]).length;
   const sameInput = inputMatches >= 2;
 
-  // Check if error signatures are truly matching
-  const errorMatches = errors.slice(1).filter((err) => err === errors[0] && err.length > 5).length;
+  // Real error signature matches (requiring substantive non-empty match)
+  const errorMatches = errors.slice(1).filter((err) => err.length > 10 && err === errors[0]).length;
   const sameError = errorMatches >= 2;
 
-  // Fix B2: Loop is flagged only when tool matches AND (input repeats OR same exact error repeats)
   const loopDetected = allSameTool && (sameInput || sameError);
   const val = loopDetected ? 0.90 : 0.15;
 
@@ -77,21 +95,17 @@ function offlineStuckCheck(state) {
 
 export class StuckGuard {
   constructor(options = {}) {
-    this.sessionId = options.sessionId || process.env.TMUX_PANE || 'default';
+    this.sessionId = options.sessionId || process.env.TMUX_PANE || process.env.CLAUDE_CODE_SESSION_ID || 'default';
     this.storagePath = options.storagePath || getStoragePath(this.sessionId);
     this.failureThreshold = options.failureThreshold || 3;
     this.client = options.client || new TypeSafeClient();
   }
 
-  /**
-   * Fix B3: Consistently async method returning a homogeneous status object.
-   */
   async recordToolResult({ tool, input, output, exitCode }) {
     const isExitFailure = typeof exitCode === 'number' && exitCode !== 0;
     const isFatalException = /^(?:fatal|error|panic|traceback):/im.test(output || '');
     const isFailure = isExitFailure || isFatalException;
 
-    // Fix B4: Load persistent session failures from file
     let failures = loadSessionFailures(this.storagePath);
 
     if (!isFailure) {
@@ -112,8 +126,8 @@ export class StuckGuard {
 
     // Record failure
     failures.push({
-      tool: tool || 'tool',
-      input: typeof input === 'string' ? input.slice(0, 250) : JSON.stringify(input || {}).slice(0, 250),
+      tool: (tool || 'tool').toLowerCase(),
+      input: typeof input === 'string' ? input.slice(0, 500) : JSON.stringify(input || {}).slice(0, 500),
       error: (output || '').slice(0, 350),
       timestamp: Date.now(),
     });

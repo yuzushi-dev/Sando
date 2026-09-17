@@ -72,10 +72,25 @@ export class TypeSafeClient {
 
     // Hard wall-clock ceiling to guarantee fail-open under any circumstance
     const hardLimitMs = timeoutMs + 150;
+    let hardTimer = null;
 
     const evaluationPromise = this._executeEvaluate(safeState, safeQuestions, timeoutMs, options, startTime);
     const hardTimeoutPromise = new Promise((resolve) => {
-      setTimeout(() => {
+      hardTimer = setTimeout(() => {
+        // Fall back to offline handler even if hard network timeout fired
+        if (this.offlineFallback && options.offlineHandler) {
+          try {
+            const answers = options.offlineHandler(safeState, safeQuestions);
+            return resolve({
+              ok: true,
+              answers,
+              model: 'timeout-fallback-heuristic',
+              elapsedMs: Date.now() - startTime,
+              error: `Request reached hard limit (${hardLimitMs}ms); fell back to offline handler`,
+              offline: true,
+            });
+          } catch {}
+        }
         resolve({
           ok: false,
           answers: {},
@@ -85,9 +100,14 @@ export class TypeSafeClient {
           offline: true,
         });
       }, hardLimitMs);
+      if (hardTimer.unref) hardTimer.unref();
     });
 
-    return Promise.race([evaluationPromise, hardTimeoutPromise]);
+    try {
+      return await Promise.race([evaluationPromise, hardTimeoutPromise]);
+    } finally {
+      if (hardTimer) clearTimeout(hardTimer);
+    }
   }
 
   async _executeEvaluate(safeState, safeQuestions, timeoutMs, options, startTime) {
@@ -130,6 +150,7 @@ export class TypeSafeClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (timer.unref) timer.unref();
 
     try {
       const resp = await fetch(`${this.baseUrl}/evaluate`, {
@@ -151,7 +172,6 @@ export class TypeSafeClient {
         throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
       }
 
-      // Fix B5: Reading the JSON response body MUST be protected by the timer
       const data = await resp.json();
       return {
         ok: true,
@@ -183,7 +203,6 @@ export class TypeSafeClient {
         offline: false,
       };
     } finally {
-      // Fix B5: Always clear the timer in finally so it cannot leak or stall
       clearTimeout(timer);
     }
   }
