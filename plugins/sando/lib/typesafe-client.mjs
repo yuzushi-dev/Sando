@@ -1,30 +1,39 @@
 /**
  * TypeSafe AI (Jev System One) Client for Sando.
  *
- * Provides sub-second structured evaluations with strict fail-open semantics
- * and automatic secret redaction.
+ * Provides sub-second structured evaluations with strict fail-open semantics,
+ * robust secret redaction across state and questions, and leak-free timeout handling.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-function redactObject(obj) {
-  if (typeof obj === 'string') {
-    // Basic redaction of common credential shapes
-    return obj
-      .replaceAll(/ghp_[A-Za-z0-9_]{36}/g, '[REDACTED_GH_TOKEN]')
-      .replaceAll(/(?:bearer\s+|token=)[A-Za-z0-9._-]{20,}/gi, '[REDACTED_TOKEN]')
-      .replaceAll(/postgres(?:ql)?:\/\/[^@\s]+@[^\s/]+/gi, 'postgresql://[REDACTED_DSN]');
-  }
-  if (Array.isArray(obj)) return obj.map(redactObject);
-  if (obj !== null && typeof obj === 'object') {
-    const result = {};
-    for (const [k, v] of Object.entries(obj)) {
-      result[k] = redactObject(v);
+let authWarned = false;
+
+const REDACTION_PATTERNS = [
+  /\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /postgres(?:ql)?:\/\/[^@\s]+@[^\s/]+/gi,
+  /(?:key|token|secret|password|passwd)\s*[:=]\s*['"][^'"]+['"]/gi,
+];
+
+export function redactValue(val) {
+  if (typeof val === 'string') {
+    let result = val;
+    for (const pattern of REDACTION_PATTERNS) {
+      result = result.replaceAll(pattern, '[REDACTED]');
     }
     return result;
   }
-  return obj;
+  if (Array.isArray(val)) return val.map(redactValue);
+  if (val !== null && typeof val === 'object') {
+    const result = {};
+    for (const [k, v] of Object.entries(val)) {
+      result[k] = redactValue(v);
+    }
+    return result;
+  }
+  return val;
 }
 
 function resolveApiKey() {
@@ -58,12 +67,34 @@ export class TypeSafeClient {
   async evaluate(state, questions, options = {}) {
     const startTime = Date.now();
     const timeoutMs = options.timeoutMs || this.timeoutMs;
-    const safeState = redactObject(state);
+    const safeState = redactValue(state);
+    const safeQuestions = redactValue(questions);
 
+    // Hard wall-clock ceiling to guarantee fail-open under any circumstance
+    const hardLimitMs = timeoutMs + 150;
+
+    const evaluationPromise = this._executeEvaluate(safeState, safeQuestions, timeoutMs, options, startTime);
+    const hardTimeoutPromise = new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({
+          ok: false,
+          answers: {},
+          model: 'timeout-fallback',
+          elapsedMs: Date.now() - startTime,
+          error: `TypeSafe request exceeded hard limit of ${hardLimitMs}ms`,
+          offline: true,
+        });
+      }, hardLimitMs);
+    });
+
+    return Promise.race([evaluationPromise, hardTimeoutPromise]);
+  }
+
+  async _executeEvaluate(safeState, safeQuestions, timeoutMs, options, startTime) {
     if (!this.apiKey) {
       if (options.offlineHandler) {
         try {
-          const answers = options.offlineHandler(safeState, questions);
+          const answers = options.offlineHandler(safeState, safeQuestions);
           return {
             ok: true,
             answers,
@@ -94,7 +125,7 @@ export class TypeSafeClient {
 
     const payload = {
       state: safeState,
-      questions,
+      questions: safeQuestions,
     };
 
     const controller = new AbortController();
@@ -111,12 +142,16 @@ export class TypeSafeClient {
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      clearTimeout(timer);
 
       if (!resp.ok) {
+        if ((resp.status === 401 || resp.status === 403) && !authWarned) {
+          authWarned = true;
+          console.error(`[sando typesafe]: API key rejected (HTTP ${resp.status}). Check TYPESAFE_API_KEY.`);
+        }
         throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
       }
 
+      // Fix B5: Reading the JSON response body MUST be protected by the timer
       const data = await resp.json();
       return {
         ok: true,
@@ -126,10 +161,9 @@ export class TypeSafeClient {
         offline: false,
       };
     } catch (err) {
-      clearTimeout(timer);
       if (this.offlineFallback && options.offlineHandler) {
         try {
-          const answers = options.offlineHandler(safeState, questions);
+          const answers = options.offlineHandler(safeState, safeQuestions);
           return {
             ok: true,
             answers,
@@ -148,6 +182,9 @@ export class TypeSafeClient {
         error: `TypeSafe request failed: ${err.message}`,
         offline: false,
       };
+    } finally {
+      // Fix B5: Always clear the timer in finally so it cannot leak or stall
+      clearTimeout(timer);
     }
   }
 }

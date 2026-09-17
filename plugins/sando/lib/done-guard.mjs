@@ -7,15 +7,17 @@
 
 import { TypeSafeClient } from './typesafe-client.mjs';
 
+const COMPLETION_RE = /\b(done|fixed|completed|all tests pass|ho risolto|fatto|pronto)\b/i;
+const NEGATIVE_COMPLETION_RE = /\b(not|haven't|hasn't|failed to|yet to|undone|partially)\s+(?:done|fixed|completed|finish|pass)\b|\bnot\s+done\b/i;
+
 function offlineDoneCheck(state) {
-  const finalMessage = (state.final_message || '').toLowerCase();
+  const finalMessage = state.final_message || '';
   const hasEdit = Boolean(state.has_code_edits);
   const testsPassed = Boolean(state.tests_passed);
   const testsRan = Boolean(state.tests_ran);
 
-  // Markers of completion claims
-  const completionMarkers = ['done', 'fixed', 'completed', 'all tests pass', 'ho risolto', 'fatto', 'pronto'];
-  const claimsDone = completionMarkers.some((m) => finalMessage.includes(m));
+  // Check word-boundary completion markers while excluding explicit negations
+  const claimsDone = COMPLETION_RE.test(finalMessage) && !NEGATIVE_COMPLETION_RE.test(finalMessage);
 
   let verified = true;
   let violationScore = 0.0;
