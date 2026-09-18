@@ -62,6 +62,7 @@ test('plugin ships an explicit-upstream provider proxy launcher', () => {
   const help = spawnSync(launcher, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /SANDO_UPSTREAM_URL/);
+  assert.match(help.stdout, /SANDO_TYPESAFE_SHADOW/);
 
   const missing = spawnSync(launcher, [], { encoding: 'utf8', env: { ...process.env, SANDO_UPSTREAM_URL: '' } });
   assert.equal(missing.status, 2);

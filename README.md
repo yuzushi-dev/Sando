@@ -11,7 +11,8 @@
 
 Large output is truncated to a cap set by the kind of content it is, the full bytes are kept on
 disk with a verified hash, and the lines that answer the question — error lines, test totals —
-are pulled out of the part that was cut. Deterministic local transforms, no LLM calls.
+are pulled out of the part that was cut. The default path is deterministic and local; the optional
+TypeSafe shadow judge is measurement-only and never changes the request.
 
 <p align="center">
   <a href="sando-promo.mp4">
@@ -105,7 +106,7 @@ host (Claude PostToolUse hook | Codex shell routing)
   accounting launchers are likewise manual entrypoints. Sando changes no Claude or Codex global
   configuration, and telemetry is off until you choose.
 
-Release notes: [Sando 0.5.0](docs/changelogs/0.5.0.md). Development branch: `release/0.5.0`.
+Release notes: [Sando 0.6.0](docs/changelogs/0.6.0.md). Development branch: `release/0.6.0`.
 Telemetry is off by default — see the [full disclosure](TELEMETRY.md).
 
 ---
@@ -248,6 +249,21 @@ explicit `SANDO_CONTEXT_SESSION_KEY`; the record contains no request content, an
 session key the capture is skipped. For the local Grafana cockpit, set `SANDO_F1_TELEMETRY=1`
 with the loopback-only `SANDO_F1_TELEMETRY_ENDPOINT=http://127.0.0.1:4319/v1/logs`; only
 coverage and size buckets leave the capture process.
+
+For an opt-in TypeSafe/Jev shadow measurement, install the optional `pi-typesafe` package in the
+launcher environment and set `SANDO_TYPESAFE_SHADOW=1` together with `SANDO_PROXY_TRANSFORM=1`.
+Sando sends only redacted, bounded samples
+of eligible historical results and their deterministic previews. Jev reports whether diagnostic
+evidence may have been lost; it never changes the forwarded request. The judge is fail-open and
+disables itself when the package or key is unavailable. `SANDO_PROJECT_ROOT` selects the project
+whose `.sando/redaction.json` should be applied; `SANDO_TYPESAFE_TIMEOUT_MS` and
+`SANDO_TYPESAFE_MAX_REQUESTS` bound the optional calls. This is a measurement surface, not a
+general prompt-injection guard or a semantic summarizer.
+
+The offline semantic-quality test uses labeled diagnostic facts and an injected judge to compare
+the deterministic preview with a loss-gated preview. It verifies the gate's trade-off, not Jev's
+model accuracy, and never enables live request gating:
+`node --test packages/sando/tests/semantic-quality.test.mjs`.
 
 What the replays measured, and why it is not a savings claim, is in
 [`docs/measurements.md`](docs/measurements.md).

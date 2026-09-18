@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from '../index.mjs';
+import {
+  detectProviderBody,
+  listSemanticCandidates,
+  listSemanticJudgmentCandidates,
+  transformProviderRequest,
+} from '../index.mjs';
 
 const SUPERSEDED = '[sando superseded by newer read]';
 const USELESS = '[sando elided useless success]';
@@ -21,6 +26,56 @@ const archiveOnly = {
   historyArchiveRetainResults: 1,
   cacheRewriteRatio: 0,
 };
+
+test('pairs original and transformed historical results for semantic judging', () => {
+  const originalBody = { messages: [
+    { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'old', content: 'ORIGINAL DIAGNOSTIC', status: 'completed', ok: true },
+    { role: 'assistant', tool_calls: [{ id: 'current', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'current', content: 'CURRENT', status: 'completed', ok: true },
+  ] };
+  const transformedBody = structuredClone(originalBody);
+  transformedBody.messages[1].content = 'PREVIEW DIAGNOSTIC';
+
+  const candidates = listSemanticJudgmentCandidates({
+    provider: 'openai-chat',
+    originalBody,
+    transformedBody,
+    model: 'fixture',
+  });
+
+  assert.deepEqual(candidates, [{
+    id: 'old',
+    provider: 'openai-chat',
+    model: 'fixture',
+    toolName: 'Bash',
+    originalText: 'ORIGINAL DIAGNOSTIC',
+    previewText: 'PREVIEW DIAGNOSTIC',
+    historical: true,
+    isError: false,
+    recoverable: false,
+    estimatedTokens: 5,
+    previewTokens: 5,
+  }]);
+});
+
+test('skips unchanged historical results for semantic judging', () => {
+  const originalBody = { messages: [
+    { role: 'assistant', tool_calls: [{ id: 'same', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'same', content: 'UNCHANGED', status: 'completed', ok: true },
+    { role: 'assistant', tool_calls: [{ id: 'changed', type: 'function', function: { name: 'Bash', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'changed', content: 'ORIGINAL', status: 'completed', ok: true },
+    { role: 'user', content: 'continue' },
+  ] };
+  const transformedBody = structuredClone(originalBody);
+  transformedBody.messages[3].content = 'PREVIEW';
+
+  const candidates = listSemanticJudgmentCandidates({
+    provider: 'openai-chat', originalBody, transformedBody, model: 'fixture',
+  });
+
+  assert.deepEqual(candidates.map(({ id }) => id), ['changed']);
+});
 
 test('archives eligible old results in all provider formats while preserving IDs and shapes', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sando-history-'quote-"));

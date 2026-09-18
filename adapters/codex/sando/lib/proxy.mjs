@@ -6,7 +6,12 @@ import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } fro
 
 import { estimateTokens } from './core.mjs';
 import { buildContextCaptureRecord, recordContextCapture } from './context-capture.mjs';
-import { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './context-transform.mjs';
+import {
+  detectProviderBody,
+  listSemanticCandidates,
+  listSemanticJudgmentCandidates,
+  transformProviderRequest,
+} from './context-transform.mjs';
 import { publishF1Telemetry } from './f1-telemetry.mjs';
 import { recordProxyRequest } from './proxy-metrics.mjs';
 import {
@@ -407,9 +412,61 @@ async function observeSemanticCandidates({ provider, candidates, semanticCompact
   }
 }
 
+function createSemanticJudgeStats(candidates) {
+  return {
+    candidates: candidates.length,
+    attempted: candidates.length,
+    judged: 0,
+    losses: 0,
+    preserved: 0,
+    fallbacks: 0,
+    skipped: 0,
+    pending: candidates.length,
+  };
+}
+
+function createPendingSemanticJudgeStats() {
+  const stats = createSemanticJudgeStats([]);
+  stats.pending = 1;
+  return stats;
+}
+
+function scheduleSemanticJudgments({ provider, originalBody, transformedBody, model, semanticJudge, stats }) {
+  setImmediate(() => {
+    let candidates;
+    try {
+      candidates = listSemanticJudgmentCandidates({ provider, originalBody, transformedBody, model });
+    } catch {
+      stats.fallbacks += 1;
+      stats.pending = 0;
+      return;
+    }
+    Object.assign(stats, createSemanticJudgeStats(candidates));
+    void observeSemanticJudgments({ candidates, semanticJudge, stats });
+  });
+}
+
+async function observeSemanticJudgments({ candidates, semanticJudge, stats }) {
+  for (const candidate of candidates) {
+    try {
+      const result = await semanticJudge(candidate);
+      if (result?.status === 'judged') {
+        stats.judged += 1;
+        if (result.verdict === 'loss') stats.losses += 1;
+        else if (result.verdict === 'preserved') stats.preserved += 1;
+      } else if (result?.status === 'skipped') stats.skipped += 1;
+      else stats.fallbacks += 1;
+    } catch {
+      stats.fallbacks += 1;
+    } finally {
+      stats.pending -= 1;
+    }
+  }
+}
+
 export async function createProviderProxy({
   upstream, host = '127.0.0.1', port = 0, policy = {}, maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
-  semanticCompactor, metricsPath, contextCapturePath, contextCaptureHost, contextSessionKey,
+  semanticCompactor, semanticJudge, metricsPath, contextCapturePath, contextCaptureHost, contextSessionKey,
   f1TelemetryPublisher = publishF1Telemetry, transformProviderRequests = false,
   historyArchiveRoot,
   env = process.env,
@@ -520,6 +577,18 @@ export async function createProviderProxy({
                 const stats = createSemanticStats(candidates);
                 lastStats.semantic = stats;
                 setImmediate(() => observeSemanticCandidates({ provider, candidates, semanticCompactor, stats }));
+              }
+              if (typeof semanticJudge === 'function' && transformed.changed) {
+                const stats = createPendingSemanticJudgeStats();
+                lastStats.semanticJudge = stats;
+                scheduleSemanticJudgments({
+                  provider,
+                  originalBody: parsed,
+                  transformedBody: transformed.body,
+                  model: recordModel,
+                  semanticJudge,
+                  stats,
+                });
               }
             }
           } catch {
