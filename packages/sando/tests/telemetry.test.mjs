@@ -132,6 +132,7 @@ test('validateEvent rejects strings over 32 characters', () => {
 
 test('validateEvent accepts stable patch plugin versions and rejects prereleases', () => {
   assert.doesNotThrow(() => validateEvent(hookEvent({ plugin_version: '0.5.1' })));
+  assert.doesNotThrow(() => validateEvent(hookEvent({ plugin_version: '0.6.0-jev' })));
   assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5.0-rc1' })), /plugin_version/);
   assert.throws(() => validateEvent(hookEvent({ plugin_version: '0.5.x' })), /plugin_version/);
 });

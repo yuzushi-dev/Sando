@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const VERSION_PATTERN = /^\d+\.\d+(?:\.\d+)?$/;
+const VERSION_PATTERN = /^\d+\.\d+(?:\.\d+)?(?:-jev)?$/;
 const STANDALONE_VERSION = '0.3.0';
 const METADATA_FILES = ['package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'];
 

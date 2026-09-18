@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { PLUGIN_VERSION } from '../src/version.mjs';
 import {
   createSliceBridge,
   SLICE_TOOLS,
@@ -120,7 +121,7 @@ test('Slice bridge keeps one upstream MCP process and preserves result metadata'
   assert.equal(first._index, '[index: files=1 symbols=2 hash=12345678]');
   assert.equal(second._fresh, 'reindexed');
   assert.equal(second._reingest, 1);
-  assert.equal(firstPayload.clientVersion, '0.6.0');
+  assert.equal(firstPayload.clientVersion, PLUGIN_VERSION);
 });
 
 test('Slice fetch_body defaults to a bounded upstream line window', async (t) => {

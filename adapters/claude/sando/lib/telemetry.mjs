@@ -54,7 +54,7 @@ const SHARED_FIELDS = {
     'f1_footprint', 'f4_gateway', 'coverage_summary',
   ].includes(value),
   day_utc: (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
-  plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
+  plugin_version: (value) => typeof value === 'string' && /^\d+\.\d+(?:\.\d+)?(?:-jev)?$/.test(value) && value.length <= MAX_STRING_LENGTH,
 };
 
 const HOOK_FIELDS = {
