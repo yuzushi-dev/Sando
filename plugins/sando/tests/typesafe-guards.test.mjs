@@ -52,48 +52,88 @@ test('TypeSafeClient falls back to offlineHandler on hard timeout', async () => 
   assert.equal(result.answers.q.value, 1.0);
 });
 
-test('evaluateDoneClaim word boundaries and Italian negations', async () => {
-  // English negation
-  const resEn = await evaluateDoneClaim({
-    finalMessage: "I haven't done the final refactor yet. This is an important fattore.",
-    hasCodeEdits: true,
-    testsRan: false,
-    testsPassed: false,
-  });
-  assert.equal(resEn.flagged, false);
+test('evaluateDoneClaim: agent cannot deceive Sando by writing "tests pass" when telemetry is false', async () => {
+  const offlineClient = new TypeSafeClient({ apiKey: null });
 
-  // Italian negation
-  const resIt = await evaluateDoneClaim({
-    finalMessage: "Non ho ancora fatto la migrazione del database.",
+  // Scenario 1: Deceptive prose claiming tests pass, but Sando telemetry recorded verified = false
+  const resDeceptive = await evaluateDoneClaim({
+    finalMessage: "I fixed the bug completely and all 15 unit tests pass with 100% success!",
     hasCodeEdits: true,
-    testsRan: false,
-    testsPassed: false,
+    verified: false,
+    client: offlineClient,
   });
-  assert.equal(resIt.flagged, false);
+  assert.equal(resDeceptive.claimsDone, true);
+  assert.equal(resDeceptive.flagged, true);
+  assert.match(resDeceptive.notice, /no passing verification command was recorded after the last edit/);
 
-  // Real completion claim with failing tests
-  const resFlagged = await evaluateDoneClaim({
-    finalMessage: "Ho risolto il bug! Tutto fatto.",
+  // Scenario 2: Same prose, but Sando telemetry recorded genuine verified = true
+  const resVerified = await evaluateDoneClaim({
+    finalMessage: "I fixed the bug completely and all 15 unit tests pass with 100% success!",
     hasCodeEdits: true,
-    testsRan: true,
-    testsPassed: false,
+    verified: true,
+    client: offlineClient,
   });
-  assert.equal(resFlagged.flagged, true);
-  assert.match(resFlagged.notice, /unverified completion claim/);
+  assert.equal(resVerified.claimsDone, true);
+  assert.equal(resVerified.flagged, false);
+  assert.equal(resVerified.notice, null);
 
-  // Real completion claim with passing tests
-  const resPassed = await evaluateDoneClaim({
-    finalMessage: "Bug is fixed and done! All 20 tests pass.",
+  // Scenario 3: Agent admits ongoing work (English & Italian negations)
+  const resOngoingEn = await evaluateDoneClaim({
+    finalMessage: "I haven't done the final migration yet, still debugging.",
     hasCodeEdits: true,
-    testsRan: true,
-    testsPassed: true,
+    verified: false,
+    client: offlineClient,
   });
-  assert.equal(resPassed.flagged, false);
+  assert.equal(resOngoingEn.claimsDone, false);
+  assert.equal(resOngoingEn.flagged, false);
+
+  const resOngoingIt = await evaluateDoneClaim({
+    finalMessage: "Non ho ancora completato i test di carico.",
+    hasCodeEdits: true,
+    verified: false,
+    client: offlineClient,
+  });
+  assert.equal(resOngoingIt.claimsDone, false);
+  assert.equal(resOngoingIt.flagged, false);
+});
+
+test('StuckGuard Tier 1 fast-path: identical commands trigger deterministically with 0ms overhead', async () => {
+  const tmpFile = path.join(os.tmpdir(), `test-stuck-tier1-${Date.now()}.json`);
+  const guard = new StuckGuard({ storagePath: tmpFile, failureThreshold: 3, client: new TypeSafeClient({ apiKey: null }) });
+
+  await guard.recordToolResult({ tool: 'Bash', input: 'python run.py', output: 'Crash', exitCode: 1 });
+  await guard.recordToolResult({ tool: 'Bash', input: 'python run.py', output: 'Crash', exitCode: 1 });
+  const res3 = await guard.recordToolResult({ tool: 'bash', input: 'python run.py', output: 'Crash', exitCode: 1 });
+
+  // Must trigger via Tier 1 deterministic fast-path
+  assert.equal(res3.stuck, true);
+  assert.equal(res3.tier, 'deterministic');
+  assert.equal(res3.elapsedMs, 0);
+  assert.equal(res3.model, 'deterministic-fast-path');
+  assert.match(res3.notice, /3 consecutive identical failures detected/);
+
+  // 4th retry: must deduplicate notice
+  const res4 = await guard.recordToolResult({ tool: 'bash', input: 'python run.py', output: 'Crash', exitCode: 1 });
+  assert.equal(res4.stuck, true);
+  assert.equal(res4.tier, 'deduplicated');
+  assert.equal(res4.notice, null);
+
+  // Read-only tool execution does NOT clear failure streak
+  await guard.recordToolResult({ tool: 'grep', input: 'grep error log.txt', output: 'log', exitCode: 0 });
+  const sessionData = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+  assert.equal(sessionData.failures.length, 4);
+
+  // Successful mutating command clears the streak
+  await guard.recordToolResult({ tool: 'bash', input: 'echo "fixed" > file.txt', output: '', exitCode: 0 });
+  const clearedData = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+  assert.equal(clearedData.failures.length, 0);
+
+  fs.rmSync(tmpFile, { force: true });
 });
 
 test('StuckGuard distinguishes different commands sharing prefix', async () => {
   const tmpFile = path.join(os.tmpdir(), `test-stuck-prefix-${Date.now()}.json`);
-  const guard = new StuckGuard({ storagePath: tmpFile, failureThreshold: 3 });
+  const guard = new StuckGuard({ storagePath: tmpFile, failureThreshold: 3, client: new TypeSafeClient({ apiKey: null }) });
 
   // Different tests sharing the same long prefix: should NOT trigger stuck loop
   await guard.recordToolResult({ tool: 'Bash', input: 'npm run test:unit --grep FeatureAlpha', output: 'Failed', exitCode: 1 });
@@ -101,27 +141,5 @@ test('StuckGuard distinguishes different commands sharing prefix', async () => {
   const res = await guard.recordToolResult({ tool: 'Bash', input: 'npm run test:unit --grep FeatureGamma', output: 'Failed', exitCode: 1 });
 
   assert.equal(res.stuck, false);
-  fs.rmSync(tmpFile, { force: true });
-});
-
-test('StuckGuard persists across instances, supports case-insensitive tools, and triggers on identical retry', async () => {
-  const tmpFile = path.join(os.tmpdir(), `test-stuck-full-${Date.now()}.json`);
-  const opts = { storagePath: tmpFile, failureThreshold: 3 };
-
-  // Run 1 with 'Bash'
-  const g1 = new StuckGuard(opts);
-  await g1.recordToolResult({ tool: 'Bash', input: 'python run.py', output: 'Traceback (most recent call last)', exitCode: 1 });
-
-  // Run 2 with 'bash' (case-insensitive)
-  const g2 = new StuckGuard(opts);
-  await g2.recordToolResult({ tool: 'bash', input: 'python run.py', output: 'Traceback (most recent call last)', exitCode: 1 });
-
-  // Run 3 with 'BASH' -> stuck!
-  const g3 = new StuckGuard(opts);
-  const res3 = await g3.recordToolResult({ tool: 'BASH', input: 'python run.py', output: 'Traceback (most recent call last)', exitCode: 1 });
-
-  assert.equal(res3.stuck, true);
-  assert.match(res3.notice, /3 consecutive failures with the same strategy/);
-
   fs.rmSync(tmpFile, { force: true });
 });

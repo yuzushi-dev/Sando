@@ -55,10 +55,10 @@ function resolveApiKey() {
 
 export class TypeSafeClient {
   constructor(options = {}) {
-    this.apiKey = options.apiKey || resolveApiKey();
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : resolveApiKey();
     this.baseUrl = (options.baseUrl || 'https://api.typesafe.ai/v1').replace(/\/+$/, '');
     this.defaultModel = options.model || 'jev-latest';
-    this.timeoutMs = options.timeoutMs || 1000;
+    this.timeoutMs = options.timeoutMs || 1500;
     this.offlineFallback = options.offlineFallback !== false;
   }
 
