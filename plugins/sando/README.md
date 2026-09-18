@@ -24,6 +24,16 @@ process. Transformation is pass-through by default and requires
 `SANDO_PROXY_TRANSFORM=1`. Missing
 session keys fail closed; normal Codex traffic is unchanged.
 
+To measure preview quality with TypeSafe/Jev, install the optional `pi-typesafe` package in the
+launcher environment and set `SANDO_TYPESAFE_SHADOW=1` together with `SANDO_PROXY_TRANSFORM=1`.
+Only redacted, bounded samples of
+historical successful results and their previews are judged. The verdict is shadow-only: the
+provider request is unchanged. Missing package or key disables the judge; use `SANDO_PROJECT_ROOT`
+for project-local `.sando/redaction.json` rules.
+
+The offline semantic-quality test compares labeled diagnostic facts before and after a loss gate;
+it uses an injected judge and does not gate live provider requests.
+
 It does not intercept Codex traffic unless configured. `sando_exec` remains sandboxed and bounds retained output without terminating the command when the capture limit is reached. MCP adds a model-visible tool interaction; use the native PreToolUse route where applicable and measure the tradeoff per workload.
 The optional provider proxy reports history elisions as digest-only `sando-history-disclosure/v1` records; opaque OpenAI results without explicit success evidence, known errors, and current/batch results remain lossless. Historical transform families have independent policy switches.
 

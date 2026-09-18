@@ -25,7 +25,7 @@ const GENERATED_MODULES = [
   'artifact-lifecycle.mjs',
   'gateway-gate.mjs', 'gateway-gate-cli.mjs', 'lazy-mcp-gateway.mjs', 'lazy-mcp-gateway-stdio.mjs',
   'history-disclosure.mjs', 'exec-capture.mjs', 'context-transform.mjs', 'history-budget.mjs',
-  'history-dedupe.mjs', 'history-shake.mjs', 'history-structure.mjs', 'proxy.mjs', 'proxy-metrics.mjs',
+  'semantic-judge.mjs', 'semantic-gate.mjs', 'history-dedupe.mjs', 'history-shake.mjs', 'history-structure.mjs', 'proxy.mjs', 'proxy-metrics.mjs',
   'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs',
   'user-prompt-submit.mjs', 'version.mjs',
 ];

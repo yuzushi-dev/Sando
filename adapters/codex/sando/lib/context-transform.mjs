@@ -320,6 +320,46 @@ export function listSemanticCandidates({ provider, body, model } = {}) {
     }));
 }
 
+export function listSemanticJudgmentCandidates({ provider, originalBody, transformedBody, model } = {}) {
+  const originalRecords = collectHistoryRecords(provider, originalBody);
+  const originalById = new Map(originalRecords.map((record) => [record.id, record]));
+  return collectHistoryRecords(provider, transformedBody)
+    .filter((record) => record.safe && record.historical)
+    .flatMap((preview) => {
+      const original = originalById.get(preview.id);
+      const originalText = resultText(original?.output);
+      const previewText = resultText(preview.output);
+      if (!original || originalText === null || previewText === null || originalText === previewText) return [];
+      return [{
+        id: preview.id,
+        provider,
+        model: model ?? null,
+        toolName: preview.toolName,
+        originalText,
+        previewText,
+        historical: preview.historical,
+        isError: preview.isError,
+        recoverable: historyArchiveMarker(previewText),
+        estimatedTokens: original.estimatedTokens,
+        previewTokens: preview.estimatedTokens,
+      }];
+    });
+}
+
+export function restoreSemanticJudgmentCandidates({ provider, originalBody, transformedBody, ids = [] } = {}) {
+  const restoreIds = new Set(ids);
+  const body = structuredClone(transformedBody);
+  if (restoreIds.size === 0) return body;
+  const originalById = new Map(collectHistoryRecords(provider, originalBody).map((record) => [record.id, record]));
+  for (const preview of collectHistoryRecords(provider, body)) {
+    if (!restoreIds.has(preview.id) || !preview.historical || !preview.safe) continue;
+    const original = originalById.get(preview.id);
+    if (!original?.safe || resultText(original.output) === null) continue;
+    replaceResult(preview.entry.item, preview.entry.key, structuredClone(original.output));
+  }
+  return body;
+}
+
 function carriesBreakpoint(value) {
   if (Array.isArray(value)) return value.some(carriesBreakpoint);
   if (!object(value)) return false;

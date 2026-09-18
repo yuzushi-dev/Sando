@@ -7,7 +7,13 @@ export {
 } from './src/core.mjs';
 export { createRedactionProfile } from './src/redaction-profile.mjs';
 export { loadProjectRedactionProfile } from './src/redaction-config.mjs';
-export { detectProviderBody, listSemanticCandidates, transformProviderRequest } from './src/context-transform.mjs';
+export {
+  detectProviderBody,
+  listSemanticCandidates,
+  listSemanticJudgmentCandidates,
+  restoreSemanticJudgmentCandidates,
+  transformProviderRequest,
+} from './src/context-transform.mjs';
 export {
   DEFAULT_ACCOUNTING_WEIGHTS,
   PAIRED_ARMS,
@@ -24,6 +30,12 @@ export {
   SEMANTIC_SUMMARY_SCHEMA,
   validateSemanticSummary,
 } from './src/semantic-compactor.mjs';
+export {
+  buildSemanticJudgeRequest,
+  createSemanticJudge,
+  SEMANTIC_JUDGMENT_SCHEMA,
+} from './src/semantic-judge.mjs';
+export { createSemanticGate } from './src/semantic-gate.mjs';
 export { createProviderProxy } from './src/proxy.mjs';
 export { shakeHistoricalResult } from './src/history-shake.mjs';
 export {

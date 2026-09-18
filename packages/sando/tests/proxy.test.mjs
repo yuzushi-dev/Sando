@@ -417,6 +417,61 @@ test('shadow observer runs after forwarding and cannot delay the provider respon
   await waitFor(() => proxy.lastStats.semantic.pending === 0);
 });
 
+test('semantic judge receives original and preview without delaying forwarding', async (t) => {
+  let received;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const upstream = http.createServer(async (request, response) => {
+    received = JSON.parse(await readBody(request));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"ok":true}');
+  });
+  const upstreamAddress = await listen(upstream);
+  let candidate;
+  const proxy = await createProviderProxy({
+    upstream: `http://127.0.0.1:${upstreamAddress.port}`,
+    transformProviderRequests: true,
+    semanticJudge: async (value) => {
+      candidate = value;
+      await gate;
+      return { status: 'judged', lossProbability: 0.91, verdict: 'loss' };
+    },
+  });
+  t.after(async () => {
+    release();
+    await proxy.close();
+    await close(upstream);
+  });
+
+  const body = {
+    model: 'fixture',
+    messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'old', name: 'Read', input: { file_path: 'src/app.ts:1-20' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old', content: 'old body' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'new', name: 'Read', input: { file_path: 'src/app.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'new', content: 'new body' }] },
+    ],
+  };
+  const response = await Promise.race([
+    fetch(`${proxy.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(body),
+    }),
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 1000)),
+  ]);
+
+  assert.notEqual(response, 'timed-out');
+  assert.equal(received.messages[1].content[0].content, '[sando superseded by newer read]');
+  release();
+  await response.text();
+  await waitFor(() => proxy.lastStats.semanticJudge.pending === 0);
+  assert.equal(candidate.originalText, 'old body');
+  assert.equal(candidate.previewText, '[sando superseded by newer read]');
+  assert.equal(proxy.lastStats.semanticJudge.judged, 1);
+  assert.equal(proxy.lastStats.semanticJudge.losses, 1);
+});
+
 test('proxy persists provider-reported usage and transform stats when metricsPath is set', async (t) => {
   const upstream = http.createServer(async (request, response) => {
     await readBody(request);

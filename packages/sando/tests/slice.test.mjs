@@ -120,7 +120,7 @@ test('Slice bridge keeps one upstream MCP process and preserves result metadata'
   assert.equal(first._index, '[index: files=1 symbols=2 hash=12345678]');
   assert.equal(second._fresh, 'reindexed');
   assert.equal(second._reingest, 1);
-  assert.equal(firstPayload.clientVersion, '0.5.0');
+  assert.equal(firstPayload.clientVersion, '0.6.0');
 });
 
 test('Slice fetch_body defaults to a bounded upstream line window', async (t) => {
