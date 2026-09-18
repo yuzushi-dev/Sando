@@ -38,3 +38,31 @@ It does not intercept Codex traffic unless configured. `sando_exec` remains sand
 The optional provider proxy reports history elisions as digest-only `sando-history-disclosure/v1` records; opaque OpenAI results without explicit success evidence, known errors, and current/batch results remain lossless. Historical transform families have independent policy switches.
 
 Recoverable history is opt-in and skips eligible results below 3,072 bytes by default. Same-transcript provider replays show conditional input reduction; natural client trajectories remain workload-dependent, so the plugin does not advertise a general savings percentage.
+
+
+## Optional: TypeSafe AI Supervised Guards (Done-Check & Stuck-Loop)
+
+Sando supports optional semantic supervision powered by TypeSafe AI (System One model Jev) to protect against unverified completion claims and repetitive retry loops:
+
+- **Done-Guard:** Intercepts turn completions where code was modified but no passing test command was recorded by Sando telemetry, preventing unverified completion claims from closing tasks prematurely.
+- **Stuck-Guard:** Detects consecutive tool failures. Identical failures are intercepted deterministically at Tier 1 (0 ms, 0 API calls). Ambiguous variations of failing strategies are evaluated by Jev at Tier 2.
+
+### Configuration (Option B: User Home Configuration)
+
+Users configure their personal API key in their private home directory (`~/.config/typesafe/auth.json`), keeping keys strictly outside of repository working trees:
+
+```bash
+mkdir -p ~/.config/typesafe
+cat << 'EOF' > ~/.config/typesafe/auth.json
+{
+  "api_key": "YOUR_PERSONAL_TYPESAFE_KEY"
+}
+EOF
+chmod 600 ~/.config/typesafe/auth.json
+```
+
+Alternatively, set the `TYPESAFE_API_KEY` environment variable. Verify the setup anytime by running `node plugins/sando/bin/verify-typesafe-live.mjs`.
+
+### Privacy & Fail-Open Semantics
+- **Zero credential leaks:** Both state and question payloads undergo bidirectional secret redaction (`[REDACTED]`) locally before any network transmission.
+- **Strict Fail-Open:** If unconfigured, unreachable, or timed out (>1500 ms), guards automatically degrade to local deterministic heuristics without blocking the session or throwing unhandled errors.
