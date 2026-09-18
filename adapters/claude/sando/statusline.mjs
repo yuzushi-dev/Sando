@@ -25,7 +25,7 @@ function honeyStatus() {
   try {
     const nodeScript = /\.(?:c|m)?js$/.test(script) && !/[\s]/.test(script);
     const result = spawnSync(nodeScript ? process.execPath : 'sh', nodeScript ? [script] : ['-c', script], {
-      input, encoding: 'utf8', timeout: 250,
+      input, encoding: 'utf8', timeout: Number(process.env.SANDO_STATUSLINE_TIMEOUT_MS) || 500,
       env: process.env,
     });
     return result.status === 0 ? result.stdout.trim() : '';

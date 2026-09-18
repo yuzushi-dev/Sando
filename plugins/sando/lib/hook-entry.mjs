@@ -92,7 +92,7 @@ function artifactPath(cwd, artifact) {
   return path.posix.join('.sando/sando', 'artifacts', name);
 }
 
-export function runHookCli({ host, env = process.env } = {}) {
+export async function runHookCli({ host, env = process.env } = {}) {
   let policy;
   try {
     policy = hookPolicy(env);
@@ -116,6 +116,16 @@ export function runHookCli({ host, env = process.env } = {}) {
       const receipt = createReceipt({ host, event, optimization });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
       recordHookTelemetry({ host, env, policy, optimization });
+
+      // Track session telemetry & check Stuck-Guard
+      try {
+        const { handlePostToolUseGuard } = await import('./runtime-guards.mjs');
+        const guardRes = await handlePostToolUseGuard({ host, event, input, env });
+        if (guardRes?.stuck && guardRes?.notice) {
+          process.stderr.write();
+        }
+      } catch {}
+
       if (host === 'claude' && policy.mode === 'apply') {
         failureStage = 'artifact';
         const shaped = shapeForClaude({

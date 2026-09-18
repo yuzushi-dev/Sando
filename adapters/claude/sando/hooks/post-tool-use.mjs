@@ -2,4 +2,4 @@
 
 import { runHookCli } from '../lib/hook-entry.mjs';
 
-runHookCli({ host: 'claude' });
+await runHookCli({ host: 'claude' });

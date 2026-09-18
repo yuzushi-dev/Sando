@@ -107,7 +107,7 @@ function optimizationForEmission(optimization, replacement) {
   };
 }
 
-export function runHookCli({ host, env = process.env } = {}) {
+export async function runHookCli({ host, env = process.env } = {}) {
   let policy;
   try {
     policy = hookPolicy(env);
@@ -152,6 +152,16 @@ export function runHookCli({ host, env = process.env } = {}) {
       const receipt = createReceipt({ host, event, optimization: measuredOptimization, replacement: modelVisibleOutput });
       try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: measuredOptimization, receipt }); } catch {}
       recordHookTelemetry({ host, env, policy, optimization: measuredOptimization });
+
+      // Track session telemetry & check Stuck-Guard
+      try {
+        const { handlePostToolUseGuard } = await import('./runtime-guards.mjs');
+        const guardRes = await handlePostToolUseGuard({ host, event, input, env });
+        if (guardRes?.stuck && guardRes?.notice) {
+          process.stderr.write();
+        }
+      } catch {}
+
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
         return;

@@ -27,7 +27,7 @@ const GENERATED_MODULES = [
   'history-disclosure.mjs', 'exec-capture.mjs', 'context-transform.mjs', 'history-budget.mjs',
   'semantic-judge.mjs', 'semantic-gate.mjs', 'history-dedupe.mjs', 'history-shake.mjs', 'history-structure.mjs', 'proxy.mjs', 'proxy-metrics.mjs',
   'telemetry.mjs', 'telemetry-cli.mjs', 'telemetry-flush-entry.mjs', 'session-start.mjs',
-  'user-prompt-submit.mjs', 'version.mjs',
+  'user-prompt-submit.mjs', 'version.mjs', 'typesafe-client.mjs', 'done-guard.mjs', 'stuck-guard.mjs', 'session-telemetry.mjs', 'runtime-guards.mjs',
 ];
 
 test('standalone bundles match canonical routing metadata and behavior', async () => {

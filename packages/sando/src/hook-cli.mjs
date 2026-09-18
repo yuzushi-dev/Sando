@@ -97,7 +97,7 @@ function artifactPath(cwd, artifact) {
   return path.posix.join('.sando/sando', 'artifacts', name);
 }
 
-export function runHookCli({ host, env = process.env } = {}) {
+export async function runHookCli({ host, env = process.env } = {}) {
   let policy;
   try {
     policy = hookPolicy(env, host);
@@ -139,6 +139,16 @@ export function runHookCli({ host, env = process.env } = {}) {
         recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt });
       } catch {}
       recordHookTelemetry({ host, env, policy, optimization });
+
+      // Track session telemetry & check Stuck-Guard
+      try {
+        const { handlePostToolUseGuard } = await import('./runtime-guards.mjs');
+        const guardRes = await handlePostToolUseGuard({ host, event, input, env });
+        if (guardRes?.stuck && guardRes?.notice) {
+          process.stderr.write();
+        }
+      } catch {}
+
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
         return;
