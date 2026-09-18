@@ -80,6 +80,10 @@ Approval is untouched — Codex handles that through a separate `PermissionReque
   or scope rules.
 - **Accounting you can check.** Provider-reported tokens and mechanical trimming are recorded
   separately; mechanical reduction is never turned into a provider-billing claim.
+- **Semantic supervision with TypeSafe Jev (optional).** Sub-second System One decision
+  guards that catch unverified completion claims (`Done-Guard`, strictly grounded in actual test
+  telemetry) and intercept repetitive retry loops (`Stuck-Guard`), with automatic secret redaction
+  and fail-open offline fallback.
 
 ## Architecture in brief
 
@@ -286,5 +290,36 @@ Teams can add project-local detectors in `.sando/redaction.json`:
 ```
 
 Built-in detectors remain enabled. The supported declarative rules are `assignment-key` and `token-prefix`; both use the fixed `[REDACTED]` placeholder. The profile is loaded from the current project only, and its digest is recorded in receipts. Invalid profiles are reported instead of silently ignored.
+
+</details>
+
+
+<details>
+<summary><b>Reference: TypeSafe Jev supervised guards (Done-Check & Stuck-Loop)</b></summary>
+
+Sando supports optional semantic supervision powered by [TypeSafe AI](https://typesafe.ai/) (System One model Jev) to protect agent coding workflows:
+
+- **Done-Guard:** Evaluates whether an agent claims completion while files were modified without a passing verification command recorded in Sando telemetry.
+- **Stuck-Guard:** Detects consecutive failing tools. Identical retries trigger deterministically at Tier 1 (0 ms, 0 API calls). Ambiguous variations of failing strategies are evaluated by Jev at Tier 2.
+
+### Configuration (Option B: User Home Configuration)
+
+Users configure their personal API key in their private home directory (`~/.config/typesafe/auth.json`), keeping keys strictly outside of repository working trees:
+
+```bash
+mkdir -p ~/.config/typesafe
+cat << 'EOF' > ~/.config/typesafe/auth.json
+{
+  "api_key": "YOUR_PERSONAL_TYPESAFE_KEY"
+}
+EOF
+chmod 600 ~/.config/typesafe/auth.json
+```
+
+Alternatively, set the `TYPESAFE_API_KEY` environment variable. Run `node plugins/sando/bin/verify-typesafe-live.mjs` to verify your setup.
+
+### Privacy & Fail-Open Semantics
+- **Zero credential leaks:** Both state and question payloads undergo bidirectional regex secret redaction (`[REDACTED]`) locally before any network transmission.
+- **Strict Fail-Open:** If unconfigured, unreachable, or timed out (>1500 ms), guards automatically degrade to local deterministic heuristics without blocking the session or throwing unhandled errors.
 
 </details>
