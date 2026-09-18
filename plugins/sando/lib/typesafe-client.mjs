@@ -3,6 +3,7 @@
  *
  * Provides sub-second structured evaluations with strict fail-open semantics,
  * robust secret redaction across state and questions, and leak-free timeout handling.
+ * Conforms to TypeSafe System One API (POST /v1/systemone with jev-latest).
  */
 
 import fs from 'node:fs';
@@ -56,7 +57,8 @@ export class TypeSafeClient {
   constructor(options = {}) {
     this.apiKey = options.apiKey || resolveApiKey();
     this.baseUrl = (options.baseUrl || 'https://api.typesafe.ai/v1').replace(/\/+$/, '');
-    this.timeoutMs = options.timeoutMs || 350;
+    this.defaultModel = options.model || 'jev-latest';
+    this.timeoutMs = options.timeoutMs || 1000;
     this.offlineFallback = options.offlineFallback !== false;
   }
 
@@ -71,7 +73,7 @@ export class TypeSafeClient {
     const safeQuestions = redactValue(questions);
 
     // Hard wall-clock ceiling to guarantee fail-open under any circumstance
-    const hardLimitMs = timeoutMs + 150;
+    const hardLimitMs = timeoutMs + 200;
     let hardTimer = null;
 
     const evaluationPromise = this._executeEvaluate(safeState, safeQuestions, timeoutMs, options, startTime);
@@ -145,6 +147,7 @@ export class TypeSafeClient {
 
     const payload = {
       state: safeState,
+      model: options.model || this.defaultModel,
       questions: safeQuestions,
     };
 
@@ -153,7 +156,8 @@ export class TypeSafeClient {
     if (timer.unref) timer.unref();
 
     try {
-      const resp = await fetch(`${this.baseUrl}/evaluate`, {
+      const endpoint = `${this.baseUrl}/systemone`;
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -173,12 +177,31 @@ export class TypeSafeClient {
       }
 
       const data = await resp.json();
+      const rawAnswers = data.answers || {};
+      const normalizedAnswers = {};
+
+      for (const [qId, qAns] of Object.entries(rawAnswers)) {
+        if (!qAns || typeof qAns !== 'object') continue;
+        const val = qAns.value !== undefined
+          ? qAns.value
+          : (qAns.noul !== undefined ? qAns.noul : (qAns.choice !== undefined ? qAns.choice : qAns.score));
+        
+        normalizedAnswers[qId] = {
+          value: val,
+          confidence: qAns.confidence !== undefined ? qAns.confidence : (typeof qAns.noul === 'number' ? 1.0 : undefined),
+          probabilities: qAns.probabilities || {},
+          raw: qAns,
+          type: qAns.type,
+        };
+      }
+
       return {
         ok: true,
-        answers: data.answers || {},
-        model: data.model || 'jev-1',
+        answers: normalizedAnswers,
+        model: data.model || this.defaultModel,
         elapsedMs: Date.now() - startTime,
         offline: false,
+        usage: data.usage,
       };
     } catch (err) {
       if (this.offlineFallback && options.offlineHandler) {
@@ -197,7 +220,7 @@ export class TypeSafeClient {
       return {
         ok: false,
         answers: {},
-        model: 'jev-1',
+        model: this.defaultModel,
         elapsedMs: Date.now() - startTime,
         error: `TypeSafe request failed: ${err.message}`,
         offline: false,
