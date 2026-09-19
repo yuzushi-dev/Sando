@@ -15,32 +15,35 @@ function fixture() {
   const env = { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') };
   return { env, configPath: defaultAdoptionConfigPath(env), statePath: defaultAdoptionStatePath(env) };
 }
+const TEST_DAY = new Date(Date.now() - 2 * 86_400_000);
+TEST_DAY.setUTCHours(10, 0, 0, 0);
+function observed(hours = 0, milliseconds = 0) { return new Date(TEST_DAY.getTime() + hours * 3_600_000 + milliseconds).toISOString(); }
 
 test('adoption defaults off and core consent is insufficient', () => {
   const { env, configPath, statePath } = fixture();
   assert.equal(readAdoptionConfig(configPath).enabled, false);
-  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: '2026-09-19T10:00:00.000Z' }), false);
+  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: observed() }), false);
   assert.equal(fs.existsSync(statePath), false);
 });
 
 test('explicit consent creates per-host stable UUIDs and day/version markers', () => {
   const { env, configPath, statePath } = fixture();
-  enableAdoption({ configPath, answer: 'yes', now: () => new Date('2026-09-19T09:00:00.000Z') });
-  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: '2026-09-19T10:00:00.000Z' }), true);
-  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: '2026-09-19T11:00:00.000Z' }), false);
-  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.2', observedAt: '2026-09-19T12:00:00.000Z' }), true);
-  assert.equal(recordAdoption({ env, host: 'codex', pluginVersion: '0.6.1', observedAt: '2026-09-19T12:00:00.000Z' }), true);
+  enableAdoption({ configPath, answer: 'yes', now: () => new Date(TEST_DAY) });
+  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: observed() }), true);
+  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: observed(1) }), false);
+  assert.equal(recordAdoption({ env, host: 'claude', pluginVersion: '0.6.2', observedAt: observed(2) }), true);
+  assert.equal(recordAdoption({ env, host: 'codex', pluginVersion: '0.6.1', observedAt: observed(2) }), true);
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   assert.equal(state.queue.length, 3);
   assert.notEqual(state.identities.claude, state.identities.codex);
   assert.match(state.identities.claude, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  assert.equal(state.queue[0]._timeUnixNano, '1789812000000000000');
+  assert.equal(state.queue[0]._timeUnixNano, String(BigInt(TEST_DAY.getTime()) * 1_000_000n));
 });
 
 test('version transitions emit A to B to A once each', () => {
   const { env, configPath, statePath } = fixture();
   enableAdoption({ configPath, answer: 'yes' });
-  for (const [pluginVersion, observedAt] of [['0.6.1', '2026-09-19T10:00:00Z'], ['0.6.2', '2026-09-19T11:00:00Z'], ['0.6.1', '2026-09-19T12:00:00Z']]) {
+  for (const [pluginVersion, observedAt] of [['0.6.1', observed()], ['0.6.2', observed(1)], ['0.6.1', observed(2)]]) {
     assert.equal(recordAdoption({ env, host: 'claude', pluginVersion, observedAt }), true);
   }
   assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).queue.length, 3);
@@ -75,7 +78,7 @@ test('disable clears adoption identity and queue; DNT blocks recording', () => {
 test('OTLP has exact adoption resource, body, seven attributes and original time', () => {
   const { env, configPath } = fixture();
   enableAdoption({ configPath, answer: 'yes' });
-  recordAdoption({ env, host: 'omp', pluginVersion: '0.6.1', observedAt: '2026-09-19T10:00:00.123Z' });
+  recordAdoption({ env, host: 'omp', pluginVersion: '0.6.1', observedAt: observed(0, 123) });
   const state = JSON.parse(fs.readFileSync(defaultAdoptionStatePath(env), 'utf8'));
   const payload = toAdoptionOtlp(state.queue);
   const record = payload.resourceLogs[0].scopeLogs[0].logRecords[0];
@@ -83,7 +86,7 @@ test('OTLP has exact adoption resource, body, seven attributes and original time
   assert.deepEqual(payload.resourceLogs[0].scopeLogs[0].scope, {});
   assert.equal(record.body.stringValue, 'sando.installation_activity');
   assert.equal(record.attributes.length, 7);
-  assert.equal(record.timeUnixNano, '1789812000123000000');
+  assert.equal(record.timeUnixNano, String(BigInt(TEST_DAY.getTime() + 123) * 1_000_000n));
 });
 
 test('flush rechecks consent and rejects redirects', async () => {
@@ -103,7 +106,7 @@ test('flush rechecks consent and rejects redirects', async () => {
 
 test('flush sends exact payload to a private loopback receiver', async () => {
   const { env, configPath, statePath } = fixture(); enableAdoption({ configPath, answer: 'yes' });
-  recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: '2026-09-19T10:00:00Z' });
+  recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1', observedAt: observed() });
   let body;
   const server = http.createServer((request, response) => { const chunks = []; request.on('data', (chunk) => chunks.push(chunk)); request.on('end', () => { body = JSON.parse(Buffer.concat(chunks)); response.end('ok'); }); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
