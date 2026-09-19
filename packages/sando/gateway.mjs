@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { createLazyMcpGateway } from './src/lazy-mcp-gateway.mjs';
 import { publishF4Telemetry, recordF4Event } from './src/f4-telemetry.mjs';
+import { defaultTelemetryConfigPath, isDoNotTrack, readTelemetryConfig } from './src/telemetry.mjs';
 import { createConfiguredMcpServers, startLazyMcpGatewayStdio } from './src/lazy-mcp-gateway-stdio.mjs';
 
 function loadConfig() {
@@ -16,14 +17,21 @@ const config = loadConfig();
 const output = process.stdout;
 const host = process.env.SANDO_F4_HOST || 'unknown';
 const f4TelemetryEnabled = process.env.SANDO_F4_TELEMETRY !== '0';
+function coreTelemetryEnabled() {
+  try {
+    return readTelemetryConfig(defaultTelemetryConfigPath(process.env)).enabled && !isDoNotTrack(process.env);
+  } catch { return false; }
+}
 const gateway = createLazyMcpGateway({
   ...config,
   servers: createConfiguredMcpServers(config),
   onMessage: (message) => output.write(`${JSON.stringify(message)}\n`),
   onF4Event: (event) => {
     try {
+      const coreAllowed = coreTelemetryEnabled();
+      if (!coreAllowed) return;
       const recorded = recordF4Event({ ...event, host, env: process.env });
-      if (f4TelemetryEnabled) {
+      if (f4TelemetryEnabled && coreAllowed) {
         void publishF4Telemetry(recorded, { endpoint: process.env.SANDO_F4_TELEMETRY_ENDPOINT }).catch(() => {});
       }
     }

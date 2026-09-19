@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { ensureDirectory, withLock } from './provider-usage.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
-import { SCHEMA_VERSION, serializeEvent, toOtlpLogs } from './telemetry.mjs';
+import { SCHEMA_VERSION, serializeEvent, toOtlpLogs, validateTelemetryEndpoint } from './telemetry.mjs';
 
 export const F4_EVENT_SCHEMA = 'sando-f4-event/v1';
 export const F4_EVENT_VERSION = 1;
@@ -142,14 +142,19 @@ export async function publishF4Telemetry(event, {
   timeoutMs = 2_500,
 } = {}) {
   const telemetryEvent = buildF4TelemetryEvent(event);
+  const safeEndpoint = validateTelemetryEndpoint(endpoint);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(endpoint, {
+    const response = await fetchImpl(safeEndpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(toOtlpLogs([telemetryEvent])),
+      body: JSON.stringify(toOtlpLogs([{
+        ...telemetryEvent,
+        _timeUnixNano: (BigInt(Date.parse(event.at)) * 1_000_000n).toString(),
+      }])),
       signal: controller.signal,
+      redirect: 'error',
     });
     if (!response.ok) throw new Error(`F4 telemetry endpoint returned ${response.status}`);
     return { events: 1, status: response.status };

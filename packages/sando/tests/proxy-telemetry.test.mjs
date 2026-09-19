@@ -264,3 +264,41 @@ test('DO_NOT_TRACK prevents proxy telemetry despite enabled config', async (t) =
   });
   assert.equal(fs.existsSync(statePaths.counters), false);
 });
+
+test('F1 publisher requires explicit flag, consent, and DNT allows opt-out', async (t) => {
+  const cases = [
+    { enabled: false, flag: '1', dnt: '0', expected: 0 },
+    { enabled: true, flag: undefined, dnt: '0', expected: 0 },
+    { enabled: true, flag: '1', dnt: '1', expected: 0 },
+    { enabled: true, flag: '1', dnt: '0', expected: 1 },
+  ];
+  for (const scenario of cases) {
+    const { env } = tempTelemetryEnv({ enabled: scenario.enabled });
+    env.DO_NOT_TRACK = scenario.dnt;
+    if (scenario.flag !== undefined) env.SANDO_F1_TELEMETRY = scenario.flag;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-f1-capture-'));
+    const upstream = http.createServer(async (request, response) => {
+      await readBody(request);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } }));
+    });
+    const upstreamAddress = await listen(upstream);
+    let sent = 0;
+    const proxy = await createProviderProxy({
+      upstream: `http://127.0.0.1:${upstreamAddress.port}`, env,
+      contextCapturePath: path.join(directory, 'captures.jsonl'),
+      f1TelemetryPublisher: async () => { sent += 1; },
+    });
+    try {
+      await fetch(`${proxy.url}/v1/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fixture', prompt_cache_key: 'private-test-session', input: [{ role: 'user', content: 'hello' }] }),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(fs.existsSync(path.join(directory, 'captures.jsonl')), true, JSON.stringify(scenario));
+      assert.equal(sent, scenario.expected, JSON.stringify(scenario));
+    } finally {
+      await proxy.close(); await close(upstream); fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});

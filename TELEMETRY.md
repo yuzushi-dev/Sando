@@ -22,6 +22,20 @@ runtime privacy override: Sando does not prompt, collect, queue, or upload
 telemetry, even when the local config says `enabled: true`. Sando does not
 rewrite that config; unset `DO_NOT_TRACK` to use the saved setting again.
 
+The experimental F1 context-footprint and F4 local-gateway publishers have an
+additional safety gate: they require the same core `enabled` consent and the
+same `DO_NOT_TRACK` override. F1 also requires `SANDO_F1_TELEMETRY=1`; F4 can
+be disabled with `SANDO_F4_TELEMETRY=0`. Their endpoint variables are for
+local experiments only (`SANDO_F1_TELEMETRY_ENDPOINT` and
+`SANDO_F4_TELEMETRY_ENDPOINT`) and do not replace core consent. Without core
+consent, F4 writes neither its private JSONL ledger nor an upload. With valid
+consent, `SANDO_F4_TELEMETRY=0` disables only the upload; the private ledger
+remains local. Explicitly configured local context-capture and accounting
+files are operational diagnostics, have no default path, and are separate from
+aggregate telemetry uploads. They remain local and are not uploaded; the
+telemetry consent, feature flags, and endpoint controls govern aggregate export
+only.
+
 ## What's collected
 
 Once a day, Sando buckets that day's counts and sends only these event shapes:

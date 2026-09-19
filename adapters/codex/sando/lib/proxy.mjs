@@ -503,7 +503,11 @@ export async function createProviderProxy({
       if (reported?.outputTokens === 0) return false;
       recordContextCapture({ storagePath: contextCapturePath, record });
       capturedContextSessions.add(record.sessionKeyDigest);
-      if (env.SANDO_F1_TELEMETRY === '1' && typeof f1TelemetryPublisher === 'function') {
+      let coreTelemetryEnabled = false;
+      try {
+        coreTelemetryEnabled = readTelemetryConfig(defaultTelemetryConfigPath(env)).enabled && !isDoNotTrack(env);
+      } catch { /* malformed or missing consent is opt-out */ }
+      if (env.SANDO_F1_TELEMETRY === '1' && coreTelemetryEnabled && typeof f1TelemetryPublisher === 'function') {
         try {
           Promise.resolve(f1TelemetryPublisher({ record, endpoint: env.SANDO_F1_TELEMETRY_ENDPOINT }))
             .catch(() => {});

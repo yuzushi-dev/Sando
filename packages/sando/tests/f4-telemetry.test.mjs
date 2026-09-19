@@ -18,6 +18,11 @@ import {
 import { SCHEMA_VERSION } from '../src/telemetry.mjs';
 import { PLUGIN_VERSION } from '../src/version.mjs';
 
+function f4Source() {
+  return buildF4Event({ host: 'claude', operation: 'call', outcome: 'success', latencyMs: 42, resultCount: null,
+    capability: 'sando-local-readonly/secret_tool', at: '2026-08-31T14:00:00.000Z' });
+}
+
 test('builds a bounded content-free event with a capability digest', () => {
   const event = buildF4Event({
     host: 'claude',
@@ -74,15 +79,7 @@ test('rejects invalid event dimensions and resolves a private default path', () 
 });
 
 test('publishes only bounded F4 aggregates to OTLP', async () => {
-  const source = buildF4Event({
-    host: 'claude',
-    operation: 'call',
-    outcome: 'success',
-    latencyMs: 42,
-    resultCount: null,
-    capability: 'sando-local-readonly/secret_tool',
-    at: '2026-08-31T14:00:00.000Z',
-  });
+  const source = f4Source();
   const telemetry = buildF4TelemetryEvent(source);
   assert.equal(telemetry.schema_version, SCHEMA_VERSION);
   assert.notEqual(telemetry.schema_version, F4_EVENT_VERSION);
@@ -109,11 +106,31 @@ test('publishes only bounded F4 aggregates to OTLP', async () => {
   const payload = JSON.parse(request.options.body);
   const attributes = Object.fromEntries(payload.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(({ key, value }) => [key, value.stringValue]));
   assert.equal(request.url, 'http://127.0.0.1:4319/v1/logs');
+  assert.equal(request.options.redirect, 'error');
   assert.equal(payload.resourceLogs[0].resource.attributes[0].value.stringValue, 'sando');
   assert.equal(attributes.event, 'f4_gateway');
   assert.equal(attributes.f4_host, 'claude');
   assert.equal(attributes.f4_operation, 'call');
   assert.equal(attributes.f4_latency_bucket, '10_to_100ms');
+  assert.equal(payload.resourceLogs[0].scopeLogs[0].logRecords[0].timeUnixNano, '1788184800000000000');
   assert.equal(Object.hasOwn(attributes, 'f4_capability_digest'), false);
   assert.doesNotMatch(JSON.stringify(payload), /secret_tool/);
+});
+
+test('F4 publisher rejects non-loopback endpoints before fetch', async () => {
+  let calls = 0;
+  await assert.rejects(() => publishF4Telemetry(f4Source(), {
+    endpoint: 'https://collector.example/v1/logs',
+    fetchImpl: async () => { calls += 1; return { ok: true, status: 202 }; },
+  }), /loopback/i);
+  assert.equal(calls, 0);
+});
+
+test('F4 publisher rejects loopback URLs with query or redirect-following options', async () => {
+  let request;
+  await assert.rejects(() => publishF4Telemetry(f4Source(), {
+    endpoint: 'http://127.0.0.1:4319/v1/logs?x=1',
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 202 }; },
+  }), /endpoint/i);
+  assert.equal(request, undefined);
 });

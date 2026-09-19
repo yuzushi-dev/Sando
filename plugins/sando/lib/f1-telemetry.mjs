@@ -1,5 +1,5 @@
 import { PLUGIN_VERSION } from './version.mjs';
-import { SCHEMA_VERSION, byteBucket, countBucket, serializeEvent, toOtlpLogs } from './telemetry.mjs';
+import { SCHEMA_VERSION, byteBucket, countBucket, serializeEvent, toOtlpLogs, validateTelemetryEndpoint } from './telemetry.mjs';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:4319/v1/logs';
 const HOSTS = ['claude', 'codex'];
@@ -63,14 +63,16 @@ export function buildF1TelemetryEvent(record) {
 export async function publishF1Telemetry({ record, endpoint = process.env.SANDO_F1_TELEMETRY_ENDPOINT || DEFAULT_ENDPOINT,
   fetchImpl = fetch, timeoutMs = 2500 } = {}) {
   const event = buildF1TelemetryEvent(record);
+  const safeEndpoint = validateTelemetryEndpoint(endpoint);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(endpoint, {
+    const response = await fetchImpl(safeEndpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(toOtlpLogs([{ ...event, _timeUnixNano: (BigInt(Date.now()) * 1000000n).toString() }])),
       signal: controller.signal,
+      redirect: 'error',
     });
     if (!response.ok) throw new Error(`F1 telemetry endpoint returned ${response.status}`);
     return { events: 1, status: response.status };

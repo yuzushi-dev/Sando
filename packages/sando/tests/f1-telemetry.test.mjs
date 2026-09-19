@@ -78,8 +78,18 @@ test('F1 publisher posts one bounded OTLP record', async () => {
   const log = payload.resourceLogs[0].scopeLogs[0].logRecords[0];
   const attributes = Object.fromEntries(log.attributes.map(({ key, value }) => [key, value.stringValue]));
   assert.equal(request.url, 'http://127.0.0.1:4319/v1/logs');
+  assert.equal(request.options.redirect, 'error');
   assert.match(log.timeUnixNano, /^\d+$/);
   assert.equal(attributes.event, 'f1_footprint');
   assert.equal(attributes.f1_unknown_ratio_bucket, 'lt_1pct');
   assert.doesNotMatch(JSON.stringify(payload), /secret|sha256|prompt|home\//i);
+});
+
+test('F1 publisher rejects non-loopback endpoints before fetch', async () => {
+  let calls = 0;
+  await assert.rejects(() => publishF1Telemetry({
+    record: record(), endpoint: 'https://collector.example/v1/logs',
+    fetchImpl: async () => { calls += 1; return { ok: true, status: 202 }; },
+  }), /loopback/i);
+  assert.equal(calls, 0);
 });

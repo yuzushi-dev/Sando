@@ -33,6 +33,12 @@ test('gateway entrypoint persists normal-host F4 events without raw target data'
   const fixture = path.join(directory, 'fixture.mjs');
   const config = path.join(directory, 'gateway.json');
   const eventsPath = path.join(directory, 'f4-events.jsonl');
+  const configHome = path.join(directory, 'config');
+  fs.mkdirSync(path.join(configHome, 'sando'), { recursive: true });
+  fs.writeFileSync(path.join(configHome, 'sando', 'telemetry.json'), JSON.stringify({
+    schema_version: 1, enabled: true, prompted_consent_version: 1, consent_state: 'enabled', consent_version: 1,
+    consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:9/v1/logs',
+  }), { mode: 0o600 });
   fs.writeFileSync(fixture, fixtureSource(), { mode: 0o600 });
   fs.writeFileSync(config, JSON.stringify({
     enabled: true,
@@ -41,7 +47,8 @@ test('gateway entrypoint persists normal-host F4 events without raw target data'
   }), { mode: 0o600 });
   const child = spawn(process.execPath, [GATEWAY], {
     cwd: ROOT,
-    env: { ...process.env, SANDO_MCP_GATEWAY_CONFIG: config, SANDO_F4_HOST: 'codex', SANDO_F4_EVENTS_PATH: eventsPath },
+    env: { ...process.env, DO_NOT_TRACK: '0', SANDO_MCP_GATEWAY_CONFIG: config, SANDO_F4_HOST: 'codex', SANDO_F4_EVENTS_PATH: eventsPath,
+      SANDO_F4_TELEMETRY: '0', XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: path.join(directory, 'state') },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const responses = new Map();
@@ -81,6 +88,12 @@ test('gateway entrypoint forwards bounded F4 events to the configured OTLP endpo
   const fixture = path.join(directory, 'fixture.mjs');
   const config = path.join(directory, 'gateway.json');
   const eventsPath = path.join(directory, 'f4-events.jsonl');
+  const configHome = path.join(directory, 'config');
+  fs.mkdirSync(path.join(configHome, 'sando'), { recursive: true });
+  fs.writeFileSync(path.join(configHome, 'sando', 'telemetry.json'), JSON.stringify({
+    schema_version: 1, enabled: true, prompted_consent_version: 1, consent_state: 'enabled', consent_version: 1,
+    consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:9/v1/logs',
+  }), { mode: 0o600 });
   const published = [];
   const server = http.createServer((request, response) => {
     const chunks = [];
@@ -107,6 +120,10 @@ test('gateway entrypoint forwards bounded F4 events to the configured OTLP endpo
       SANDO_F4_EVENTS_PATH: eventsPath,
       SANDO_F4_TELEMETRY_ENDPOINT: endpoint,
       SANDO_F4_DEBUG: '1',
+      DO_NOT_TRACK: '0',
+      SANDO_F4_TELEMETRY: '1',
+      XDG_CONFIG_HOME: configHome,
+      XDG_STATE_HOME: path.join(directory, 'state'),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -150,4 +167,79 @@ test('gateway entrypoint forwards bounded F4 events to the configured OTLP endpo
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+async function gatewayScenario({ consent, dnt = '0', killSwitch = '1', revokeAfterFirst = false }) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-f4-gate-'));
+  const configHome = path.join(directory, 'config');
+  const stateHome = path.join(directory, 'state');
+  const fixture = path.join(directory, 'fixture.mjs');
+  const config = path.join(directory, 'gateway.json');
+  const eventsPath = path.join(directory, 'f4-events.jsonl');
+  fs.mkdirSync(path.join(configHome, 'sando'), { recursive: true });
+  if (consent !== 'missing') {
+    const value = consent === 'malformed'
+      ? '{not-json'
+      : JSON.stringify(consent === 'enabled'
+        ? { schema_version: 1, enabled: true, prompted_consent_version: 1, consent_state: 'enabled', consent_version: 1, consented_at: '2026-08-25T00:00:00.000Z', endpoint: 'http://127.0.0.1:9/v1/logs' }
+        : { schema_version: 1, enabled: false, prompted_consent_version: 1, consent_state: 'declined' });
+    fs.writeFileSync(path.join(configHome, 'sando', 'telemetry.json'), value, { mode: 0o600 });
+  }
+  fs.writeFileSync(fixture, fixtureSource(), { mode: 0o600 });
+  fs.writeFileSync(config, JSON.stringify({ enabled: true, allowlist: ['fixture'], servers: [{ name: 'fixture', command: process.execPath, args: [fixture], cwd: ROOT }] }), { mode: 0o600 });
+  const published = [];
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => { published.push(true); response.writeHead(202).end(); });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1/logs`;
+  const child = spawn(process.execPath, [GATEWAY], {
+    cwd: ROOT,
+    env: {
+      ...process.env, DO_NOT_TRACK: dnt, SANDO_F4_TELEMETRY: killSwitch,
+      SANDO_MCP_GATEWAY_CONFIG: config, SANDO_F4_HOST: 'codex', SANDO_F4_EVENTS_PATH: eventsPath,
+      SANDO_F4_TELEMETRY_ENDPOINT: endpoint, XDG_CONFIG_HOME: configHome, XDG_STATE_HOME: stateHome,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const responses = new Map();
+  const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+  lines.on('line', (line) => {
+    const message = JSON.parse(line);
+    const pending = responses.get(message.id);
+    if (pending) { responses.delete(message.id); pending(message); }
+  });
+  const request = (message) => new Promise((resolve) => { responses.set(message.id, resolve); child.stdin.write(`${JSON.stringify(message)}\n`); });
+  const call = async (id) => {
+    await request({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'sando_catalog', arguments: {} } });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  };
+  try {
+    await request({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await call(2);
+    if (revokeAfterFirst) {
+      fs.writeFileSync(path.join(configHome, 'sando', 'telemetry.json'), JSON.stringify({ schema_version: 1, enabled: false, prompted_consent_version: 1, consent_state: 'declined' }));
+      await call(3);
+    }
+    const recorded = fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean).length : 0;
+    return { published: published.length, recorded };
+  } finally {
+    child.kill(); lines.close(); await new Promise((resolve) => server.close(resolve)); fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('gateway F4 upload requires consent, DNT is fail-closed, and kill switch is honored', async () => {
+  for (const scenario of [
+    { consent: 'missing', expected: { published: 0, recorded: 0 } },
+    { consent: 'disabled', expected: { published: 0, recorded: 0 } },
+    { consent: 'malformed', expected: { published: 0, recorded: 0 } },
+    { consent: 'enabled', dnt: '1', expected: { published: 0, recorded: 0 } },
+    { consent: 'enabled', killSwitch: '0', expected: { published: 0, recorded: 1 } },
+    { consent: 'enabled', dnt: '0', killSwitch: '1', expected: { published: 1, recorded: 1 } },
+  ]) assert.deepEqual(await gatewayScenario(scenario), scenario.expected);
+});
+
+test('gateway F4 rereads consent and stops publishing after revocation', async () => {
+  assert.deepEqual(await gatewayScenario({ consent: 'enabled', dnt: '0', killSwitch: '1', revokeAfterFirst: true }), { published: 1, recorded: 1 });
 });

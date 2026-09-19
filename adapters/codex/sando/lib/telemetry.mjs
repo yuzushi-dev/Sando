@@ -169,6 +169,17 @@ export function isDoNotTrack(env = process.env) {
   return env.DO_NOT_TRACK !== undefined && env.DO_NOT_TRACK !== '' && env.DO_NOT_TRACK !== '0';
 }
 
+export function validateTelemetryEndpoint(endpoint) {
+  let url;
+  try { url = new URL(endpoint); } catch { throw new Error('telemetry endpoint is invalid'); }
+  const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(hostname)
+    || url.pathname !== '/v1/logs' || url.username || url.password || url.search || url.hash) {
+    throw new Error('telemetry endpoint must be a loopback /v1/logs URL');
+  }
+  return url.href;
+}
+
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 function emptyTelemetryConfig() {
