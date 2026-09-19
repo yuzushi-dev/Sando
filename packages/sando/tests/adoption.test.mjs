@@ -138,3 +138,10 @@ test('consent generation change stops retry and preserves the reset queue', asyn
   assert.equal(result.sent, 0); assert.equal(calls, 1);
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8')); assert.equal(state.queue.length, 1); assert.equal(state.queue[0].plugin_version, '0.6.2');
 });
+
+test('consent generation changes with an identical consent clock', async () => {
+  const { env, configPath, statePath } = fixture(); const fixedNow = () => new Date(TEST_DAY);
+  enableAdoption({ configPath, answer: 'yes', now: fixedNow }); recordAdoption({ env, host: 'claude', pluginVersion: '0.6.1' }); let calls = 0;
+  const result = await flushAdoptionQueue({ configPath, statePath, endpoint: 'http://127.0.0.1:4318/v1/logs', sleep: async () => {}, fetchImpl: async () => { calls += 1; disableAdoption({ configPath, statePath }); enableAdoption({ configPath, answer: 'yes', now: fixedNow }); recordAdoption({ env, host: 'claude', pluginVersion: '0.6.2' }); return { ok: false, status: 503, headers: { get: () => null } }; } });
+  assert.equal(result.sent, 0); assert.equal(calls, 1); assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).queue[0].plugin_version, '0.6.2');
+});

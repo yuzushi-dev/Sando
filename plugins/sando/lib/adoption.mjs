@@ -24,7 +24,8 @@ function validateConfig(value) {
   if (!record(value) || value.schema_version !== ADOPTION_SCHEMA_VERSION || typeof value.enabled !== 'boolean'
     || !['unasked', 'enabled', 'declined'].includes(value.consent_state)) throw new Error('adoption config is invalid');
   if (value.enabled && (value.consent_version !== ADOPTION_CONSENT_VERSION
-    || typeof value.consented_at !== 'string' || Number.isNaN(Date.parse(value.consented_at)))) throw new Error('adoption config is invalid');
+    || typeof value.consented_at !== 'string' || Number.isNaN(Date.parse(value.consented_at))
+    || typeof value.consent_generation !== 'string' || !UUID.test(value.consent_generation))) throw new Error('adoption config is invalid');
   return value;
 }
 function validateVersion(value) { if (typeof value !== 'string' || !VERSION.test(value) || value.length > MAX_STRING) throw new Error('invalid plugin version'); }
@@ -58,7 +59,7 @@ function writeConfig(configPath, value) {
 export function enableAdoption({ configPath = defaultAdoptionConfigPath(), answer, interactive = true, now = () => new Date(), env = process.env } = {}) {
   if (dnt(env)) return { ...readAdoptionConfig(configPath), enabled: false, exitCode: 1 };
   if (!interactive || !/^y(?:es)?$/i.test(String(answer ?? '').trim())) return { ...readAdoptionConfig(configPath), enabled: false };
-  return writeConfig(configPath, { schema_version: ADOPTION_SCHEMA_VERSION, enabled: true, consent_state: 'enabled', consent_version: ADOPTION_CONSENT_VERSION, consented_at: now().toISOString() });
+  return writeConfig(configPath, { schema_version: ADOPTION_SCHEMA_VERSION, enabled: true, consent_state: 'enabled', consent_version: ADOPTION_CONSENT_VERSION, consented_at: now().toISOString(), consent_generation: randomUUID() });
 }
 
 function emptyState() { return { schema_version: ADOPTION_SCHEMA_VERSION, identities: {}, last_emitted: {}, queue: [] }; }
@@ -131,7 +132,7 @@ function validateEndpoint(endpoint) {
 export async function flushAdoptionQueue({ configPath = defaultAdoptionConfigPath(), statePath = defaultAdoptionStatePath(), endpoint = ADOPTION_ENDPOINT, fetchImpl = fetch, env = process.env, timeoutMs = 3000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const initialConfig = readAdoptionConfig(configPath);
   if (dnt(env) || !initialConfig.enabled || !fs.existsSync(statePath)) return { sent: 0 };
-  const consentGeneration = initialConfig.consented_at;
+  const consentGeneration = initialConfig.consent_generation;
   validateEndpoint(endpoint);
   let rows;
   withLock(`${statePath}.lock`, () => {
@@ -147,7 +148,7 @@ export async function flushAdoptionQueue({ configPath = defaultAdoptionConfigPat
   try {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const currentConfig = readAdoptionConfig(configPath);
-      if (dnt(env) || !currentConfig.enabled || currentConfig.consented_at !== consentGeneration) return { sent: 0 };
+      if (dnt(env) || !currentConfig.enabled || currentConfig.consent_generation !== consentGeneration) return { sent: 0 };
       try {
         response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify(toAdoptionOtlp(rows)), signal: controller.signal });
         if (response.ok) break;
@@ -159,7 +160,7 @@ export async function flushAdoptionQueue({ configPath = defaultAdoptionConfigPat
   let acknowledged = false;
   withLock(`${statePath}.lock`, () => {
     const currentConfig = readAdoptionConfig(configPath);
-    if (!currentConfig.enabled || currentConfig.consented_at !== consentGeneration) return;
+    if (!currentConfig.enabled || currentConfig.consent_generation !== consentGeneration) return;
     const latest = readState(statePath); latest.queue = latest.queue.filter((row) => !rows.some((sent) => row.installation_id === sent.installation_id && row.day_utc === sent.day_utc && row.plugin_version === sent.plugin_version && row._timeUnixNano === sent._timeUnixNano)); atomicWrite(statePath, latest); acknowledged = true;
   });
   if (!acknowledged) return { sent: 0 };
