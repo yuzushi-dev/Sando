@@ -4,6 +4,23 @@ import path from 'node:path';
 export const DEFAULT_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_ARTIFACT_MAX_BYTES = 64 * 1024 * 1024;
 
+export function reuseArtifact(destination, expectedContent) {
+  const { O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+  if (!Number.isInteger(O_NOFOLLOW) || !Number.isInteger(O_NONBLOCK)) {
+    throw new Error('artifact storage requires no-follow open support');
+  }
+  const flags = fs.constants.O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
+  const handle = fs.openSync(destination, flags);
+  try {
+    const stat = fs.fstatSync(handle);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error('artifact file is unsafe');
+    if (fs.readFileSync(handle, 'utf8') !== expectedContent) throw new Error('artifact content differs');
+    fs.fchmodSync(handle, 0o600);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
 function validNumber(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} is invalid`);
   return value;

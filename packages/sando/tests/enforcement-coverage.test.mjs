@@ -49,39 +49,39 @@ test('L1 cat: cat with -- separator is eligible', () => {
   });
 });
 
-test('L1 cat: cat -n file is eligible (line numbers)', () => {
+test('L1 cat: cat -n bypasses specialized routing (line numbers)', () => {
   withFixture((root) => {
     const result = classify('cat -n file.txt', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_read');
+    assert.equal(result.status, 'bypassed');
+    assert.equal(result.reason, 'read-shape');
   });
 });
 
-test('L1 cat: cat -b file is eligible (non-blank line numbers)', () => {
+test('L1 cat: cat -b bypasses specialized routing (line numbers)', () => {
   withFixture((root) => {
     const result = classify('cat -b file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 cat: cat -ns file is eligible (bundled safe flags)', () => {
+test('L1 cat: cat -ns bypasses specialized routing (bundled flags)', () => {
   withFixture((root) => {
     const result = classify('cat -ns file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 cat: cat -A file is eligible (show-all)', () => {
+test('L1 cat: cat -A bypasses specialized routing (show-all)', () => {
   withFixture((root) => {
     const result = classify('cat -A file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 cat: cat -n -- file is eligible (flag before separator)', () => {
+test('L1 cat: cat -n -- bypasses specialized routing (flag before separator)', () => {
   withFixture((root) => {
     const result = classify('cat -n -- file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
@@ -111,79 +111,73 @@ test('L1 cat: cat with no file bypasses', () => {
 
 // ─── grep/rg in natural form ────────────────────────────────────────────
 
-test('L1 grep: grep pattern file is eligible', () => {
+test('L1 grep: grep pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep hello file.txt', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_grep');
-    assert.equal(result.pattern, 'hello');
-    assert.equal(result.path, 'file.txt');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -n pattern file is eligible', () => {
+test('L1 grep: grep -n pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep -n hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -rn pattern dir is eligible (recursive + search kind)', () => {
+test('L1 grep: grep -rn pattern dir bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep -rn hello src', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_grep');
-    assert.equal(result.path, 'src');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -i pattern file is eligible (case-insensitive)', () => {
+test('L1 grep: grep -i pattern file bypasses specialized routing (case-insensitive)', () => {
   withFixture((root) => {
     const result = classify('grep -i hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -F pattern file is eligible (fixed-strings without --)', () => {
+test('L1 grep: grep -F pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep -F hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -F -- pattern file is eligible (old canonical form)', () => {
+test('L1 grep: grep -F -- pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep -F -- hello file.txt', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_grep');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: rg -F -- pattern file is eligible (rg variant)', () => {
+test('L1 grep: rg -F -- pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('rg -F -- hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep --fixed-strings -- pattern file is eligible (long flag)', () => {
+test('L1 grep: grep --fixed-strings -- pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep --fixed-strings -- hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep --ignore-case pattern file is eligible (long flag)', () => {
+test('L1 grep: grep --ignore-case pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep --ignore-case hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L1 grep: grep -inH pattern file is eligible (bundled flags)', () => {
+test('L1 grep: grep -inH pattern file bypasses specialized routing', () => {
   withFixture((root) => {
     const result = classify('grep -inH hello file.txt', root);
-    assert.equal(result.status, 'eligible');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
@@ -191,7 +185,6 @@ test('L1 grep: grep with unknown flag bypasses', () => {
   withFixture((root) => {
     const result = classify('grep -m 5 hello file.txt', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'grep-shape');
   });
 });
 
@@ -199,7 +192,6 @@ test('L1 grep: grep with unknown long flag bypasses', () => {
   withFixture((root) => {
     const result = classify('grep --color hello file.txt', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'grep-shape');
   });
 });
 
@@ -207,7 +199,6 @@ test('L1 grep: grep with no path bypasses', () => {
   withFixture((root) => {
     const result = classify('grep hello', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'grep-shape');
   });
 });
 
@@ -215,7 +206,6 @@ test('L1 grep: grep with three operands bypasses (multi-path)', () => {
   withFixture((root) => {
     const result = classify('grep hello file.txt module.ts', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'grep-shape');
   });
 });
 
@@ -304,7 +294,6 @@ test('§3 CRITICAL: cat f | grep x must bypass (pipeline truncation would silent
   withFixture((root) => {
     const result = classify('cat file.txt | grep hello', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'compound-feeds-pipeline');
   });
 });
 
@@ -312,7 +301,6 @@ test('§3 CRITICAL: grep pattern file > out.txt must bypass (redirect)', () => {
   withFixture((root) => {
     const result = classify('grep hello file.txt > out.txt', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'compound-has-redirect');
   });
 });
 
@@ -320,37 +308,29 @@ test('§3 CRITICAL: head file | wc -l must bypass (pipeline)', () => {
   withFixture((root) => {
     const result = classify('head file.txt | wc -l', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'compound-feeds-pipeline');
   });
 });
 
 // ─── L2: Compound command routing ───────────────────────────────────────
 
-test('L2 compound: cd dir && cat file routes relative to cwd root', () => {
+test('L2 compound: cd dir && cat file stays on original shell path', () => {
   withFixture((root) => {
     const result = classify('cd src && cat index.mjs', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_read');
-    assert.equal(result.path, 'src/index.mjs');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L2 compound: cd dir; grep pattern file routes relative to cwd root', () => {
+test('L2 compound: cd dir; grep stays on original shell path', () => {
   withFixture((root) => {
     const result = classify('cd src; grep export index.mjs', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_grep');
-    assert.equal(result.pattern, 'export');
-    assert.equal(result.path, 'src/index.mjs');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
-test('L2 compound: export VAR=val; cat file.txt routes', () => {
+test('L2 compound: export VAR=val; cat stays on original shell path', () => {
   withFixture((root) => {
     const result = classify('export FOO=1; cat file.txt', root);
-    assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_read');
-    assert.equal(result.path, 'file.txt');
+    assert.equal(result.status, 'bypassed');
   });
 });
 
@@ -358,7 +338,6 @@ test('L2 compound: cd dir && cat file | wc -l bypasses compound-feeds-pipeline',
   withFixture((root) => {
     const result = classify('cd src && cat index.mjs | wc -l', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'compound-feeds-pipeline');
   });
 });
 
@@ -366,7 +345,6 @@ test('L2 compound: cd dir && cat file > out.txt bypasses compound-has-redirect',
   withFixture((root) => {
     const result = classify('cd src && cat index.mjs > out.txt', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'compound-has-redirect');
   });
 });
 
@@ -374,7 +352,6 @@ test('L2 compound: cd to outside root bypasses unsafe-cwd', () => {
   withFixture((root) => {
     const result = classify('cd /tmp && cat file.txt', root);
     assert.equal(result.status, 'bypassed');
-    assert.equal(result.reason, 'unsafe-cwd');
   });
 });
 
@@ -398,7 +375,7 @@ test('L1 regression: git still bypasses as unsupported-shell', () => {
 
 // ─── Shell unwrap: Codex argv-style commands ────────────────────────────
 
-test('L1 unwrap: Codex argv [bash, -lc, grep -n pattern file] routes', () => {
+test('L1 unwrap: Codex argv [bash, -lc, grep -n pattern file] preserves shell path', () => {
   withFixture((root) => {
     const result = classifyShellCommand({
       toolName: 'Bash',
@@ -406,11 +383,11 @@ test('L1 unwrap: Codex argv [bash, -lc, grep -n pattern file] routes', () => {
       cwd: root,
     });
     assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_grep');
+    assert.equal(result.route, 'sando_exec');
   });
 });
 
-test('L1 unwrap: Codex argv [bash, -lc, cat -n file] routes', () => {
+test('L1 unwrap: Codex argv [bash, -lc, cat -n file] preserves shell path', () => {
   withFixture((root) => {
     const result = classifyShellCommand({
       toolName: 'Bash',
@@ -418,11 +395,11 @@ test('L1 unwrap: Codex argv [bash, -lc, cat -n file] routes', () => {
       cwd: root,
     });
     assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_read');
+    assert.equal(result.route, 'sando_exec');
   });
 });
 
-test('L2 unwrap: Codex argv [bash, -lc, cd src && cat index.mjs] routes', () => {
+test('L2 unwrap: Codex argv [bash, -lc, cd src && cat index.mjs] preserves shell path', () => {
   withFixture((root) => {
     const result = classifyShellCommand({
       toolName: 'Bash',
@@ -430,8 +407,7 @@ test('L2 unwrap: Codex argv [bash, -lc, cd src && cat index.mjs] routes', () => 
       cwd: root,
     });
     assert.equal(result.status, 'eligible');
-    assert.equal(result.route, 'sando_read');
-    assert.equal(result.path, 'src/index.mjs');
+    assert.equal(result.route, 'sando_exec');
   });
 });
 

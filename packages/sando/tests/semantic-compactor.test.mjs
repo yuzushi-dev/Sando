@@ -136,11 +136,11 @@ test('rejects model facts that are not grounded in the redacted tool result', as
   assert.equal(result.reason, 'response-ungrounded-fact');
 });
 
-test('repairs a summary that lists required facts but omits them from the prose', async () => {
+test('accepts source lines that include every required fact', async () => {
   const compact = createSemanticCompactor({
     complete: async () => ({
       schema: 'sando-semantic-summary/v1',
-      summary: 'repeated diagnostics were compacted',
+      summary: 'READ_HEAD_FACT /workspace/src/app.mjs\nREAD_TAIL_FACT error: exit 1',
       preservedFacts: ['READ_HEAD_FACT', 'READ_TAIL_FACT', '/workspace/src/app.mjs', 'error: exit 1'],
     }),
     policy: { minInputTokens: 1 },
@@ -155,6 +155,123 @@ test('repairs a summary that lists required facts but omits them from the prose'
   assert.equal(result.status, 'candidate');
   assert.match(result.summary, /READ_HEAD_FACT/);
   assert.match(result.summary, /error: exit 1/);
+});
+
+test('rejects an invented summary with no preserved facts', async () => {
+  const compact = createSemanticCompactor({
+    complete: async () => ({
+      schema: 'sando-semantic-summary/v1',
+      summary: 'invented summary',
+      preservedFacts: [],
+    }),
+    policy: { minInputTokens: 1 },
+  });
+  const result = await compact({ text: longText });
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.reason, 'summary-not-extractive');
+});
+
+test('rejects a summary made from one grounded fact without its complete source line', async () => {
+  const compact = createSemanticCompactor({
+    complete: async () => ({
+      schema: 'sando-semantic-summary/v1',
+      summary: 'READ_HEAD_FACT',
+      preservedFacts: ['READ_HEAD_FACT'],
+    }),
+    policy: { minInputTokens: 1 },
+  });
+  const result = await compact({ text: longText });
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.reason, 'summary-not-extractive');
+});
+
+test('rejects a grounded source line followed by an invented clause', async () => {
+  const compact = createSemanticCompactor({
+    complete: async () => ({
+      schema: 'sando-semantic-summary/v1',
+      summary: 'READ_HEAD_FACT /workspace/src/app.mjs\ninvented clause',
+      preservedFacts: ['READ_HEAD_FACT', '/workspace/src/app.mjs'],
+    }),
+    policy: { minInputTokens: 1 },
+  });
+  const result = await compact({ text: longText });
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.reason, 'summary-not-extractive');
+});
+
+test('does not accept a forged cached summary', async () => {
+  let calls = 0;
+  const cache = {
+    get() { return { summary: 'invented cached summary' }; },
+    set() {},
+    delete() {},
+  };
+  const compact = createSemanticCompactor({
+    cache,
+    complete: async () => {
+      calls += 1;
+      return validResponse();
+    },
+    policy: { minInputTokens: 1 },
+  });
+  const result = await compact({ text: longText });
+  assert.equal(result.status, 'candidate');
+  assert.equal(result.cacheHit, false);
+  assert.equal(calls, 1);
+  assert.equal(result.summary, validResponse().summary);
+});
+
+test('accepts an ordered excerpt of complete original lines', () => {
+  const result = validateSemanticSummary({
+    originalText: longText,
+    summary: 'READ_HEAD_FACT /workspace/src/app.mjs\nREAD_TAIL_FACT error: exit 1',
+    maxSummaryRatio: 0.2,
+  });
+  assert.equal(result.valid, true);
+});
+
+test('accepts an ordered excerpt from CRLF source text', () => {
+  const originalText = [
+    'first complete line',
+    ...Array.from({ length: 100 }, (_, index) => `line ${index}: repeated diagnostic output`),
+  ].join('\r\n');
+  const result = validateSemanticSummary({
+    originalText,
+    summary: 'first complete line',
+    maxSummaryRatio: 0.2,
+  });
+  assert.equal(result.valid, true);
+});
+
+test('accepts a complete quoted redacted source line', () => {
+  const originalText = [
+    'password="supersecret beta gamma"',
+    ...Array.from({ length: 100 }, (_, index) => `line ${index}: repeated diagnostic output`),
+  ].join('\n');
+  const result = validateSemanticSummary({
+    originalText,
+    summary: 'password="[REDACTED]"',
+    maxSummaryRatio: 0.2,
+  });
+  assert.equal(result.valid, true);
+});
+
+test('rejects reordered or modified source lines', () => {
+  const originalText = 'first complete line\nsecond complete line\nthird complete line';
+  const reordered = validateSemanticSummary({
+    originalText,
+    summary: 'second complete line\nfirst complete line',
+    maxSummaryRatio: 0.8,
+  });
+  const modified = validateSemanticSummary({
+    originalText,
+    summary: 'first complete',
+    maxSummaryRatio: 0.8,
+  });
+  assert.equal(reordered.valid, false);
+  assert.equal(reordered.reason, 'summary-not-extractive');
+  assert.equal(modified.valid, false);
+  assert.equal(modified.reason, 'summary-not-extractive');
 });
 
 test('rejects summaries that lose facts or contain secrets', () => {
@@ -237,6 +354,7 @@ test('prompt structure is stable and versioned', () => {
     requiredFacts: ['FACT'],
   });
   assert.match(prompt, /sando-semantic-summary\/v1/);
+  assert.match(prompt, /complete source lines in their original order/);
   assert.match(prompt, /Required facts: FACT/);
   assert.match(prompt, /Tool: Read/);
 });

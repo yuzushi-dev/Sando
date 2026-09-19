@@ -43,6 +43,21 @@ test('builds a bounded redacted TypeSafe-compatible request', () => {
   assert.doesNotMatch(JSON.stringify(request), /api[_-]?key|password|secret/i);
 });
 
+test('redacts complete quoted secrets in the final judge request', () => {
+  const request = buildSemanticJudgeRequest({
+    provider: 'openai-responses',
+    model: 'fixture',
+    toolName: 'Bash',
+    originalText: JSON.stringify({ password: 'alpha' + ' beta gamma' }),
+    previewText: JSON.stringify({ password: 'alpha' + ' beta gamma' }),
+    recoverable: true,
+    maxTextChars: 200,
+  });
+  const serialized = JSON.stringify(request);
+  assert.match(serialized, /\[REDACTED\]/);
+  assert.doesNotMatch(serialized, /alpha beta gamma/);
+});
+
 test('judges a redacted candidate, caches it, and returns no payload text', async () => {
   let calls = 0;
   let request;

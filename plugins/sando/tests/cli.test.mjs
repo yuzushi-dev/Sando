@@ -44,6 +44,31 @@ test('CLI grep returns bounded literal matches', (t) => {
   assert.match(result.stdout, /fixture\.txt:1:needle/);
 });
 
+test('CLI grep returns status 1 when there are no matches', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-grep-miss-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
+
+  const result = run(cwd, ['grep', '-F', '--', 'missing', 'fixture.txt']);
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /\(no matches\)/);
+});
+
+test('CLI grep keeps positional -F after the option separator', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-grep-positional-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), '-F\n');
+
+  const result = run(cwd, ['grep', '-F', '--', '-F', 'fixture.txt']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /fixture\.txt:1:-F/);
+  const wrapperSeparated = run(cwd, ['grep', '--', '-F', 'fixture.txt']);
+  assert.equal(wrapperSeparated.status, 0, wrapperSeparated.stderr);
+  assert.match(wrapperSeparated.stdout, /fixture\.txt:1:-F/);
+});
+
 test('CLI exec keeps the inherited sandbox path and redacts output', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-exec-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));

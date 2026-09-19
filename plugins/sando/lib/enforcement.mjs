@@ -12,7 +12,6 @@ import { PLUGIN_VERSION } from './version.mjs';
 const SHELL_TOOLS = new Set(['Bash', 'exec_command', 'shell_command']);
 const MAX_COMMAND_LENGTH = 8192;
 const MAX_PATH_LENGTH = 4096;
-const MAX_PATTERN_LENGTH = 512;
 const SHELL_META = new Set([';', '|', '&', '<', '>', '$', '`', '(', ')', '{', '}', '*', '?', '[', ']', '!', '~', '#']);
 const CLI_PATH = path.resolve(import.meta.dirname, '..', 'bin', 'sando');
 
@@ -24,8 +23,9 @@ function tokens(command) {
   if (typeof command !== 'string' || !command || command.length > MAX_COMMAND_LENGTH || command.includes('\0')) return null;
   const result = [];
   let current = '';
+  let hasToken = false;
   let quote = null;
-  const push = () => { if (current) result.push(current); current = ''; };
+  const push = () => { if (hasToken) result.push(current); current = ''; hasToken = false; };
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index];
     if (quote) {
@@ -34,9 +34,11 @@ function tokens(command) {
       current += character;
       continue;
     }
-    if (character === '\'' || character === '"') { quote = character; continue; }
+    if (character === '\'' || character === '"') { quote = character; hasToken = true; continue; }
     if (character === '\\' || SHELL_META.has(character)) return null;
+    if (character === '\n' || character === '\r') return null;
     if (/\s/.test(character)) { push(); continue; }
+    hasToken = true;
     current += character;
   }
   if (quote) return null;
@@ -126,68 +128,18 @@ function safeTarget(root, relativePath, kind, baseRoot = root) {
   return path.relative(baseRoot, target).split(path.sep).join('/') || '.';
 }
 
-// ─── L1 flag sets ───────────────────────────────────────────────────────
-
-/** Single-char cat flags that affect display but preserve content identity. */
-const CAT_SAFE_FLAGS = new Set('nbsvetAET'.split(''));
-
-/** Single-char grep/rg boolean flags compatible with sando_grep routing. */
-const GREP_SAFE_SHORT = new Set('inrREFwHhs'.split(''));
-
-/** Long grep/rg flags (without leading --) compatible with sando_grep routing. */
-const GREP_SAFE_LONG = new Set([
-  'fixed-strings', 'ignore-case', 'line-number', 'recursive',
-  'word-regexp', 'with-filename', 'no-filename', 'no-messages',
-  'extended-regexp',
-]);
-
 function classifyCat(args, root, baseRoot = root) {
   let afterDash = false;
   const operands = [];
   for (const arg of args) {
     if (afterDash) { operands.push(arg); continue; }
     if (arg === '--') { afterDash = true; continue; }
-    if (arg.startsWith('-') && arg.length > 1) {
-      for (const c of arg.slice(1)) {
-        if (!CAT_SAFE_FLAGS.has(c)) return bypass('read-shape');
-      }
-      continue;
-    }
+    if (arg.startsWith('-') && arg.length > 1) return bypass('read-shape');
     operands.push(arg);
   }
   if (operands.length !== 1) return bypass('read-shape');
   const relativePath = safeTarget(root, operands[0], 'file', baseRoot);
   return relativePath ? { status: 'eligible', route: 'sando_read', path: relativePath } : bypass('unsafe-read-target');
-}
-
-function classifyGrep(args, root, baseRoot = root) {
-  let afterDash = false;
-  let isRecursive = false;
-  const operands = [];
-  for (const arg of args) {
-    if (afterDash) { operands.push(arg); continue; }
-    if (arg === '--') { afterDash = true; continue; }
-    if (arg.startsWith('--') && arg.length > 2) {
-      const name = arg.slice(2);
-      if (!GREP_SAFE_LONG.has(name)) return bypass('grep-shape');
-      if (name === 'recursive') isRecursive = true;
-      continue;
-    }
-    if (arg.startsWith('-') && arg.length > 1) {
-      for (const c of arg.slice(1)) {
-        if (!GREP_SAFE_SHORT.has(c)) return bypass('grep-shape');
-        if (c === 'r' || c === 'R') isRecursive = true;
-      }
-      continue;
-    }
-    operands.push(arg);
-  }
-  if (operands.length !== 2) return bypass('grep-shape');
-  const [pattern, target] = operands;
-  if (!pattern || pattern.length > MAX_PATTERN_LENGTH || pattern.includes('\0')) return bypass('unsafe-grep-pattern');
-  const kind = isRecursive ? 'search' : 'file';
-  const relativePath = safeTarget(root, target, kind, baseRoot);
-  return relativePath ? { status: 'eligible', route: 'sando_grep', pattern, path: relativePath } : bypass('unsafe-grep-target');
 }
 
 function classifySed(args, root, baseRoot = root) {
@@ -232,115 +184,11 @@ function classifyHead(args, root, baseRoot = root) {
 function classifyTokens(commandTokens, root, baseRoot = root) {
   const [program, ...args] = commandTokens;
   if (program === 'cat') return classifyCat(args, root, baseRoot);
-  if (program === 'grep' || program === 'rg') return classifyGrep(args, root, baseRoot);
+  if (program === 'grep' || program === 'rg') return bypass('grep-shell-wrap-required');
   if (program === 'sed') return classifySed(args, root, baseRoot);
   if (program === 'head') return classifyHead(args, root, baseRoot);
   if (program === 'tail') return bypass('tail-unbounded-from-end');
   return bypass('unsupported-shell');
-}
-
-// ─── L2: Compound command segmentation ──────────────────────────────────
-
-/** Environment prefixes that set context but don't produce routable output. */
-const ENV_PREFIXES = new Set(['cd', 'export', 'source', 'set']);
-
-/**
- * Split a raw command string on unquoted |, ||, &&, ;.
- * Returns null for constructs too complex to segment safely (subshells, backticks,
- * background &). The redirect flag is set when the segment contains an unquoted > or <.
- */
-function segmentCommand(command) {
-  if (typeof command !== 'string' || !command || command.length > MAX_COMMAND_LENGTH) return null;
-  const segments = [];
-  const operators = [];
-  const redirectFlags = [];
-  let current = '';
-  let quote = null;
-  let escaped = false;
-  let hasRedirect = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i];
-    if (escaped) { current += c; escaped = false; continue; }
-    if (c === '\\' && quote !== "'") { escaped = true; current += c; continue; }
-    if (quote) { if (c === quote) quote = null; current += c; continue; }
-    if (c === "'" || c === '"') { quote = c; current += c; continue; }
-    // Bail on subshells and backticks — too complex to segment safely
-    if (c === '(' || c === ')' || c === '{' || c === '}' || c === '`') return null;
-    if (c === '|') {
-      if (i + 1 < command.length && command[i + 1] === '|') {
-        segments.push(current); operators.push('||'); redirectFlags.push(hasRedirect);
-        current = ''; hasRedirect = false; i += 1; continue;
-      }
-      segments.push(current); operators.push('|'); redirectFlags.push(hasRedirect);
-      current = ''; hasRedirect = false; continue;
-    }
-    if (c === '&') {
-      if (i + 1 < command.length && command[i + 1] === '&') {
-        segments.push(current); operators.push('&&'); redirectFlags.push(hasRedirect);
-        current = ''; hasRedirect = false; i += 1; continue;
-      }
-      return null; // background & — bail
-    }
-    if (c === ';') {
-      segments.push(current); operators.push(';'); redirectFlags.push(hasRedirect);
-      current = ''; hasRedirect = false; continue;
-    }
-    if (c === '>' || c === '<') hasRedirect = true;
-    current += c;
-  }
-  if (quote) return null;
-  segments.push(current); operators.push(null); redirectFlags.push(hasRedirect);
-  return { segments, operators, redirectFlags };
-}
-
-/**
- * L2: classify a compound command by segmenting it, tracking cd environment prefixes,
- * and routing the first real segment — but only if it's the last and has no redirect (§3).
- * Returns a classification result or null if segmentation doesn't apply.
- */
-function classifyCompound(command, baseRoot) {
-  const parsed = segmentCommand(command);
-  if (!parsed) return null;
-  const { segments, operators, redirectFlags } = parsed;
-  if (segments.length < 2) {
-    if (redirectFlags[0]) return bypass('compound-has-redirect');
-    return null;
-  }
-  let currentRoot = baseRoot;
-  let targetIndex = -1;
-  for (let i = 0; i < segments.length; i++) {
-    const trimmed = segments[i].trim();
-    if (!trimmed) continue;
-    const firstWord = trimmed.split(/\s+/)[0];
-    if (ENV_PREFIXES.has(firstWord) && (operators[i] === '&&' || operators[i] === ';')) {
-      const segTokens = tokens(trimmed);
-      if (!segTokens?.length) return bypass('compound-segment-ambiguous');
-      const [, ...args] = segTokens;
-      if (firstWord === 'cd') {
-        if (args.length === 1 && !args[0].startsWith('-')) {
-          const nextRoot = safeRoot(currentRoot, args[0]);
-          if (!nextRoot || (nextRoot !== baseRoot && !nextRoot.startsWith(`${baseRoot}${path.sep}`))) {
-            return bypass('unsafe-cwd');
-          }
-          currentRoot = nextRoot;
-        } else {
-          return bypass('compound-segment-ambiguous');
-        }
-      }
-      continue;
-    }
-    targetIndex = i;
-    break;
-  }
-  if (targetIndex === -1) return null;
-  // §3: route only if the target is the last non-empty segment and has no redirect
-  for (let i = targetIndex + 1; i < segments.length; i++) {
-    if (segments[i].trim()) return bypass('compound-feeds-pipeline');
-  }
-  if (redirectFlags[targetIndex]) return bypass('compound-has-redirect');
-  const segmentTokens = tokens(segments[targetIndex].trim());
-  if (!segmentTokens?.length) return bypass('compound-segment-ambiguous');
-  return classifyTokens(segmentTokens, currentRoot, baseRoot);
 }
 
 // L3. The selective routes above only ever reach commands whose shape is understood; on real
@@ -371,18 +219,23 @@ export function classifyShellCommand({ toolName, toolInput, cwd, env = process.e
   if (!root) return bypass('unsafe-cwd');
   const rawCommand = typeof toolInput.command === 'string'
     ? toolInput.command
-    : (Array.isArray(toolInput.command) ? unwrapShellArgv(toolInput.command) : null);
+    : (Array.isArray(toolInput.command)
+      ? (unwrapShellArgv(toolInput.command)
+        ?? (toolInput.command.every((item) => typeof item === 'string')
+          ? toolInput.command.map(shellQuote).join(' ')
+          : null))
+      : null);
   const parsed = commandTokens(toolInput.command);
   if (parsed?.length) {
+    if (parsed[0] === 'grep' || parsed[0] === 'rg') {
+      return wrapWholeCommand(rawCommand, env) ?? bypass('grep-shell-wrap-disabled');
+    }
     const direct = classifyTokens(parsed, root);
     if (direct.status === 'eligible') return direct;
     return wrapWholeCommand(rawCommand, env) ?? direct;
   }
-  // L2: try compound command segmentation on the raw command string
   if (rawCommand) {
-    const compound = classifyCompound(rawCommand, root);
-    if (compound?.status === 'eligible') return compound;
-    return wrapWholeCommand(rawCommand, env) ?? compound ?? bypass('ambiguous-shell');
+    return wrapWholeCommand(rawCommand, env) ?? bypass('ambiguous-shell');
   }
   return bypass('ambiguous-shell');
 }

@@ -126,9 +126,19 @@ function runRead(args, cwd, policy) {
 }
 
 function runGrep(args, cwd, policy) {
-  const values = commandArgs(args).filter((value) => value !== '-F' && value !== '--fixed-strings' && value !== '--');
+  const values = [];
+  const wrapperSeparator = args[0] === '--';
+  let afterFlags = wrapperSeparator;
+  for (const value of wrapperSeparator ? args.slice(1) : args) {
+    if (!afterFlags && value === '--') { afterFlags = true; continue; }
+    if (!afterFlags && (value === '-F' || value === '--fixed-strings')) continue;
+    if (!afterFlags) afterFlags = true;
+    values.push(value);
+  }
   if (values.length !== 2) throw new Error('grep requires PATTERN and workspace-relative PATH');
-  writeResult(callMcpTool('sando_grep', { pattern: values[0], path: values[1], cwd, policy }), cwd);
+  const result = callMcpTool('sando_grep', { pattern: values[0], path: values[1], cwd, policy });
+  writeResult(result, cwd);
+  if (result.source?.matches === 0) process.exitCode = 1;
 }
 
 async function main(argv = process.argv.slice(2), env = process.env) {

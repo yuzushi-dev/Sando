@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-import { classifyShellCommand } from '../lib/enforcement.mjs';
+import { classifyShellCommand, runPreToolUse } from '../lib/enforcement.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const HOOKS = [
@@ -25,7 +25,7 @@ function invokePreToolUse(hook, cwd, env = {}) {
   });
 }
 
-test('classifies only proven literal Read and Grep commands', (t) => {
+test('classifies only proven literal Read commands', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-enforce-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'needle\n');
@@ -33,9 +33,89 @@ test('classifies only proven literal Read and Grep commands', (t) => {
   assert.deepEqual(classifyShellCommand({
     toolName: 'Bash', toolInput: { command: 'cat -- fixture.txt' }, cwd, env: { SANDO_SHELL_WRAP: '0' },
   }), { status: 'eligible', route: 'sando_read', path: 'fixture.txt' });
-  assert.deepEqual(classifyShellCommand({
+  assert.equal(classifyShellCommand({
     toolName: 'Bash', toolInput: { command: 'rg -F -- needle fixture.txt' }, cwd, env: { SANDO_SHELL_WRAP: '0' },
-  }), { status: 'eligible', route: 'sando_grep', pattern: 'needle', path: 'fixture.txt' });
+  }).status, 'bypassed');
+});
+
+test('routes grep and rg through original shell text to preserve semantics', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-grep-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: 'grep -i hello fixture.txt' }, cwd,
+    env: { SANDO_SHELL_WRAP: '1' },
+  });
+  assert.deepEqual(result, { status: 'eligible', route: 'sando_exec', command: 'grep -i hello fixture.txt' });
+  assert.equal(classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: ['grep', '-i', 'hello', 'fixture.txt'] }, cwd,
+    env: { SANDO_SHELL_WRAP: '1' },
+  }).route, 'sando_exec');
+});
+
+test('routes cat display flags through the original shell text', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-cat-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'hello\n');
+  assert.deepEqual(classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: 'cat -n fixture.txt' }, cwd,
+    env: { SANDO_SHELL_WRAP: '1' },
+  }), { status: 'eligible', route: 'sando_exec', command: 'cat -n fixture.txt' });
+});
+
+test('pre-hook preserves grep exit status and output through sando exec', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-differential-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), 'HELLO\nabc\na.c\nfoobar\nfoo\n');
+  const env = {
+    PATH: process.env.PATH,
+    SANDO_CLI_ROUTING: '1',
+    SANDO_SHELL_WRAP: '1',
+    SANDO_COVERAGE_PATH: path.join(cwd, 'coverage.json'),
+    DO_NOT_TRACK: '1',
+  };
+  const command = 'grep -i hello fixture.txt';
+  const routed = runPreToolUse({ tool_name: 'Bash', tool_input: { command }, cwd }, env)
+    .hookSpecificOutput.updatedInput.command;
+  assert.match(routed, /sando.*exec/);
+  const original = spawnSync('bash', ['-lc', command], { cwd, env, encoding: 'utf8' });
+  const rewritten = spawnSync('bash', ['-lc', routed], { cwd, env, encoding: 'utf8' });
+  assert.equal(rewritten.status, original.status);
+  assert.match(rewritten.stdout, /HELLO\n/);
+  const missing = 'grep -i missing fixture.txt';
+  const originalMissing = spawnSync('bash', ['-lc', missing], { cwd, env, encoding: 'utf8' });
+  const routedMissing = runPreToolUse({ tool_name: 'Bash', tool_input: { command: missing }, cwd }, env)
+    .hookSpecificOutput.updatedInput.command;
+  const rewrittenMissing = spawnSync('bash', ['-lc', routedMissing], { cwd, env, encoding: 'utf8' });
+  assert.equal(rewrittenMissing.status, originalMissing.status);
+});
+
+test('keeps executable compound prefixes in the original shell command', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-compound-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: 'source ./missing.sh && cat fixture.txt' }, cwd,
+    env: { SANDO_SHELL_WRAP: '1' },
+  });
+  assert.deepEqual(result, {
+    status: 'eligible', route: 'sando_exec', command: 'source ./missing.sh && cat fixture.txt',
+  });
+  assert.equal(classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: 'source ./missing.sh && cat fixture.txt' }, cwd,
+    env: { SANDO_SHELL_WRAP: '0' },
+  }).status, 'bypassed');
+});
+
+test('does not collapse shell separators or empty quoted operands', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-shell-boundary-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  assert.equal(classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: 'cat fixture.txt; false' }, cwd,
+    env: { SANDO_SHELL_WRAP: '0' },
+  }).status, 'bypassed');
+  assert.equal(classifyShellCommand({
+    toolName: 'Bash', toolInput: { command: "cat '' fixture.txt" }, cwd,
+    env: { SANDO_SHELL_WRAP: '1' },
+  }).route, 'sando_exec');
 });
 
 test('leaves shell syntax and unsafe targets as measured bypasses', (t) => {

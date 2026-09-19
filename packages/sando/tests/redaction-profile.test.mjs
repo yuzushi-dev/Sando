@@ -82,6 +82,76 @@ test('is idempotent', () => {
   assert.deepEqual(profile.redact(first.text), { text: first.text, count: 0 });
 });
 
+test('redacts complete quoted assignment values while preserving JSON syntax', () => {
+  const profile = createRedactionProfile([
+    { type: 'assignment-key', key: 'session_code' },
+  ]);
+  const input = JSON.stringify({
+    password: 'alpha beta gamma',
+    secret: 'escaped \\" quote and spaces',
+    session_code: 'custom value',
+    Authorization: 'Basic dXNlcjpwYXNz',
+  });
+  const first = profile.redact(input);
+  assert.equal(first.text, JSON.stringify({
+    password: '[REDACTED]',
+    secret: '[REDACTED]',
+    session_code: '[REDACTED]',
+    Authorization: '[REDACTED]',
+  }));
+  assert.equal(first.count, 4);
+  assert.deepEqual(JSON.parse(first.text), {
+    password: '[REDACTED]',
+    secret: '[REDACTED]',
+    session_code: '[REDACTED]',
+    Authorization: '[REDACTED]',
+  });
+  assert.deepEqual(profile.redact(first.text), { text: first.text, count: 0 });
+});
+
+test('redacts quoted and scheme-qualified Authorization values', () => {
+  const profile = createRedactionProfile();
+  const input = [
+    'Authorization: Basic dXNlcjpwYXNz',
+    'Authorization: Bearer "alpha beta"',
+    "authorization='token with spaces'",
+  ].join('\n');
+  assert.equal(profile.redact(input).text, [
+    'Authorization: Basic [REDACTED]',
+    'Authorization: Bearer "[REDACTED]"',
+    "authorization='[REDACTED]'",
+  ].join('\n'));
+});
+
+test('redacts unknown Authorization schemes as a complete field', () => {
+  const profile = createRedactionProfile();
+  const marker = '[' + 'REDACTED]';
+  const input = [
+    'Authorization: ' + 'Token dummy-credential',
+    'Authorization: ' + 'Digest username="fake", response="dummy"',
+  ].join('\n');
+  assert.equal(profile.redact(input).text, [
+    'Authorization: ' + marker,
+    'Authorization: ' + marker,
+  ].join('\n'));
+});
+
+test('preserves Basic scheme while redacting its credential', () => {
+  const profile = createRedactionProfile();
+  const marker = '[' + 'REDACTED]';
+  const input = 'Authorization: ' + 'Basic ' + 'dXNlcjpwYXNz';
+  assert.equal(profile.redact(input).text, 'Authorization: Basic ' + marker);
+});
+
+test('does not treat a redaction marker prefix as a complete value', () => {
+  const profile = createRedactionProfile();
+  const marker = '[' + 'REDACTED]';
+  const result = profile.redact(`password=${marker}suffix`);
+  assert.equal(result.text, 'password=' + marker);
+  assert.equal(result.count, 1);
+  assert.equal(profile.hasSecret(`password=${marker}suffix`), true);
+});
+
 test('applies declarative custom rules with the fixed placeholder', () => {
   const profile = createRedactionProfile([
     { type: 'assignment-key', key: 'session_code' },

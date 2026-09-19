@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { cleanupArtifacts } from './artifact-lifecycle.mjs';
+import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 
 function artifactPresent(target) {
   let stat;
@@ -28,12 +28,12 @@ export function persistArtifact(cwd, artifact, { cleanup = {} } = {}) {
     fs.writeFileSync(temporary, artifact.content, { flag: 'wx', mode: 0o600 });
     try { fs.linkSync(temporary, destination); }
     catch (error) {
-      if (error?.code !== 'EEXIST' || fs.readFileSync(destination, 'utf8') !== artifact.content) throw error;
+      if (error?.code !== 'EEXIST') throw error;
+      reuseArtifact(destination, artifact.content);
     }
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  fs.chmodSync(destination, 0o600);
   cleanupArtifacts(directory, { ...cleanup, preserveName: name });
   if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
   return path.posix.join('.sando/sando', 'artifacts', name);

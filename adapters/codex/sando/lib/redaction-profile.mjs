@@ -2,10 +2,6 @@ import { createHash } from 'node:crypto';
 
 const BUILT_IN_MATCHERS = Object.freeze([
   [/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED PRIVATE KEY]'],
-  [/(authorization\s*[:=]\s*(?!(?:bearer\s+)?\[REDACTED(?: (?:PRIVATE KEY|TOKEN))?\](?=$|[\s,"'}]))(?:bearer\s+)?)[^\s,"'}]+/gi,
-    (_match, prefix) => `${prefix}[REDACTED]`],
-  [/(["']?(?:api[_-]?key|access[_-]?token|password|secret|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[REDACTED(?: (?:PRIVATE KEY|TOKEN))?\](?=$|[\s,"'}]))[^\s,"'}]+/gi,
-    (_match, prefix) => `${prefix}[REDACTED]`],
   [/\b(?:sk|rk)-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED TOKEN]'],
   [/\bgh[pousr]_[A-Za-z0-9_-]{12,}\b/g, '[REDACTED TOKEN]'],
   [/\bgithub_pat_[A-Za-z0-9_-]{20,}\b/g, '[REDACTED TOKEN]'],
@@ -19,6 +15,55 @@ const MAX_TOKEN_LENGTH = 4096;
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+const REDACTION_WORD = 'REDACTED';
+const REDACTION_PLACEHOLDER = `[${REDACTION_WORD}]`;
+const REDACTION_VALUE = String.raw`\[${REDACTION_WORD}(?: (?:PRIVATE KEY|TOKEN))?\]`;
+const ASSIGNMENT_VALUE = String.raw`${REDACTION_VALUE}(?=$|[\s,"'}])|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\\n])*(?=\n|$)|'(?:\\.|[^'\\\n])*(?=\n|$)|[^\s,"'}]+`;
+
+function isRedactionPlaceholder(value) {
+  const unquoted = value.length >= 2 && ((value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith("'") && value.endsWith("'"))) ? value.slice(1, -1) : value;
+  return new RegExp(`^${REDACTION_VALUE}$`).test(unquoted);
+}
+
+function redactAssignment(prefix, value) {
+  if (isRedactionPlaceholder(value)) return `${prefix}${value}`;
+  const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
+  return `${prefix}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+}
+
+function assignmentMatcher(keyPattern) {
+  return [
+    new RegExp(`(${keyPattern}\\s*[:=]\\s*)(${ASSIGNMENT_VALUE})`, 'gi'),
+    (_match, prefix, value) => redactAssignment(prefix, value),
+  ];
+}
+
+const AUTHORIZATION_MATCHER = [
+  new RegExp(
+    '(["\\\']?authorization["\\\']?\\s*[:=]\\s*(?:(?:bearer|basic)\\s+)?' + ')(' + ASSIGNMENT_VALUE + ')',
+    'gi',
+  ),
+  (_match, prefix, value) => redactAssignment(prefix, value),
+];
+const AUTHORIZATION_FIELD_MATCHER = [
+  new RegExp(
+    '(["\\\']?authorization["\\\']?\\s*[:=]\\s*)(?!(?:\\s*)(?:bearer|basic)\\s+)('
+      + '"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'|[^\\r\\n]+)',
+    'gi',
+  ),
+  (_match, prefix, value) => {
+    const leading = value.match(/^\s*/u)?.[0] ?? '';
+    const withoutLeading = value.slice(leading.length);
+    const trailing = withoutLeading.match(/\s*$/u)?.[0] ?? '';
+    const body = trailing ? withoutLeading.slice(0, -trailing.length) : withoutLeading;
+    return `${prefix}${leading}${redactAssignment('', body)}${trailing}`;
+  },
+];
+const BUILT_IN_ASSIGNMENT_MATCHER = assignmentMatcher(
+  String.raw`["']?(?:api[_-]?key|access[_-]?token|password|secret|private[_-]?key)["']?`,
+);
 
 function compareCanonical(left, right) {
   const a = JSON.stringify(left);
@@ -79,11 +124,10 @@ function customMatchers(rules) {
   const tokens = [];
   for (const rule of rules) {
     if (rule.type === 'assignment-key') {
-      const key = escapeRegExp(rule.key);
-      assignments.push([
-        new RegExp(`(?<![A-Za-z0-9_.-])(["']?${key}["']?\\s*[:=]\\s*["']?)(?!\\[REDACTED\\](?=$|[\\s,"'}]))[^\\s,"'}]+`, 'gi'),
-        (_match, prefix) => `${prefix}[REDACTED]`,
-      ]);
+    const key = escapeRegExp(rule.key);
+      assignments.push(assignmentMatcher(
+        String.raw`(?<![A-Za-z0-9_.-])["']?${key}["']?`,
+      ));
     } else {
       const maximum = rule.maxLength === null ? '' : rule.maxLength;
       tokens.push([
@@ -99,8 +143,9 @@ function applyMatchers(text, matchers) {
   let count = 0;
   for (const [pattern, replacement] of matchers) {
     text = text.replace(pattern, (...args) => {
-      count += 1;
-      return typeof replacement === 'function' ? replacement(...args) : replacement;
+      const next = typeof replacement === 'function' ? replacement(...args) : replacement;
+      if (next !== args[0]) count += 1;
+      return next;
     });
   }
   return { text, count };
@@ -110,9 +155,12 @@ export function createRedactionProfile(customRules = []) {
   const rules = normalizeRules(customRules);
   const custom = customMatchers(rules);
   const matchers = [
-    ...BUILT_IN_MATCHERS.slice(0, 3),
+    BUILT_IN_MATCHERS[0],
+    AUTHORIZATION_FIELD_MATCHER,
+    AUTHORIZATION_MATCHER,
+    BUILT_IN_ASSIGNMENT_MATCHER,
     ...custom.assignments,
-    ...BUILT_IN_MATCHERS.slice(3),
+    ...BUILT_IN_MATCHERS.slice(1),
     ...custom.tokens,
   ];
   const digest = `sha256:${createHash('sha256')

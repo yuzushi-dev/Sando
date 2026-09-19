@@ -5,6 +5,8 @@ import { redact, hasSecret } from './secret-redaction.mjs';
 
 export const SEMANTIC_SUMMARY_SCHEMA = 'sando-semantic-summary/v1';
 
+// Ordered extraction guarantees grounding in source text, not preservation of every omitted fact.
+
 const DEFAULT_POLICY = Object.freeze({
   minInputTokens: 8000,
   maxSummaryRatio: 0.2,
@@ -48,7 +50,7 @@ export function buildSemanticPrompt({ provider, model, toolName, text, requiredF
   const required = facts(requiredFacts);
   return [
     `Schema: ${SEMANTIC_SUMMARY_SCHEMA}`,
-    'Summarize the historical tool result for a coding agent.',
+    'Return a concise extractive summary using only complete source lines in their original order; do not paraphrase or invent clauses.',
     'Keep exact paths, identifiers, errors, numbers, negations, and every required fact.',
     'Preserved facts must be copied verbatim from the tool result or required-facts list; do not invent or estimate counts.',
     'Return JSON only with schema, summary, and preservedFacts fields.',
@@ -81,6 +83,15 @@ export function validateSemanticSummary({
   if (missing) return { valid: false, reason: 'missing-required-fact', missing, inputTokens, outputTokens };
   if ((redactionProfile ? redactionProfile.hasSecret(summary) : hasSecret(summary))) {
     return { valid: false, reason: 'secret-detected', inputTokens, outputTokens };
+  }
+  const redactedOriginal = redactionProfile ? redactionProfile.redact(originalText).text : redact(originalText).text;
+  const sourceLines = redactedOriginal.split(/\r?\n/);
+  let sourceIndex = 0;
+  for (const line of summary.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const matchIndex = sourceLines.indexOf(line, sourceIndex);
+    if (matchIndex < 0) return { valid: false, reason: 'summary-not-extractive', inputTokens, outputTokens };
+    sourceIndex = matchIndex + 1;
   }
   return { valid: true, inputTokens, outputTokens };
 }

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { reuseArtifact } from './artifact-lifecycle.mjs';
+
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
@@ -70,11 +72,11 @@ export function persistHistoryArtifact(artifact) {
     fs.writeFileSync(temporary, artifact.content, { flag: 'wx', mode: 0o600 });
     try { fs.linkSync(temporary, destination); }
     catch (error) {
-      if (error?.code !== 'EEXIST' || fs.readFileSync(destination, 'utf8') !== artifact.content) throw error;
+      if (error?.code !== 'EEXIST') throw error;
+      reuseArtifact(destination, artifact.content);
     }
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  fs.chmodSync(destination, 0o600);
   return artifact;
 }
