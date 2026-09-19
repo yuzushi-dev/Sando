@@ -14,6 +14,7 @@ import {
 } from './context-transform.mjs';
 import { publishF1Telemetry } from './f1-telemetry.mjs';
 import { recordProxyRequest } from './proxy-metrics.mjs';
+import { recordAdoption, scheduleAdoptionFlush } from './adoption.mjs';
 import {
   closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordFailure,
 } from './telemetry.mjs';
@@ -525,6 +526,7 @@ export async function createProviderProxy({
         jsonResponse(outgoing, 200, { schema: 'sando-provider-proxy/v1', status: 'ok', lastStats });
         return;
       }
+      try { recordAdoption({ env, host: contextCaptureHost ?? 'omp' }); scheduleAdoptionFlush({ env }); } catch { /* adoption is best-effort */ }
       let rawBody;
       try {
         rawBody = await readBody(request, maxBodyBytes);

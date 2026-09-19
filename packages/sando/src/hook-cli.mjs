@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
+import { recordAdoption, scheduleAdoptionFlush } from './adoption.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import {
   closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordActiveDay, recordFailure,
@@ -139,6 +140,7 @@ export function runHookCli({ host, env = process.env } = {}) {
         recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt });
       } catch {}
       recordHookTelemetry({ host, env, policy, optimization });
+      try { recordAdoption({ env, host }); scheduleAdoptionFlush({ env }); } catch { /* adoption must never affect hook output */ }
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
         return;

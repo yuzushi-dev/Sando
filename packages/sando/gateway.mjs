@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import { createLazyMcpGateway } from './src/lazy-mcp-gateway.mjs';
+import { recordAdoption, scheduleAdoptionFlush } from './src/adoption.mjs';
 import { publishF4Telemetry, recordF4Event } from './src/f4-telemetry.mjs';
 import { defaultTelemetryConfigPath, isDoNotTrack, readTelemetryConfig } from './src/telemetry.mjs';
 import { createConfiguredMcpServers, startLazyMcpGatewayStdio } from './src/lazy-mcp-gateway-stdio.mjs';
@@ -28,6 +29,9 @@ const gateway = createLazyMcpGateway({
   onMessage: (message) => output.write(`${JSON.stringify(message)}\n`),
   onF4Event: (event) => {
     try {
+      if (['claude', 'codex', 'omp'].includes(host)) {
+        try { recordAdoption({ host, env: process.env }); scheduleAdoptionFlush({ env: process.env }); } catch { /* adoption is best-effort */ }
+      }
       const coreAllowed = coreTelemetryEnabled();
       if (!coreAllowed) return;
       const recorded = recordF4Event({ ...event, host, env: process.env });

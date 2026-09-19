@@ -151,3 +151,37 @@ For the Codex marketplace, run the script from the installed plugin root:
 
 This is an opt-in sample, not a population measurement. Enabled users may
 not represent everyone running Sando.
+
+## Optional installation activity
+
+Installation activity is a separate, default-off opt-in. Core telemetry consent
+does not enable it. After explicit consent, Sando stores one random UUID per
+host (`claude`, `codex`, or `omp`) and emits at most one marker per UTC day and
+plugin-version transition. Markers contain only the UUID, date, bounded plugin
+version, and host. No hardware, account, path, prompt, or request data is used.
+
+Adoption state is separate from core telemetry at
+`$XDG_CONFIG_HOME/sando/adoption.json` and `$XDG_STATE_HOME/sando/adoption.json`.
+Disabling adoption immediately stops future collection, clears the local UUIDs
+and queue, and does not delete records already received by the service.
+
+Controls:
+
+```text
+node node_modules/sandoichi/src/adoption-cli.mjs status
+node node_modules/sandoichi/src/adoption-cli.mjs enable
+node node_modules/sandoichi/src/adoption-cli.mjs flush
+node node_modules/sandoichi/src/adoption-cli.mjs disable
+```
+
+`DO_NOT_TRACK` blocks adoption recording and upload. The service uses these
+pseudonymous observations only for aggregate active-install, version, cohort,
+inactivity, and reactivation metrics; it is not a people or uninstall count.
+
+Raw adoption observations remain in the private SQLite reducer for at most
+395 days. Loki receives only aggregate snapshots, with cells below five
+observed installations suppressed. The local retry queue retains at most
+256 observations for 30 days. Re-enabling after disable generates new IDs.
+For marketplace installations, use `lib/adoption-cli.mjs` inside the installed
+plugin root. Collection requires a released client that includes this module;
+older releases cannot provide adoption metrics retroactively.
