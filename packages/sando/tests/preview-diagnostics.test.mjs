@@ -101,7 +101,7 @@ test('preview salvages diagnostics displaced by the salvage budget', () => {
   assert.ok(Buffer.byteLength(result.inline) <= 512);
 });
 
-test('artifact recovery range excludes only source lines absent from a diagnostic preview', () => {
+test('artifact recovery range excludes only source lines absent from a diagnostic preview (the partial head line stays recoverable)', () => {
   const lines = Array.from({ length: 300 }, (_, index) => (
     `L${String(index + 1).padStart(3, '0')} ${index === 149 ? 'ERROR middle diagnostic' : 'xxxxxxxx'}`
   ));
@@ -112,8 +112,8 @@ test('artifact recovery range excludes only source lines absent from a diagnosti
 
   assert.match(result.inline, /L150 ERROR middle diagnostic/);
   assert.match(result.inline, /L293 xxxxxxxx/);
-  assert.deepEqual(result.disclosure.artifact.elidedRange, { startLine: 22, endLine: 292 });
-  assert.match(result.disclosure.artifact.recovery.command, /--start-line 22 --end-line 292$/);
+  assert.deepEqual(result.disclosure.artifact.elidedRange, { startLine: 21, endLine: 292 });
+  assert.match(result.disclosure.artifact.recovery.command, /--start-line 21 --end-line 292$/);
 });
 
 test('preview salvages at most eight diagnostic lines', () => {

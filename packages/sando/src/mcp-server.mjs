@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
-import { exposeMcpResult, recoverStoredArtifact } from './artifact-store.mjs';
+import { exposeMcpResult, recoverArtifact } from './artifact-store.mjs';
 import { optimizeToolOutput } from './core.mjs';
 import { ARTIFACT_TOOL_NAME } from './result-disclosure.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
@@ -21,7 +21,7 @@ const TOOL = {
 };
 const ARTIFACT_TOOL = {
   name: ARTIFACT_TOOL_NAME,
-  description: 'Recover bounded redacted content from an artifact created in this MCP session. Copy artifact.handle exactly into ref (for example, sando:sha256:0123456789abcdef). Omit range fields to select the full artifact; the response remains bounded by maxBytes (default 65536). Otherwise use either 0-based byte offsets or a 1-based inclusive line range, and omit fields for the unused mode.',
+  description: 'Recover bounded redacted content from an artifact created in this MCP session, or written by Sando hooks under the project .sando/sando/artifacts directory. Copy artifact.handle exactly into ref (for example, sando:sha256:0123456789abcdef). Omit range fields to select the full artifact; the response remains bounded by maxBytes (default 65536). Otherwise use either 0-based byte offsets or a 1-based inclusive line range, and omit fields for the unused mode.',
   inputSchema: {
     type: 'object', additionalProperties: false, required: ['ref'],
     properties: {
@@ -64,7 +64,7 @@ async function dispatch(message, bridge, active) {
       }
       const result = message.params.name === TOOL.name
         ? optimizeToolOutput(message.params.arguments)
-        : recoverStoredArtifact(message.params.arguments);
+        : recoverArtifact(message.params.arguments, { cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
       const exposed = message.params.name === TOOL.name ? exposeMcpResult(result) : result;
       return response(message.id, { content: [{ type: 'text', text: exposed.inline ?? exposed.content }], structuredContent: exposed, isError: false });
     } catch (cause) {

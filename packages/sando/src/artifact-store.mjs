@@ -1,4 +1,4 @@
-import { recoverArtifactContent, validateArtifactHandle } from './artifact-recovery.mjs';
+import { recoverArtifactContent, recoverArtifactFromWorkspace, validateArtifactHandle } from './artifact-recovery.mjs';
 
 const MAX_ARTIFACTS = 128;
 const MAX_STORED_BYTES = 64 * 1024 * 1024;
@@ -34,6 +34,24 @@ export function recoverStoredArtifact(options = {}) {
   store.delete(options.ref);
   store.set(options.ref, entry);
   return recoverArtifactContent({ ...options, ...entry });
+}
+
+// In-process store first; on a miss, the artifacts hooks wrote under the workspace's .sando
+// directory. `cwd` comes from the server, never from the tool arguments. The workspace path
+// enforces the hex-prefix length, a single match, no symlinks, and a full SHA-256 check.
+const RECOVERY_ARGUMENTS = new Set(['ref', 'startByte', 'endByte', 'startLine', 'endLine', 'maxBytes']);
+
+export function recoverArtifact(options = {}, { cwd } = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('arguments must be an object');
+  for (const key of Object.keys(options)) {
+    if (!RECOVERY_ARGUMENTS.has(key)) throw new TypeError(`unknown argument: ${key}`);
+  }
+  try {
+    return recoverStoredArtifact(options);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'artifact handle is unavailable in this MCP session') throw error;
+    return recoverArtifactFromWorkspace({ ...options, cwd });
+  }
 }
 
 export function exposeMcpResult(result) {

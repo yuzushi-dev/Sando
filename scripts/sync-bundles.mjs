@@ -20,3 +20,7 @@ for (const directory of bundles) {
     await fs.copyFile(path.join(source, file), path.join(root, directory, file));
   }
 }
+
+// The Claude hook runs the canonical hook implementation. Only the Claude bundle takes it: the
+// Codex bundles keep their own hook entrypoints.
+await fs.copyFile(path.join(source, 'hook-cli.mjs'), path.join(root, 'adapters/claude/sando/lib/hook-cli.mjs'));

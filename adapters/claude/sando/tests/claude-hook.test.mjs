@@ -95,7 +95,7 @@ test('observe-only guard never replaces Claude output', (t) => {
   const { output, metrics } = runHook({
     hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
     tool_response: `secret=hidden\n${'x'.repeat(600)}`,
-  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true }, { SANDO_OBSERVE_ONLY: '1' });
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, redact: true }, { SANDO_OBSERVE_ONLY: '1' });
 
   assert.deepEqual(output, {});
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
@@ -118,7 +118,7 @@ test('Claude apply records zero mechanical savings when unsupported structured o
   const { output, metrics } = runHook({
     hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
     tool_response: toolResponse,
-  }, cwd, { mode: 'apply', maxInlineBytes: 128 });
+  }, cwd, { mode: 'apply', maxInlineBytes: 512 });
   assert.deepEqual(output, {});
   assert.equal(metrics.records[0].estimatedInlineTokens, metrics.records[0].estimatedInputTokens);
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens, 0);
@@ -129,7 +129,7 @@ test('Claude apply records zero mechanical savings when unsupported structured o
   });
   const optimization = optimizeToolOutput({
     toolName: event.toolName, output: event.output, cwd,
-    policy: { mode: 'apply', maxInlineBytes: 128 },
+    policy: { mode: 'apply', maxInlineBytes: 512 },
   });
   const original = JSON.stringify(toolResponse);
   const measuredOptimization = { ...optimization, inline: original, stats: {
@@ -147,7 +147,7 @@ test('Claude observe mode keeps counterfactual savings for unsupported structure
   const { output, metrics } = runHook({
     hook_event_name: 'PostToolUse', tool_name: 'Read', cwd,
     tool_response: { type: 'text', file: { content: 'x'.repeat(6000), numLines: 120 } },
-  }, cwd, { mode: 'observe', maxInlineBytes: 128 });
+  }, cwd, { mode: 'observe', maxInlineBytes: 512 });
 
   assert.deepEqual(output, {});
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
@@ -159,11 +159,11 @@ test('Claude receipt hashes the exact structured replacement payload', (t) => {
   const input = {
     hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd, event_id: 'receipt-event',
     tool_response: {
-      stdout: `Authorization: Bearer fixture-secret\n${'x'.repeat(220)}`,
+      stdout: `Authorization: Bearer fixture-secret\n${'x'.repeat(2000)}`,
       stderr: 'tail error', interrupted: false, isImage: false, extra: 'preserved',
     },
   };
-  const policy = { mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 256, redact: true };
+  const policy = { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 16_000, redact: true };
   const { output, metrics } = runHook(input, cwd, policy);
   const replacement = output.hookSpecificOutput.updatedToolOutput;
   assert.equal(replacement.extra, 'preserved');
@@ -202,7 +202,7 @@ test('Claude apply redacts secrets in preserved structured string fields', (t) =
       stdout: 'ok', stderr: '', interrupted: false, isImage: false,
       extra: 'password=fixture-extra-secret',
     },
-  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true });
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, redact: true });
 
   const replacement = output.hookSpecificOutput.updatedToolOutput;
   assert.equal(replacement.extra, 'password=[REDACTED]');
@@ -221,7 +221,7 @@ test('Claude applies project redaction rules to inline output and the complete a
   const { output, metrics } = runHook({
     hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd,
     tool_response: `TEAM_DB_URL=fixture-team-secret\n${'x'.repeat(6000)}`,
-  }, cwd, { mode: 'apply', maxInlineBytes: 128, redact: true });
+  }, cwd, { mode: 'apply', maxInlineBytes: 512, redact: true });
 
   const replacement = output.hookSpecificOutput.updatedToolOutput;
   assert.doesNotMatch(replacement, /fixture-team-secret/);
@@ -234,7 +234,7 @@ test('Claude applies project redaction rules to inline output and the complete a
   assert.equal(metrics.records[0].estimatedTransformSavingsTokens > 0, true);
 });
 
-test('Claude surfaces an invalid project redaction profile', (t) => {
+test('Claude fails closed on an invalid project redaction profile', (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-claude-invalid-redaction-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, '.sando'));
@@ -246,9 +246,12 @@ test('Claude surfaces an invalid project redaction profile', (t) => {
     env: { ...process.env, DO_NOT_TRACK: '1', SANDO_POLICY: JSON.stringify({ mode: 'apply', redact: true }) },
   });
 
-  assert.equal(result.status, 2);
+  // Exit 2 on PostToolUse only adds stderr to a result the model already has, so the hook fails
+  // closed instead: exit 0, the problem stated on stderr, and a placeholder in place of the output.
+  assert.equal(result.status, 0);
   assert.match(result.stderr, /invalid redaction config/i);
-  assert.deepEqual(JSON.parse(result.stdout), {});
+  const emitted = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.match(emitted.updatedToolOutput, /output withheld.*redaction/i);
 });
 
 test('fixture probe validates replacement without writing public telemetry', (t) => {

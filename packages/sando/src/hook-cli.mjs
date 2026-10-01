@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { DISPLAY_REDACTION_NOTICE, finalizeResultDelivery } from './result-disclosure.mjs';
@@ -70,8 +71,22 @@ function hookPolicy(env, host) {
   return normalizePolicy(policy);
 }
 
+// On Claude the artifact store lives under CLAUDE_PROJECT_DIR when it is set, so a `cd` into a
+// subdirectory or worktree does not move it away from where the MCP recovery tool looks.
+let projectRoot;
+
+function claudeProjectRoot(env) {
+  const configured = env.CLAUDE_PROJECT_DIR;
+  if (typeof configured !== 'string' || !path.isAbsolute(configured)) return undefined;
+  try {
+    const real = fs.realpathSync(configured);
+    return fs.statSync(real).isDirectory() ? real : undefined;
+  } catch { return undefined; }
+}
+
 function artifactPath(cwd, artifact) {
-  const root = fs.realpathSync(cwd);
+  const cwdRoot = fs.realpathSync(cwd);
+  const root = projectRoot ?? cwdRoot;
   const stateRoot = path.join(root, '.sando');
   const privateRoot = path.join(stateRoot, 'sando');
   const directory = path.join(privateRoot, 'artifacts');
@@ -96,7 +111,108 @@ function artifactPath(cwd, artifact) {
   }
   cleanupArtifacts(directory, { preserveName: name });
   if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
-  return path.posix.join('.sando/sando', 'artifacts', name);
+  // Relative to the cwd when the store is there, absolute otherwise (the cwd moved off the root).
+  return root === cwdRoot ? path.posix.join('.sando/sando', 'artifacts', name) : destination;
+}
+
+// Sando's own MCP tools (artifact recovery, prepare_tool_output, Slice) are never bounded:
+// bounding the recovery tool would defeat recovery.
+export function isSandoMcpTool(toolName) {
+  return /^mcp__(?:plugin_sando_|sando__)/u.test(toolName);
+}
+
+// Total inline text one MCP result may deliver. Each block is bounded on its own; when the bounded
+// blocks together still exceed this, they are merged into one bounded view with one artifact.
+const MCP_AGGREGATE_BYTES = 16 * 1024;
+
+// An MCP tool_response on Claude is an array of content blocks. Each `text` block goes through
+// the same optimizer as other tool output, with the recover hint naming sando_artifact_get;
+// every other block (image, resource, ...) is passed through untouched. Anything that is not a
+// content array (structured objects, strings) is left alone. Returns undefined when nothing changed.
+function boundMcpContent({ event, input, policy, env }) {
+  const response = input.tool_response;
+  if (!Array.isArray(response)) return undefined;
+  const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
+  const isText = (block) => block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string';
+  const optimizeText = (original) => optimizeToolOutput({
+    toolName: event.toolName, toolInput: event.toolInput, output: original, cwd: event.cwd,
+    policy, redactionProfile, recoveryStyle: 'mcp',
+  });
+  let changed = false;
+  const deliver = (original, optimization) => {
+    const text = materialize(optimization, event.cwd, policy.maxInlineBytes).inline;
+    if (text === original) return original;
+    changed = true;
+    const blockEvent = { ...event, output: original };
+    const delivered = accountDeliveredValue(optimization, text);
+    const receipt = createReceipt({ host: 'claude', event: blockEvent, optimization: delivered, replacement: text });
+    try { recordMetrics({ storagePath: defaultMetricsPath(env), host: 'claude', event: blockEvent, optimization: delivered, receipt }); } catch {}
+    recordHookTelemetry({ host: 'claude', env, policy, optimization: delivered });
+    return text;
+  };
+  const textBlocks = response.filter(isText);
+  const bounded = textBlocks.map((block) => optimizeText(block.text));
+  const boundedBytes = bounded.reduce((sum, optimization) => sum + Buffer.byteLength(optimization.inline), 0);
+  if (textBlocks.length > 1 && boundedBytes > MCP_AGGREGATE_BYTES) {
+    const joined = textBlocks.map((block) => block.text).join('\n');
+    const merged = deliver(joined, optimizeText(joined));
+    let placed = false;
+    return response.flatMap((block) => {
+      if (!isText(block)) return [block];
+      if (placed) return [];
+      placed = true;
+      return [{ ...block, text: merged }];
+    });
+  }
+  let index = 0;
+  const blocks = response.map((block) => {
+    if (!isText(block)) return block;
+    const optimization = bounded[index];
+    index += 1;
+    return { ...block, text: deliver(block.text, optimization) };
+  });
+  return changed ? blocks : undefined;
+}
+
+const WITHHELD_NOTICE = '[sando] output withheld: Sando could not safely process this result';
+
+// Last line of defence on Claude. When Sando fails after the tool ran, the original output is
+// already on its way to the model, and exit code 2 on PostToolUse only adds stderr to it. So the
+// hook answers with a redacted, hard-truncated copy, or a placeholder when even that is not
+// possible. It never lets the raw output through.
+function failClosedText(text, { cwd, policy, code }) {
+  const reason = `${WITHHELD_NOTICE} (${code ?? 'internal error'}); set SANDO_MODE=observe to pass tool output through unmodified.`;
+  try {
+    let body = stripVTControlCharacters(text);
+    let redactions = 0;
+    if (policy.redact) {
+      const redacted = loadProjectRedactionProfile(cwd).profile.redact(body);
+      body = redacted.text;
+      redactions = redacted.count;
+    }
+    const limit = Math.max(256, Math.min(policy.maxInlineBytes, 4096));
+    const truncated = Buffer.byteLength(body) > limit;
+    if (truncated) body = Buffer.from(body).subarray(0, limit).toString('utf8');
+    return `${body}${truncated ? `\n${reason.replace('withheld', 'truncated')}` : ''}${redactions > 0 ? `\n${DISPLAY_REDACTION_NOTICE}` : ''}`;
+  } catch {
+    return reason;
+  }
+}
+
+function failClosedOutput(response, { toolName, cwd, policy, code }) {
+  const safe = (text) => failClosedText(text, { cwd, policy, code });
+  if (typeof response === 'string') return { updatedToolOutput: safe(response) };
+  if (Array.isArray(response) && toolName.startsWith('mcp__')) {
+    return { updatedMCPToolOutput: response.map((block) => (block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string' ? { ...block, text: safe(block.text) } : block)) };
+  }
+  if (response && typeof response === 'object' && !Array.isArray(response)
+    && typeof response.stdout === 'string' && typeof response.stderr === 'string') {
+    return { updatedToolOutput: {
+      stdout: safe(response.stdout), stderr: safe(response.stderr),
+      interrupted: response.interrupted === true, isImage: response.isImage === true,
+    } };
+  }
+  return undefined;
 }
 
 export function runHookCli({ host, env = process.env } = {}) {
@@ -110,19 +226,32 @@ export function runHookCli({ host, env = process.env } = {}) {
     return;
   }
   let failureStage = 'input';
+  projectRoot = host === 'claude' ? claudeProjectRoot(env) : undefined;
+  let rawInput;
   try {
     const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+    rawInput = input;
     const eventName = input.hook_event_name ?? input.hookEventName ?? input.event_name ?? input.eventName;
     if (eventName === 'PostToolUse') {
       const event = normalizeEvent(input);
       if (host === 'claude' && event.toolName.startsWith('mcp__')) {
+        if (policy.mode === 'apply' && !isSandoMcpTool(event.toolName)) {
+          failureStage = 'mcp';
+          const bounded = boundMcpContent({ event, input, policy, env });
+          if (bounded) {
+            process.stdout.write(`${JSON.stringify({ hookSpecificOutput: {
+              hookEventName: 'PostToolUse', updatedMCPToolOutput: bounded,
+            } })}\n`);
+            return;
+          }
+        }
         process.stdout.write('{}\n');
         return;
       }
       failureStage = 'redaction';
       const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
       failureStage = 'optimization';
-      const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile });
+      const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile, recoveryStyle: host === 'claude' ? 'mcp' : undefined });
       let shaped;
       failureStage = 'artifact';
       if (host === 'claude' && policy.mode === 'apply') {
@@ -135,8 +264,12 @@ export function runHookCli({ host, env = process.env } = {}) {
           policy,
         });
       }
-      let deliveredOptimization = shaped === undefined
-        ? optimization : accountDeliveredValue(optimization, shaped);
+      // On Claude in apply mode the model sees `shaped`, or the untouched original when nothing was
+      // emitted; account for what was delivered, so unchanged output never claims savings.
+      const claudeApply = host === 'claude' && policy.mode === 'apply';
+      let deliveredOptimization = shaped !== undefined
+        ? accountDeliveredValue(optimization, shaped)
+        : claudeApply ? accountDeliveredValue(optimization, event.output) : optimization;
       let fallback;
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         fallback = buildCodexFallback({ optimization, cwd: event.cwd });
@@ -145,7 +278,7 @@ export function runHookCli({ host, env = process.env } = {}) {
       failureStage = 'output';
       const receipt = createReceipt({
         host, event, optimization: deliveredOptimization,
-        replacement: fallback ?? shaped,
+        replacement: fallback ?? shaped ?? (claudeApply ? event.output : undefined),
       });
       try {
         recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: deliveredOptimization, receipt });
@@ -167,11 +300,24 @@ export function runHookCli({ host, env = process.env } = {}) {
     }
   } catch (error) {
     recordHookFailure({ host, env, failureStage });
-    if (error?.code === 'SANDO_REDACTION_CONFIG') {
-      process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
-      process.exitCode = 2;
-    } else if (error?.code === 'SANDO_OUTPUT_BUDGET') {
-      process.stderr.write(`sando output budget: ${error.message}\n`);
+    const detail = error?.code === 'SANDO_REDACTION_CONFIG' ? `invalid redaction config: ${error.message}`
+      : error?.code === 'SANDO_OUTPUT_BUDGET' ? `output budget: ${error.message}` : undefined;
+    if (detail) process.stderr.write(`sando ${detail}\n`);
+    if (host === 'claude' && policy.mode === 'apply'
+      && (rawInput?.hook_event_name ?? rawInput?.hookEventName) === 'PostToolUse') {
+      try {
+        const safe = failClosedOutput(rawInput.tool_response, {
+          toolName: String(rawInput.tool_name ?? ''), cwd: rawInput.cwd, policy,
+          code: error?.code ?? 'internal error',
+        });
+        if (safe) {
+          process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', ...safe } })}\n`);
+          return;
+        }
+      } catch { /* fall through to the unmodified result */ }
+    }
+    if (error?.code === 'SANDO_REDACTION_CONFIG') process.exitCode = 2;
+    else if (error?.code === 'SANDO_OUTPUT_BUDGET') {
       process.exitCode = 2;
       return;
     }
@@ -185,7 +331,7 @@ function materialize(optimization, cwd, maxInlineBytes) {
     : optimization.inline;
   return finalizeResultDelivery(optimization, {
     inline,
-    maxInlineBytes,
+    maxInlineBytes: optimization.deliveryBudget ?? maxInlineBytes,
   });
 }
 
@@ -213,19 +359,6 @@ export function buildCodexFallback({ optimization, cwd }) {
   };
 }
 
-function redactStructuredForDisplay(value, profile) {
-  if (typeof value === 'string') {
-    const redacted = profile.redact(value);
-    if (redacted.count === 0 || redacted.text.endsWith(DISPLAY_REDACTION_NOTICE)) return redacted.text;
-    return `${redacted.text}\n${DISPLAY_REDACTION_NOTICE}`;
-  }
-  if (Array.isArray(value)) return value.map((item) => redactStructuredForDisplay(item, profile));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactStructuredForDisplay(item, profile)]));
-  }
-  return value;
-}
-
 function shapeForClaude({ original, optimization, toolName, toolInput, cwd, policy, redactionProfile }) {
   if (typeof original === 'string') {
     return materialize(optimization, cwd, policy.maxInlineBytes).inline;
@@ -235,18 +368,28 @@ function shapeForClaude({ original, optimization, toolName, toolInput, cwd, poli
     || typeof original.stdout !== 'string' || typeof original.stderr !== 'string'
     || (Object.hasOwn(original, 'interrupted') && typeof original.interrupted !== 'boolean')
     || (Object.hasOwn(original, 'isImage') && typeof original.isImage !== 'boolean')) return undefined;
-  const result = policy.redact ? redactStructuredForDisplay(original, redactionProfile) : { ...original };
+  let result = { ...original };
+  let otherRedactions = 0;
+  if (policy.redact) {
+    // stdout and stderr are redacted by the optimizer below; everything else goes through the profile here.
+    const redacted = redactionProfile.redactStructured({ ...original, stdout: '', stderr: '' });
+    result = { ...redacted.value, stdout: original.stdout, stderr: original.stderr };
+    otherRedactions = redacted.count;
+  }
   if (typeof original.stdout === 'string') {
     result.stdout = materialize(
-      optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy, redactionProfile }),
+      optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy, redactionProfile, recoveryStyle: 'mcp' }),
       cwd, policy.maxInlineBytes,
     ).inline;
   }
   if (typeof original.stderr === 'string') {
     result.stderr = materialize(
-      optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy, redactionProfile }),
+      optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy, redactionProfile, recoveryStyle: 'mcp' }),
       cwd, policy.maxInlineBytes,
     ).inline;
+  }
+  if (otherRedactions > 0 && !result.stdout.endsWith(DISPLAY_REDACTION_NOTICE)) {
+    result.stdout = `${result.stdout}\n${DISPLAY_REDACTION_NOTICE}`;
   }
   return result;
 }

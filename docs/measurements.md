@@ -96,7 +96,7 @@ Processing cost per call: 0.24 ms for a 5 KB source file, 0.95 ms for 22 KB, 10.
 ## How the surfaces differ
 
 On Claude the `PostToolUse` hook rewrites tool results in place, without touching how commands
-execute, for every tool except the external `mcp__*` ones. On Codex the hook cannot rewrite output at all, and the only
+execute, including the text blocks of external `mcp__*` results since 0.7.1. On Codex the hook cannot rewrite output at all, and the only
 channel left is rewriting the command before it runs. That is why Sando wraps shell commands
 there and has no reason to on Claude.
 
@@ -107,10 +107,11 @@ The two surfaces also carry different weight. Measured across the results each o
 | Claude, tools the hook processes | 11.2M tokens, 14.5% ceiling | 4.5M tokens, 18.9% ceiling |
 | Codex shell | 78.5M tokens, 91.9% ceiling | 28.1M tokens, 95.5% ceiling |
 
-External `mcp__*` results are excluded from the Claude rows: the hook returns early on them
-(`adapters/claude/sando/lib/hook-entry.mjs`), so they are never bounded. That exclusion costs
-machine B 10.5 points, because its MCP traffic is large and highly compressible: counting it
-would report a reduction the plugin does not deliver.
+External `mcp__*` results are excluded from the Claude rows above: they were measured on 0.6.x, where the
+hook returned early on them, so they were never bounded. That exclusion cost machine B 10.5 points, because
+its MCP traffic is large and highly compressible. From 0.7.1 the hook bounds their text blocks
+(`updatedMCPToolOutput`) and they are recoverable through `sando_artifact_get`, but the Claude rows have
+not been re-measured: pending re-measurement. No figure here includes MCP results.
 
 The gap that remains between the two Claude columns comes from which tools each person uses.
 On machine A, `Read` is 64% of the tokens and reduces by 15.8%. `Read` itself lands within a

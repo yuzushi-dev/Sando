@@ -32,8 +32,9 @@ TypeSafe shadow judge is measurement-only and never changes the request.
 | Files fitting a 200,000-token window | **~2.4x more** (2.39x–2.44x) | any git checkout | `node scripts/bench-reduction.mjs` |
 
 These are output reductions, one tool result at a time. What a session costs also depends on
-prompt-cache economics, which these numbers do not model. Results from external `mcp__*` tools
-pass through untouched and are excluded. Method and per-corpus variation:
+prompt-cache economics, which these numbers do not model. On Claude, text blocks of external
+`mcp__*` results are now bounded too, and recoverable with `sando_artifact_get`; the published
+numbers were measured before that and exclude them. Method and per-corpus variation:
 [`docs/measurements.md`](docs/measurements.md).
 
 ## Install
@@ -213,7 +214,10 @@ Recover a bounded byte or line range from an installed workspace artifact:
 ```
 
 From inside a session, the MCP server exposes the same recovery as the read-only
-`sando_artifact_get` tool, for artifacts kept in that MCP process.
+`sando_artifact_get` tool. It reads artifacts kept in that MCP process first, then the files
+hooks wrote under the project's `.sando/sando/artifacts` (hex prefix of at least 16 characters,
+exactly one match, symlinks rejected, full SHA-256 verified). On Claude the recover hint in a
+bounded result names this tool; Codex keeps the CLI hint.
 
 **Limits.** Bytes are kept for any result up to the 1 MiB artifact limit. Beyond that, and beyond
 the 16 MiB a wrapped command captures, the excess is truncated at the source and marked as such.

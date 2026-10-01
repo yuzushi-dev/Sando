@@ -108,7 +108,11 @@ function safeDirectory(target, name) {
   if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${name} is unavailable or unsafe`);
 }
 
-export function recoverArtifactFromWorkspace({ cwd, ref, ...range } = {}) {
+export function recoverArtifactFromWorkspace({
+  cwd, ref, startByte, endByte, startLine, endLine, maxBytes,
+} = {}) {
+  // Only the range selectors are taken from the caller; content and digest come from the file.
+  const range = { startByte, endByte, startLine, endLine, maxBytes };
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new TypeError('artifact cwd is invalid');
   const root = fs.realpathSync(cwd);
   if (!fs.statSync(root).isDirectory()) throw new TypeError('artifact cwd is not a directory');

@@ -25,7 +25,8 @@ function digest(value) {
 
 try {
   const input = JSON.parse(fs.readFileSync(fixturePath, 'utf8').replaceAll('__PROBE_CWD__', cwd));
-  const policy = { mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 256, redact: true };
+  input.tool_response.stdout += `\n${'padding line to exceed the inline budget\n'.repeat(40)}`;
+  const policy = { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 16_000, redact: true };
   const metricsPath = path.join(cwd, 'metrics.json');
   const result = spawnSync(process.execPath, [path.join(root, 'hooks/post-tool-use.mjs')], {
     input: JSON.stringify(input), encoding: 'utf8',

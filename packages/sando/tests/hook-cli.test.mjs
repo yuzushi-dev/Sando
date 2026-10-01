@@ -152,7 +152,7 @@ test('Claude structured stdout and stderr disclose each transformed textual fiel
   assert.equal(updated.interrupted, false);
 });
 
-test('Claude structured extra string fields disclose their own display redactions', () => {
+test('Claude structured extra string fields are redacted with one disclosure', () => {
   const { dir, env } = tempEnv();
   const script = runnerScript(dir);
   const extraToken = ['sk', 'abcdefghijklmnop'].join('-');
@@ -171,12 +171,11 @@ test('Claude structured extra string fields disclose their own display redaction
   });
   const updated = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
 
-  assert.equal(updated.stdout, 'safe stdout');
+  // Extra fields are redacted through redactStructured and the disclosure is appended once, to stdout.
+  assert.match(updated.stdout, /^safe stdout\n\[sando\] display redacted; Sando did not sanitize source files$/);
   assert.equal(JSON.stringify(updated).includes(extraToken), false);
   assert.equal(JSON.stringify(updated).includes(nestedValue), false);
-  assert.match(updated.summary, /\[sando\] display redacted; Sando did not sanitize source files$/);
-  assert.match(updated.nested.detail, /\[sando\] display redacted; Sando did not sanitize source files$/);
-  assert.equal((updated.summary.match(/\[sando\] display redacted/g) ?? []).length, 1);
+  assert.equal(JSON.stringify(updated).split('display redacted').length - 1, 1);
 });
 
 test('Codex fallback discloses that its prepared redacted display did not sanitize source files', () => {

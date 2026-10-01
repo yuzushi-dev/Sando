@@ -287,10 +287,17 @@ const SOURCE_CLASS_LIMITS = Object.freeze({
 
 // Appends the recovery command to the `[sando] artifact ...` line so the model reading a bounded
 // result can see how to get the rest back. Space for it was reserved before the view was cut.
-function withRecoveryHint(inline, artifact, elidedRange) {
+// `recoveryStyle` 'cli' (default) names the `sando artifact get` command; 'mcp' names the
+// sando_artifact_get tool, for hosts where the CLI is not on the model's PATH.
+function withRecoveryHint(inline, artifact, elidedRange, recoveryStyle = 'cli') {
   const header = `[sando] artifact ${artifact.ref} ${artifact.bytes}B`;
   if (!inline.startsWith(header)) return inline;
-  const range = elidedRange && Number.isInteger(elidedRange.startLine) && Number.isInteger(elidedRange.endLine)
+  const hasRange = elidedRange && Number.isInteger(elidedRange.startLine) && Number.isInteger(elidedRange.endLine);
+  if (recoveryStyle === 'mcp') {
+    const mcpRange = hasRange ? ` startLine=${elidedRange.startLine} endLine=${elidedRange.endLine}` : ' maxBytes=65536';
+    return `${header} recover: sando_artifact_get ref=${artifact.ref}${mcpRange}${inline.slice(header.length)}`;
+  }
+  const range = hasRange
     ? ` --start-line ${elidedRange.startLine} --end-line ${elidedRange.endLine}`
     : ' --max-bytes 65536';
   return `${header} recover: sando artifact get --ref ${artifact.ref}${range}${inline.slice(header.length)}`;
@@ -300,7 +307,8 @@ function calculateElidedRange(fullText, inlineText) {
   const marker = '[middle elided]';
   const markerIndex = inlineText.indexOf(marker);
   if (markerIndex === -1) return null;
-  const headPart = inlineText.slice(0, markerIndex);
+  // The leading `[sando] artifact ...` header line is not source text.
+  const headPart = inlineText.slice(0, markerIndex).replace(/^\[sando\] artifact [^\n]*\n/u, '');
   const tailPart = inlineText.slice(markerIndex + marker.length);
   const totalLines = fullText.split('\n').length;
   const headLines = headPart.split('\n').length;
@@ -340,7 +348,7 @@ export function normalizePolicy(policy = {}) {
 
 export function optimizeToolOutput({
   toolName, output, cwd, policy, selector, raw, lineCount, fileBytes, prose, summarizeProse,
-  summarizeEnabled, grepScope, outputBytes, toolInput, redactionProfile,
+  summarizeEnabled, grepScope, outputBytes, toolInput, redactionProfile, recoveryStyle,
 } = {}) {
   if (typeof toolName !== 'string' || !toolName.trim() || toolName.length > 128) throw new Error('toolName is invalid');
   if (typeof cwd !== 'string' || !cwd) throw new Error('cwd is invalid');
@@ -380,6 +388,9 @@ export function optimizeToolOutput({
   const totalRedactions = redacted.count + previewRedacted.count;
   const disclosureSuffix = totalRedactions > 0 ? `\n${DISPLAY_REDACTION_NOTICE}` : '';
   const disclosureBytes = Buffer.byteLength(disclosureSuffix);
+  // The budget the optimizer worked to, for delivery to finalize against: the per-class limit,
+  // not the generic default, so a passthrough result sized for its class is not rejected later.
+  const deliveryBudget = baseInlineBudget;
   baseInlineBudget -= disclosureBytes;
   baseHeadBytes = Math.min(baseHeadBytes, Math.max(1, baseInlineBudget));
   baseTailBytes = Math.min(baseTailBytes, Math.max(1, baseInlineBudget));
@@ -492,7 +503,7 @@ export function optimizeToolOutput({
   const elidedRange = artifact && inline.includes('[middle elided]')
     ? calculateElidedRange(sourceText, inline)
     : undefined;
-  if (artifact && recoveryHintAffordable) inline = withRecoveryHint(inline, artifact, elidedRange);
+  if (artifact && recoveryHintAffordable) inline = withRecoveryHint(inline, artifact, elidedRange, recoveryStyle);
   inline += disclosureSuffix;
   const stats = {
     mode: normalizedPolicy.mode,
@@ -506,7 +517,7 @@ export function optimizeToolOutput({
     artifactTruncated: artifact?.truncated ?? false,
   };
   const result = {
-    inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION,
+    inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION, deliveryBudget,
     redactionProfileDigest: profile?.digest ?? null, stats,
     disclosure: buildResultDisclosure({
       toolName, route: route.route, reason: route.source, inline,

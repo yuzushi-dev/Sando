@@ -115,6 +115,14 @@ function deliveredElidedRange(content, body, previous) {
 
 function recoveryHeader(header, elidedRange) {
   if (!header.includes(' recover: ')) return header;
+  if (header.includes(' recover: sando_artifact_get ')) {
+    const mcpSelector = elidedRange
+      ? ` startLine=${elidedRange.startLine} endLine=${elidedRange.endLine}`
+      : ' maxBytes=65536';
+    if (/ startLine=\d+ endLine=\d+/u.test(header)) return header.replace(/ startLine=\d+ endLine=\d+/u, mcpSelector);
+    if (/ maxBytes=\d+/u.test(header)) return header.replace(/ maxBytes=\d+/u, mcpSelector);
+    return header;
+  }
   const selector = elidedRange
     ? ` --start-line ${elidedRange.startLine} --end-line ${elidedRange.endLine}`
     : ' --max-bytes 65536';
