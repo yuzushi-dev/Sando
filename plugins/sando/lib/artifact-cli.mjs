@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { recoverArtifactFromWorkspace } from './artifact-recovery.mjs';
+import { ARTIFACT_VIEW_NOTICE, recoverArtifactFromWorkspace } from './artifact-recovery.mjs';
 
 function usage() {
   return 'Usage: sando artifact get --ref HANDLE [--root DIR] [--start-byte N --end-byte N | --start-line N --end-line N] [--max-bytes N] [--json]\n';
@@ -42,7 +42,7 @@ function parseArgs(argv) {
 }
 
 function terminal(report) {
-  return `Sando artifact ${report.handle}: ${report.bytes}B${report.truncated ? ' (bounded)' : ''}\n${report.content}\n`;
+  return `Sando artifact ${report.handle}: ${report.bytes}B${report.truncated ? ' (bounded)' : ''}\n${report.content}\n${ARTIFACT_VIEW_NOTICE}\n`;
 }
 
 export function runArtifactCli({ argv = process.argv.slice(2), stdout = process.stdout, stderr = process.stderr } = {}) {

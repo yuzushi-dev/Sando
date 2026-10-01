@@ -7,7 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { persistArtifact } from '../lib/artifacts.mjs';
+import { materializeArtifactResult, persistArtifact } from '../lib/artifacts.mjs';
 import { normalizePolicy, optimizeToolOutput } from '../lib/core.mjs';
 import { callMcpTool } from '../lib/mcp-tools.mjs';
 
@@ -52,6 +52,29 @@ test('persistArtifact fails closed when the new artifact alone exceeds the cap',
       /artifact storage limit/i,
     );
     assert.equal(fs.existsSync(artifactFile(cwd, value)), false);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('materializeArtifactResult caps and accounts the final delivered path', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-artifacts-delivery-'));
+  try {
+    const policy = normalizePolicy({ mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 4_096, redact: true });
+    const result = optimizeToolOutput({
+      toolName: 'Read', toolInput: { file_path: 'fixture.txt' }, cwd, policy,
+      output: `password=artifact-secret\n${'middle\n'.repeat(100)}tail\n`,
+    });
+    const delivered = materializeArtifactResult(result, cwd, { maxInlineBytes: policy.maxInlineBytes });
+
+    assert.ok(Buffer.byteLength(delivered.inline) <= policy.maxInlineBytes);
+    assert.doesNotMatch(delivered.inline, /artifact-secret/);
+    assert.match(delivered.inline, /\.sando\/sando\/artifacts\/[a-f0-9]{64}\.txt/);
+    assert.match(delivered.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+    assert.equal(delivered.stats.inlineBytes, Buffer.byteLength(delivered.inline));
+    assert.equal(delivered.disclosure.bytes.visible, Buffer.byteLength(delivered.inline));
+    assert.equal(delivered.disclosure.artifact.digest, result.artifact.sourceDigest);
+    assert.ok(delivered.disclosure.artifact.elidedRange);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -202,6 +225,24 @@ test('MCP artifact recovery keeps the session handle contract', (t) => {
   assert.throws(() => callMcpTool('sando_artifact_get', { ref, maxBytes: 0 }), /maxBytes/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: '/tmp/.sando/sando/artifacts/file.txt' }), /invalid/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }), /unavailable in this MCP session/i);
+});
+
+test('standalone plugin artifact recovery discloses uncertainty in text and JSON', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-artifact-view-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const value = artifact('historical artifact');
+  persistArtifact(cwd, value);
+  const launcher = path.resolve(import.meta.dirname, '..', 'bin', 'sando');
+
+  const textResult = spawnSync(launcher, ['artifact', 'get', '--root', cwd, '--ref', value.ref], { encoding: 'utf8' });
+  assert.equal(textResult.status, 0, textResult.stderr);
+  assert.match(textResult.stdout, /\[sando\] artifact view; source-file sanitization is not certified\n$/);
+
+  const jsonResult = spawnSync(launcher, ['artifact', 'get', '--root', cwd, '--ref', value.ref, '--json'], { encoding: 'utf8' });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const report = JSON.parse(jsonResult.stdout);
+  assert.equal(report.content, value.content);
+  assert.deepEqual(report.disclosure, { scope: 'artifact-view', sourceSanitization: 'not-certified' });
 });
 
 test('G5: sando_read routes by source class, not by the default budget', (t) => {

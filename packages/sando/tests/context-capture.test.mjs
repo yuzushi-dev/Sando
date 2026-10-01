@@ -95,6 +95,28 @@ test('fails closed when a session key is absent', () => {
   }), null);
 });
 
+test('Responses nested cache writes are not classified as fresh input', () => {
+  const usage = normalizeProviderUsage('openai-responses', {
+    input_tokens: 100_000,
+    input_tokens_details: { cached_tokens: 80_000, cache_write_tokens: 10_000 },
+    output_tokens: 2_000,
+    output_tokens_details: { reasoning_tokens: 1_500 },
+  });
+  assert.equal(usage.cacheWriteInputTokens, 10_000);
+  assert.equal(usage.inputTokens - usage.cachedInputTokens - usage.cacheWriteInputTokens, 10_000);
+});
+
+test('capture preserves usage diagnostics without retaining raw payloads', () => {
+  const record = buildContextCaptureRecord({
+    host: 'codex', provider: 'openai-responses', rawBody: '{}', sessionKey: 's1',
+    providerUsage: { input_tokens: 100, output_tokens: 2, cache_write_input_tokens: 3,
+      input_tokens_details: { cache_write_tokens: 4 }, secret: 'private-value' },
+  });
+  assert.equal(record.usageQuality.status, 'invalid');
+  assert.equal(record.usageQuality.scope, 'request');
+  assert.doesNotMatch(JSON.stringify(record), /private-value/);
+});
+
 test('normalizes provider usage without inventing incomplete totals', () => {
   assert.deepEqual(normalizeProviderUsage('anthropic', {
     input_tokens: 4,

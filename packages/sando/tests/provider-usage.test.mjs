@@ -20,6 +20,107 @@ function tempPath(t) {
   return path.join(directory, 'provider-usage.json');
 }
 
+test('Codex nested counters and duplicates preserve quality and provenance', () => {
+  const event = { type: 'turn.completed', id: 'turn-cache', usage: {
+    input_tokens: 100_000, output_tokens: 2_000,
+    input_tokens_details: { cached_tokens: 80_000, cache_write_tokens: 10_000 },
+    output_tokens_details: { reasoning_tokens: 1_500 },
+  } };
+  const records = parseCodexTranscript([event, event].map(JSON.stringify).join('\n'));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].cacheWriteInputTokens, 10_000);
+  assert.equal(records[0].usageQuality.status, 'complete');
+  assert.equal(records[0].usageQuality.scope, 'turn');
+  const conflict = { ...event, usage: { ...event.usage, cache_write_input_tokens: 1 } };
+  const diagnostics = [];
+  assert.deepEqual(parseCodexTranscript(JSON.stringify(conflict), { onDiagnostic: (value) => diagnostics.push(value) }), []);
+  assert.equal(diagnostics[0].status, 'invalid');
+});
+
+test('Codex cumulative-only events are never treated as request usage', () => {
+  const diagnostics = [];
+  const records = parseCodexTranscript(JSON.stringify({ type: 'event_msg',
+    payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 2 } } },
+  }), { onDiagnostic: (value) => diagnostics.push(value) });
+  assert.deepEqual(records, []);
+  assert.equal(diagnostics[0].status, 'unsupported');
+  assert.equal(diagnostics[0].scope, 'cumulative');
+});
+
+test('collector exposes safe diagnostics for discarded usage', (t) => {
+  const storagePath = tempPath(t);
+  const transcriptPath = path.join(path.dirname(storagePath), 'conflict.jsonl');
+  fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'turn.completed', usage: {
+    input_tokens: 100, output_tokens: 2, cache_write_input_tokens: 3,
+    input_tokens_details: { cache_write_tokens: 4 }, secret: 'private-value',
+  } }));
+  const result = collectProviderUsage({ host: 'codex', transcriptPath, storagePath });
+  assert.equal(result.records.length, 0);
+  assert.equal(result.diagnostics[0].status, 'invalid');
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /private-value/);
+});
+
+test('conflicting revisions of one identified Codex turn are excluded and diagnosed', () => {
+  const event = (input) => JSON.stringify({ type: 'turn.completed', id: 'same-turn',
+    usage: { input_tokens: input, output_tokens: 2 } });
+  const diagnostics = [];
+  assert.deepEqual(parseCodexTranscript([event(10), event(11), event(10)].join('\n'), {
+    onDiagnostic: (value) => diagnostics.push(value),
+  }), []);
+  assert.ok(diagnostics.some((value) => value.errors.some((error) => error.code === 'conflicting-event-revisions')));
+});
+
+test('recollection quarantines a previously stored conflicting revision', (t) => {
+  const storagePath = tempPath(t);
+  const transcriptPath = path.join(path.dirname(storagePath), 'revisions.jsonl');
+  const event = (input) => JSON.stringify({ type: 'turn.completed', id: 'same-turn',
+    usage: { input_tokens: input, output_tokens: 2 } });
+  fs.writeFileSync(transcriptPath, event(10));
+  collectProviderUsage({ host: 'codex', transcriptPath, storagePath, sessionId: 's1' });
+  fs.appendFileSync(transcriptPath, `\n${event(11)}`);
+  const result = collectProviderUsage({ host: 'codex', transcriptPath, storagePath, sessionId: 's1' });
+  assert.equal(result.state.records.length, 1, 'retain the historical observation');
+  assert.equal(result.state.records[0].usageQuality.status, 'invalid');
+  const report = buildProviderUsageReport(result.state);
+  assert.equal(report.inputTokens, 0);
+  assert.equal(report.usageQuality.excludedInvalidRecords, 1);
+});
+
+test('an invalid revision also excludes a preceding valid observation', () => {
+  const event = (input) => JSON.stringify({ type: 'turn.completed', id: 'same-turn',
+    usage: { input_tokens: input, output_tokens: 2 } });
+  assert.deepEqual(parseCodexTranscript([event(10), event(-1)].join('\n')), []);
+});
+
+test('stable duplicate observations preserve one record and the latest reported session cost', (t) => {
+  const storagePath = tempPath(t);
+  const event = (timestamp) => JSON.stringify({ type: 'turn.completed', id: 'same-turn', timestamp,
+    usage: { input_tokens: 10, output_tokens: 2 } });
+  const first = parseCodexTranscript(event('2026-09-30T10:00:00Z'), { sessionId: 's1', totalCostUsd: 0.1 });
+  const second = parseCodexTranscript(event('2026-09-30T10:01:00Z'), { sessionId: 's1', totalCostUsd: 0.2 });
+  appendProviderUsage({ storagePath, records: first });
+  const state = appendProviderUsage({ storagePath, records: second });
+  assert.equal(state.records.length, 1);
+  assert.equal(buildProviderUsageReport(state).cost.totalCostUsd, 0.2);
+});
+
+test('ambiguous Codex usage fields are unsupported instead of assumed per request', () => {
+  const diagnostics = [];
+  assert.deepEqual(parseCodexTranscript(JSON.stringify({ type: 'event_msg', payload: {
+    type: 'token_count', info: { usage: { input_tokens: 100, output_tokens: 2 } },
+  } }), { onDiagnostic: (value) => diagnostics.push(value) }), []);
+  assert.equal(diagnostics[0].status, 'unsupported');
+});
+
+test('usage report exposes incomplete counters and unverified transcript scope', () => {
+  const records = parseCodexTranscript(JSON.stringify({ type: 'turn.completed', id: 'incomplete-turn',
+    usage: { input_tokens: 10, output_tokens: 2 },
+  }));
+  const report = buildProviderUsageReport({ schema: 'sando-provider-usage/v1', version: 1, timezone: 'UTC', records });
+  assert.deepEqual(report.usageQuality, { completeRecords: 0, incompleteRecords: 1,
+    legacyRecords: 0, unverifiedScopeRecords: 1, excludedInvalidRecords: 0 });
+});
+
 test('parses Claude assistant usage and expands cache counters', () => {
   const records = parseClaudeTranscript(JSON.stringify({
     type: 'assistant', uuid: 'claude-1', timestamp: '2026-08-24T10:00:00.000Z',
@@ -202,6 +303,13 @@ test('parses Codex last token usage without treating cache reads as extra input'
     host: 'codex', source: 'codex-transcript', sessionId: 's2', turnId: 'at:2026-08-24T10:01:00.000Z',
     at: '2026-08-24T10:01:00.000Z', inputTokens: 90, cachedInputTokens: 30,
     cacheWriteInputTokens: 4, outputTokens: 7, reasoningOutputTokens: 2, totalTokens: 97,
+    usageQuality: {
+      schema: 'sando-usage-quality/v1', status: 'complete', scope: 'last-usage', provenance: 'unverified',
+      sources: { inputTokens: 'input_tokens', outputTokens: 'output_tokens',
+        cachedInputTokens: 'cached_input_tokens', cacheWriteInputTokens: 'cache_write_input_tokens',
+        reasoningOutputTokens: 'reasoning_output_tokens' },
+      missing: [], errors: [],
+    },
   });
 });
 
@@ -241,6 +349,7 @@ test('appends provider records idempotently and reports session totals', (t) => 
     cost: { status: 'unavailable', coverage: 'none', totalCostUsd: null, effectiveRateUsdPerMillionTokens: null },
     totalCostUsd: null, providerReportedCostUsd: null,
     sessionBlendedEffectiveRateUsdPerMillionTokens: null, costSource: 'unavailable',
+    usageQuality: { completeRecords: 0, incompleteRecords: 0, legacyRecords: 1, unverifiedScopeRecords: 0, excludedInvalidRecords: 0 },
   });
 });
 

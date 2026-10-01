@@ -106,8 +106,24 @@ host (Claude PostToolUse hook | Codex shell routing)
   accounting launchers are likewise manual entrypoints. Sando changes no Claude or Codex global
   configuration, and telemetry is off until you choose.
 
-Release notes: [Sando 0.7.0](docs/changelogs/0.7.0.md). Development branch: `main`.
+Release notes: [Sando 0.7.1](docs/changelogs/0.7.1.md). Development branch: `main`.
 Telemetry is off by default — see the [full disclosure](TELEMETRY.md).
+
+API cost estimates require an explicit versioned profile and complete per-request
+Responses records; Codex transcript totals are not automatically priced:
+
+```sh
+npm run accounting -- --profile openai-gpt-6.1-sol-standard-2026-09-30 --requests /absolute/requests.jsonl --json
+```
+
+The available profiles cover GPT-6.1 Sol and GPT-6 Luna Standard without regional
+surcharges. Select the profile matching the observed model. The estimate keeps
+provider-reported amounts, normalized cost units, and API list-price estimates
+separate. Unsupported requests leave the total indeterminate and retain a valid
+subtotal. Codex subscription usage is not an API invoice. See the
+[record format and pricing rules](docs/compatibility/pricing.md),
+[Codex evidence](docs/compatibility/codex.md), and
+[optional benchmark protocol](docs/compatibility/benchmark.md).
 
 ---
 

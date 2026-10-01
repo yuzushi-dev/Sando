@@ -15,12 +15,111 @@ import {
 } from '../index.mjs';
 import { cleanupArtifacts } from '../src/artifact-lifecycle.mjs';
 import { rememberArtifact, recoverStoredArtifact } from '../src/artifact-store.mjs';
+import { finalizeResultDelivery } from '../src/result-disclosure.mjs';
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '../../..');
 
 function digest(text) {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`;
 }
+
+test('final delivery recomputes visible bytes, token estimate, markers, and recovery range', () => {
+  const content = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join('\n');
+  const artifact = {
+    content,
+    bytes: Buffer.byteLength(content),
+    ref: 'sando:sha256:0123456789abcdef',
+    sourceDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  const initial = {
+    inline: `[sando] artifact ${artifact.ref} ${artifact.bytes}B\n${content}`,
+    artifact,
+    stats: { inlineBytes: 999, estimatedInlineTokens: 999 },
+    disclosure: {
+      bytes: { original: artifact.bytes, redacted: artifact.bytes, visible: 999 },
+      markers: ['artifact-handle'],
+      artifact: { digest: artifact.sourceDigest },
+    },
+  };
+  const artifactPath = `.sando/sando/artifacts/${'a'.repeat(64)}.txt`;
+  const delivered = finalizeResultDelivery(initial, {
+    inline: initial.inline.replace(artifact.ref, artifactPath),
+    maxInlineBytes: 256,
+  });
+
+  assert.ok(Buffer.byteLength(delivered.inline) <= 256);
+  assert.equal(delivered.stats.inlineBytes, Buffer.byteLength(delivered.inline));
+  assert.equal(delivered.stats.estimatedInlineTokens, Math.ceil(Buffer.byteLength(delivered.inline) / 4));
+  assert.equal(delivered.disclosure.bytes.visible, Buffer.byteLength(delivered.inline));
+  assert.ok(delivered.disclosure.markers.includes('middle-elision'));
+  assert.match(delivered.inline, /\[middle elided\]/);
+  assert.ok(delivered.disclosure.artifact.elidedRange.startLine >= 1);
+  assert.ok(delivered.disclosure.artifact.elidedRange.endLine <= 80);
+  assert.equal(delivered.disclosure.artifact.digest, artifact.sourceDigest);
+});
+
+test('final delivery rejects a cap that cannot hold mandatory artifact metadata', () => {
+  const sourceDigest = `sha256:${'b'.repeat(64)}`;
+  const result = {
+    inline: '[sando] artifact sando:sha256:bbbbbbbbbbbbbbbb 100B\npayload',
+    artifact: { content: 'payload', bytes: 7, ref: 'sando:sha256:bbbbbbbbbbbbbbbb', sourceDigest },
+    stats: { inlineBytes: 7, estimatedInlineTokens: 2 },
+    disclosure: { bytes: { original: 7, redacted: 7, visible: 7 }, markers: [], artifact: { digest: sourceDigest } },
+  };
+
+  assert.throws(
+    () => finalizeResultDelivery(result, {
+      inline: `[sando] artifact .sando/sando/artifacts/${'b'.repeat(64)}.txt 100B\npayload`,
+      maxInlineBytes: 64,
+    }),
+    (error) => error?.code === 'SANDO_OUTPUT_BUDGET' && /cannot fit mandatory metadata/.test(error.message),
+  );
+});
+
+test('final compaction keeps recovery ranges conservative and rewrites the rendered command', () => {
+  const content = Array.from({ length: 100 }, (_, index) => `L${String(index + 1).padStart(3, '0')} ${'x'.repeat(8)}`).join('\n');
+  const sourceDigest = digest(content);
+  const artifact = {
+    content, bytes: Buffer.byteLength(content), sourceDigest,
+    ref: `sando:${sourceDigest.slice(0, 'sha256:'.length + 16)}`,
+  };
+  const header = `[sando] artifact .sando/sando/artifacts/${sourceDigest.slice('sha256:'.length)}.txt ${artifact.bytes}B recover: /long/host/path/bin/sando artifact get --ref ${artifact.ref} --start-line 11 --end-line 90`;
+  const body = `${content.split('\n').slice(0, 10).join('\n')}\n[middle elided]\n${content.split('\n').slice(90).join('\n')}`;
+  const result = {
+    inline: `${header}\n${body}`, artifact,
+    stats: { inlineBytes: 999, estimatedInlineTokens: 999 },
+    disclosure: {
+      bytes: { original: artifact.bytes, redacted: artifact.bytes, visible: 999 },
+      markers: ['artifact-handle', 'middle-elision'],
+      artifact: { digest: sourceDigest, elidedRange: { startLine: 11, endLine: 90 } },
+    },
+  };
+  const delivered = finalizeResultDelivery(result, { inline: result.inline, maxInlineBytes: 300 });
+  const range = delivered.disclosure.artifact.elidedRange;
+
+  assert.ok(range.startLine <= 11);
+  assert.ok(range.endLine >= 90);
+  assert.match(delivered.inline, new RegExp(`--start-line ${range.startLine} --end-line ${range.endLine}`));
+  assert.ok(Buffer.byteLength(delivered.inline) <= 300);
+});
+
+test('final compaction preserves UTF-8 boundaries at both sides of the elision', () => {
+  const content = `${'🙂'.repeat(100)}\n${'界'.repeat(100)}`;
+  const sourceDigest = digest(content);
+  const artifact = {
+    content, bytes: Buffer.byteLength(content), sourceDigest,
+    ref: `sando:${sourceDigest.slice(0, 'sha256:'.length + 16)}`,
+  };
+  const inline = `[sando] artifact .sando/sando/artifacts/${sourceDigest.slice('sha256:'.length)}.txt ${artifact.bytes}B\n${content}`;
+  const delivered = finalizeResultDelivery({
+    inline, artifact, stats: {},
+    disclosure: { bytes: { visible: Buffer.byteLength(inline) }, markers: [], artifact: { digest: sourceDigest } },
+  }, { inline, maxInlineBytes: 256 });
+
+  assert.ok(Buffer.byteLength(delivered.inline) <= 256);
+  assert.equal(delivered.inline.includes('\uFFFD'), false);
+  assert.match(delivered.inline, /\[middle elided\]/);
+});
 
 test('artifact disclosure validates handle and complete redacted byte metadata', () => {
   const redactedText = 'safe output';
@@ -54,6 +153,9 @@ test('result disclosure exposes a bounded preview contract and recovers the reda
       visible: Buffer.byteLength(result.inline),
     });
     assert.equal(disclosure.provenanceDigest, digest(redacted));
+    assert.deepEqual(disclosure.redaction, {
+      count: 1, scope: 'display', sourceModifiedBySando: false,
+    });
     assert.equal(disclosure.artifact.handle, result.artifact.ref);
     assert.ok(disclosure.markers.includes('artifact-handle'));
     assert.doesNotMatch(JSON.stringify(disclosure), /fixture-secret|TAIL-FACT/);
@@ -73,6 +175,9 @@ test('result disclosure exposes a bounded preview contract and recovers the reda
     ], { encoding: 'utf8' });
     assert.equal(cli.status, 0, cli.stderr);
     assert.equal(JSON.parse(cli.stdout).content, 'noise');
+    assert.deepEqual(JSON.parse(cli.stdout).disclosure, {
+      scope: 'artifact-view', sourceSanitization: 'not-certified',
+    });
     for (const launcher of [
       'plugins/sando/bin/sando',
       'adapters/codex/sando/bin/sando',
@@ -90,8 +195,44 @@ test('result disclosure exposes a bounded preview contract and recovers the reda
         env: { ...process.env, SANDO_POLICY: '{invalid' },
       });
       assert.equal(launched.status, 0, `${launcher}: ${launched.stderr}`);
-      assert.equal(JSON.parse(launched.stdout).content, 'noise');
+      const launchedReport = JSON.parse(launched.stdout);
+      assert.equal(launchedReport.content, 'noise');
+      assert.deepEqual(launchedReport.disclosure, {
+        scope: 'artifact-view', sourceSanitization: 'not-certified',
+      });
     }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('standalone artifact recovery keeps content exact and discloses source uncertainty', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-artifact-view-'));
+  try {
+    const content = 'historical [REDACTED] artifact';
+    const sourceDigest = digest(content);
+    const ref = `sando:${sourceDigest}`;
+    const artifactPath = path.join(cwd, '.sando', 'sando', 'artifacts', `${sourceDigest.slice('sha256:'.length)}.txt`);
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, content);
+
+    const json = spawnSync(process.execPath, [
+      path.resolve(import.meta.dirname, '../src/artifact-cli.mjs'), 'artifact', 'get',
+      '--root', cwd, '--ref', ref, '--json',
+    ], { encoding: 'utf8' });
+    assert.equal(json.status, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout).disclosure, {
+      scope: 'artifact-view', sourceSanitization: 'not-certified',
+    });
+    assert.equal(JSON.parse(json.stdout).content, content);
+
+    const text = spawnSync(process.execPath, [
+      path.resolve(import.meta.dirname, '../src/artifact-cli.mjs'), 'artifact', 'get',
+      '--root', cwd, '--ref', ref,
+    ], { encoding: 'utf8' });
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /\[sando\] artifact view; source-file sanitization is not certified\n$/);
+    assert.equal((text.stdout.match(/source-file sanitization is not certified/g) ?? []).length, 1);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

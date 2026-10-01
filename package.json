@@ -1,6 +1,6 @@
 {
   "name": "sando",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,6 +10,9 @@
     "test": "npm run test:package && npm run test:bundles",
     "test:package": "node scripts/test-suite.mjs package",
     "test:bundles": "node scripts/test-suite.mjs bundles",
+    "verify:codex-compat": "node scripts/verify-codex-compat.mjs",
+    "verify:codex-compat:loopback": "node scripts/verify-codex-compat.mjs --loopback-client",
+    "verify:codex-compat:subscription": "node scripts/codex-subscription-contract.mjs",
     "sync:bundles": "node scripts/sync-bundles.mjs",
     "context:audit": "node packages/sando/src/context-audit-cli.mjs",
     "context:gateway-gate": "node packages/sando/src/gateway-gate-cli.mjs",

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
+import { DISPLAY_REDACTION_NOTICE, finalizeResultDelivery } from './result-disclosure.mjs';
 
 function hookPolicy(env) {
   if (env.SANDO_POLICY) return normalizePolicy(JSON.parse(env.SANDO_POLICY));
@@ -47,24 +48,47 @@ function artifactPath(cwd, artifact) {
   return path.posix.join('.sando/sando', 'artifacts', name);
 }
 
-function materialize(optimization, cwd) {
-  if (!optimization.artifact) return optimization.inline;
-  return optimization.inline.replace(optimization.artifact.ref, artifactPath(cwd, optimization.artifact));
+function materialize(optimization, cwd, maxInlineBytes) {
+  const inline = optimization.artifact
+    ? optimization.inline.replace(optimization.artifact.ref, artifactPath(cwd, optimization.artifact))
+    : optimization.inline;
+  return finalizeResultDelivery(optimization, { inline, maxInlineBytes });
+}
+
+function accountDeliveredValue(optimization, value) {
+  const inline = typeof value === 'string' ? value : JSON.stringify(value);
+  const inlineBytes = Buffer.byteLength(inline);
+  return {
+    ...optimization, inline,
+    stats: { ...optimization.stats, inlineBytes, estimatedInlineTokens: inlineBytes === 0 ? 0 : Math.ceil(inlineBytes / 4) },
+    ...(optimization.disclosure ? { disclosure: { ...optimization.disclosure, bytes: { ...optimization.disclosure.bytes, visible: inlineBytes } } } : {}),
+  };
+}
+
+function redactStructuredForDisplay(value, profile) {
+  if (typeof value === 'string') {
+    const redacted = profile.redact(value);
+    if (redacted.count === 0 || redacted.text.endsWith(DISPLAY_REDACTION_NOTICE)) return redacted.text;
+    return `${redacted.text}\n${DISPLAY_REDACTION_NOTICE}`;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactStructuredForDisplay(item, profile));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactStructuredForDisplay(item, profile)]));
+  return value;
 }
 
 function shapeForClaude({ original, optimization, toolName, cwd, policy, redactionProfile }) {
-  if (typeof original === 'string') return materialize(optimization, cwd);
+  if (typeof original === 'string') return materialize(optimization, cwd, policy.maxInlineBytes).inline;
   if (!original || typeof original !== 'object' || Array.isArray(original)
     || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')
     || typeof original.stdout !== 'string' || typeof original.stderr !== 'string'
     || (Object.hasOwn(original, 'interrupted') && typeof original.interrupted !== 'boolean')
     || (Object.hasOwn(original, 'isImage') && typeof original.isImage !== 'boolean')) return undefined;
-  const result = policy.redact ? redactionProfile.redactStructured(original).value : { ...original };
+  const result = policy.redact ? redactStructuredForDisplay(original, redactionProfile) : { ...original };
   if (typeof original.stdout === 'string') {
-    result.stdout = materialize(optimizeToolOutput({ toolName, output: original.stdout, cwd, policy, redactionProfile }), cwd);
+    result.stdout = materialize(optimizeToolOutput({ toolName, output: original.stdout, cwd, policy, redactionProfile }), cwd, policy.maxInlineBytes).inline;
   }
   if (typeof original.stderr === 'string') {
-    result.stderr = materialize(optimizeToolOutput({ toolName, output: original.stderr, cwd, policy, redactionProfile }), cwd);
+    result.stderr = materialize(optimizeToolOutput({ toolName, output: original.stderr, cwd, policy, redactionProfile }), cwd, policy.maxInlineBytes).inline;
   }
   return result;
 }
@@ -92,12 +116,17 @@ export function runHookCli({ host, env = process.env } = {}) {
           return;
         }
       }
-      createReceipt({ host, event, optimization, replacement: shaped });
+      const deliveredOptimization = shaped === undefined ? optimization : accountDeliveredValue(optimization, shaped);
+      createReceipt({ host, event, optimization: deliveredOptimization, replacement: shaped });
     }
   } catch (error) {
     if (error?.code === 'SANDO_REDACTION_CONFIG') {
       process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
       process.exitCode = 2;
+    } else if (error?.code === 'SANDO_OUTPUT_BUDGET') {
+      process.stderr.write(`sando output budget: ${error.message}\n`);
+      process.exitCode = 2;
+      return;
     }
   }
   process.stdout.write('{}\\n');

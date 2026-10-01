@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { readTelemetryConfig } from '../src/telemetry.mjs';
+import { readMetrics } from '../src/metrics.mjs';
 import { PLUGIN_VERSION } from '../src/version.mjs';
 
 const HOOK_CLI_PATH = fileURLToPath(new URL('../src/hook-cli.mjs', import.meta.url));
@@ -80,6 +81,123 @@ test('Claude leaves external MCP output unchanged', () => {
 
   assert.deepEqual(JSON.parse(output), {});
   assert.equal(fs.existsSync(path.join(dir, '.sando')), false);
+});
+
+test('Claude apply output carries the display-only redaction notice with tracking disabled', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash',
+    tool_response: 'password=hook-secret', cwd: dir,
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_MODE: 'apply', DO_NOT_TRACK: '1' },
+  });
+  const updated = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
+
+  assert.doesNotMatch(updated, /hook-secret/);
+  assert.match(updated, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.equal((updated.match(/\[sando\] display redacted/g) ?? []).length, 1);
+});
+
+test('Claude receipts and metrics account for the final materialized delivery', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const metricsPath = path.join(dir, 'metrics.json');
+  const policy = { mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 4_096, redact: true };
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', event_id: 'final-delivery', tool_name: 'Read',
+    tool_input: { file_path: 'fixture.txt' },
+    tool_response: `password=hook-secret\n${'middle\n'.repeat(100)}tail\n`, cwd: dir,
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: {
+      ...env, SANDO_TEST_HOST: 'claude', DO_NOT_TRACK: '1',
+      SANDO_POLICY: JSON.stringify(policy), SANDO_METRICS_PATH: metricsPath,
+    },
+  });
+  const delivered = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
+  const [record] = readMetrics(metricsPath).records;
+
+  assert.ok(Buffer.byteLength(delivered) <= policy.maxInlineBytes);
+  assert.doesNotMatch(delivered, /hook-secret/);
+  assert.match(delivered, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.equal(record.estimatedInlineTokens, Math.ceil(Buffer.byteLength(delivered) / 4));
+});
+
+test('Claude structured stdout and stderr disclose each transformed textual field', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: dir,
+    tool_response: {
+      stdout: 'api_key=stdout-secret',
+      stderr: 'password=stderr-secret',
+      interrupted: false,
+    },
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_MODE: 'apply', DO_NOT_TRACK: '1' },
+  });
+  const updated = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
+
+  for (const [field, secret] of [['stdout', 'stdout-secret'], ['stderr', 'stderr-secret']]) {
+    assert.doesNotMatch(updated[field], new RegExp(secret));
+    assert.match(updated[field], /\[sando\] display redacted; Sando did not sanitize source files$/);
+    assert.equal((updated[field].match(/\[sando\] display redacted/g) ?? []).length, 1);
+  }
+  assert.equal(updated.interrupted, false);
+});
+
+test('Claude structured extra string fields disclose their own display redactions', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const extraToken = ['sk', 'abcdefghijklmnop'].join('-');
+  const nestedValue = ['nested', 'value'].join('-');
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: dir,
+    tool_response: {
+      stdout: 'safe stdout', stderr: '',
+      summary: `token=${extraToken}`,
+      nested: { detail: `password=${nestedValue}` },
+    },
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: { ...env, SANDO_TEST_HOST: 'claude', SANDO_MODE: 'apply', DO_NOT_TRACK: '1' },
+  });
+  const updated = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
+
+  assert.equal(updated.stdout, 'safe stdout');
+  assert.equal(JSON.stringify(updated).includes(extraToken), false);
+  assert.equal(JSON.stringify(updated).includes(nestedValue), false);
+  assert.match(updated.summary, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.match(updated.nested.detail, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.equal((updated.summary.match(/\[sando\] display redacted/g) ?? []).length, 1);
+});
+
+test('Codex fallback discloses that its prepared redacted display did not sanitize source files', () => {
+  const { dir, env } = tempEnv();
+  const script = runnerScript(dir);
+  const input = JSON.stringify({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash',
+    tool_response: 'password=codex-secret', cwd: dir,
+  });
+  const output = execFileSync(process.execPath, [script], {
+    input,
+    env: {
+      ...env, SANDO_TEST_HOST: 'codex', SANDO_MODE: 'apply',
+      SANDO_CODEX_FALLBACK: 'feedback', DO_NOT_TRACK: '1',
+    },
+  });
+  const fallback = JSON.parse(output);
+
+  assert.equal(fallback.continue, false);
+  assert.match(fallback.systemMessage, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.doesNotMatch(JSON.stringify(fallback), /codex-secret/);
 });
 
 test('enabled telemetry counts a tool call with a redaction', () => {

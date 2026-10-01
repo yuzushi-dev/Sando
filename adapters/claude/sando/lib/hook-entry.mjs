@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { createReceipt, estimateTokens, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
+import { DISPLAY_REDACTION_NOTICE } from './result-disclosure.mjs';
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
@@ -180,10 +181,11 @@ function materialize(optimization, cwd) {
 
 export function buildCodexFallback({ optimization, cwd }) {
   const reference = optimization.artifact ? artifactPath(cwd, optimization.artifact) : 'inline output';
+  const disclosure = optimization.stats?.redactions > 0 ? `\n${DISPLAY_REDACTION_NOTICE}` : '';
   return {
     continue: false,
     stopReason: 'Sando fallback: Codex cannot transparently rewrite tool output',
-    systemMessage: `Sando fallback prepared ${reference}; tool output was not rewritten.`,
+    systemMessage: `Sando fallback prepared ${reference}; tool output was not rewritten.${disclosure}`,
   };
 }
 

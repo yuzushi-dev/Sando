@@ -1,5 +1,6 @@
 import readline from 'node:readline';
 
+import { ARTIFACT_VIEW_NOTICE } from './artifact-recovery.mjs';
 import { exposeMcpResult } from './artifact-store.mjs';
 import { callMcpToolAsync, codexSandboxKey, MCP_TOOLS, spawnCodexSandboxedProcess } from './mcp-tools.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
@@ -8,6 +9,11 @@ import { createSliceBridge, isSliceTool, SLICE_TOOLS, SliceRpcError } from './sl
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
 function error(id, code, message, data) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
 export function requestKey(id) { return `${typeof id}:${JSON.stringify(id)}`; }
+
+function modelFacingText(exposed) {
+  const text = exposed.inline ?? exposed.content;
+  return exposed.disclosure?.scope === 'artifact-view' ? `${text}\n${ARTIFACT_VIEW_NOTICE}` : text;
+}
 
 async function dispatch(message, active, bridge) {
   if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return error(message?.id, -32600, 'Invalid Request');
@@ -34,7 +40,7 @@ async function dispatch(message, active, bridge) {
       }
       const result = await callMcpToolAsync(message.params.name, message.params.arguments, process.env, message.params?._meta, controller.signal);
       const exposed = exposeMcpResult(result);
-      return response(message.id, { content: [{ type: 'text', text: exposed.inline ?? exposed.content }], structuredContent: exposed, isError: false });
+      return response(message.id, { content: [{ type: 'text', text: modelFacingText(exposed) }], structuredContent: exposed, isError: false });
     } catch (cause) {
       if (cause instanceof SliceRpcError) return error(message.id, cause.code, cause.message, cause.data);
       return response(message.id, { content: [{ type: 'text', text: cause instanceof Error ? cause.message : 'invalid tool input' }], isError: true });

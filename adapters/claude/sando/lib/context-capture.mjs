@@ -9,6 +9,7 @@ import {
   serializeContextFootprint,
 } from './context-footprint.mjs';
 import { classifyContextRequest } from './context-classifier.mjs';
+import { normalizeResponsesUsage } from './responses-usage.mjs';
 
 export const CONTEXT_CAPTURE_RECORD_SCHEMA = 'sando-context-capture-record/v1';
 export const CONTEXT_CAPTURE_RECORD_VERSION = 1;
@@ -83,32 +84,7 @@ function anthropicUsage(value) {
 }
 
 function responsesUsage(value) {
-  if (!object(value)) return null;
-  const input = counter(value.input_tokens);
-  const output = counter(value.output_tokens);
-  const cached = optionalCounter(value.cached_input_tokens
-    ?? value.cache_read_input_tokens
-    ?? value.input_tokens_details?.cached_tokens);
-  const cacheWrite = optionalCounter(value.cache_write_input_tokens);
-  const reasoning = optionalCounter(value.reasoning_output_tokens
-    ?? value.output_tokens_details?.reasoning_tokens);
-  if ([input, output, cached, cacheWrite, reasoning].some((item) => item === null)
-    || reasoning > output) return null;
-  const totalTokens = value.total_tokens === undefined ? add(input, output) : counter(value.total_tokens);
-  if (totalTokens === null || totalTokens !== input + output) return null;
-  const result = {
-    inputTokens: input,
-    cachedInputTokens: cached,
-    cacheWriteInputTokens: cacheWrite,
-    cacheReadInputTokens: cached,
-    outputTokens: output,
-    reasoningOutputTokens: reasoning,
-    totalTokens,
-  };
-  if (typeof value.total_cost_usd === 'number' && Number.isFinite(value.total_cost_usd) && value.total_cost_usd >= 0) {
-    result.totalCostUsd = value.total_cost_usd;
-  }
-  return result;
+  return normalizeResponsesUsage(value).usage;
 }
 
 export function normalizeProviderUsage(provider, usage) {
@@ -159,6 +135,9 @@ export function buildContextCaptureRecord({
     requestFormat: format.requestFormat,
     model: safeModel(model),
     sessionKeyDigest: sha256(sessionKey),
+    ...(provider === 'openai-responses' ? {
+      usageQuality: { ...normalizeResponsesUsage(providerUsage).quality, scope: 'request' },
+    } : {}),
     report,
   };
 }

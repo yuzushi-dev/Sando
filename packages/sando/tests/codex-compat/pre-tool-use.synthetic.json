@@ -1,0 +1,34 @@
+{
+  "schema": "sando-codex-hook-fixtures/v1",
+  "provenance": "synthetic",
+  "notice": "These payloads are deterministic test data, not captures from a Codex session.",
+  "cases": [
+    {
+      "id": "exec-command-string",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "exec_command",
+        "tool_input": { "command": "printf '%s\\n' 'fixture value'" }
+      },
+      "expected": { "kind": "rewrite", "hookEventName": "PreToolUse" }
+    },
+    {
+      "id": "bash-shell-argv",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": { "command": ["/bin/bash", "-lc", "printf fixture"] }
+      },
+      "expected": { "kind": "rewrite", "hookEventName": "PreToolUse" }
+    },
+    {
+      "id": "unknown-tool",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "future_shell_tool",
+        "tool_input": { "command": "printf fixture" }
+      },
+      "expected": { "kind": "bypass" }
+    }
+  ]
+}

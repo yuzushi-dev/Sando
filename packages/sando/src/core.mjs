@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from 'node:util';
 
 import { planToolRoute, ROUTING_POLICY_VERSION } from './routing.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
-import { buildResultDisclosure } from './result-disclosure.mjs';
+import { buildResultDisclosure, DISPLAY_REDACTION_NOTICE } from './result-disclosure.mjs';
 
 const DEFAULT_POLICY = Object.freeze({
   mode: 'apply', maxInlineBytes: 4096, maxArtifactBytes: 1_048_576, headBytes: undefined, tailBytes: undefined,
@@ -304,7 +304,13 @@ function calculateElidedRange(fullText, inlineText) {
   const tailPart = inlineText.slice(markerIndex + marker.length);
   const totalLines = fullText.split('\n').length;
   const headLines = headPart.split('\n').length;
-  const tailLines = tailPart.split('\n').length;
+  let matchingTailUnits = 0;
+  while (matchingTailUnits < tailPart.length && matchingTailUnits < fullText.length
+    && tailPart[tailPart.length - matchingTailUnits - 1] === fullText[fullText.length - matchingTailUnits - 1]) {
+    matchingTailUnits += 1;
+  }
+  const sourceTail = tailPart.slice(tailPart.length - matchingTailUnits);
+  const tailLines = sourceTail.split('\n').length;
   const startLine = Math.max(1, headLines);
   const endLine = Math.max(startLine, totalLines - tailLines + 1);
   return { startLine, endLine };
@@ -367,11 +373,17 @@ export function optimizeToolOutput({
   });
   const profile = normalizedPolicy.redact ? resolveRedactionProfile(cwd, redactionProfile) : null;
   const redacted = profile ? profile.redact(input) : { text: input, count: 0 };
-  const cleanedPreview = name === 'bash' ? stripVTControlCharacters(redacted.text) : redacted.text;
-  const previewRedacted = profile && name === 'bash'
+  const cleanedPreview = stripVTControlCharacters(redacted.text);
+  const previewRedacted = profile
     ? profile.redact(cleanedPreview)
     : { text: cleanedPreview, count: 0 };
-  const previewText = previewRedacted.text;
+  const totalRedactions = redacted.count + previewRedacted.count;
+  const disclosureSuffix = totalRedactions > 0 ? `\n${DISPLAY_REDACTION_NOTICE}` : '';
+  const disclosureBytes = Buffer.byteLength(disclosureSuffix);
+  baseInlineBudget -= disclosureBytes;
+  baseHeadBytes = Math.min(baseHeadBytes, Math.max(1, baseInlineBudget));
+  baseTailBytes = Math.min(baseTailBytes, Math.max(1, baseInlineBudget));
+  const previewText = name === 'bash' || previewRedacted.count > 0 ? previewRedacted.text : redacted.text;
   const sourceText = previewRedacted.count ? previewText : redacted.text;
   let modelText = name === 'bash' && normalizedPolicy.maxColumns >= 32
     ? collapseRepeatedLines(previewText)
@@ -454,8 +466,17 @@ export function optimizeToolOutput({
     recoveryHintAffordable = reservedHeader * 4 <= routePolicy.maxInlineBytes;
     const viewBudget = Math.max(1, routePolicy.maxInlineBytes - (recoveryHintAffordable ? reservedHeader : Buffer.byteLength(header)));
     const isOutline = typeof modelText === 'string' && modelText.startsWith('[sando read structure:');
+    const exitCode = name === 'bash' ? /^\[sando exec exit_code=([^\s\]]+)/.exec(modelText)?.[1] : undefined;
+    const compactStatus = exitCode === undefined ? '' : `[exit_code=${exitCode}]`;
     if (isOutline && Buffer.byteLength(modelText) <= viewBudget) {
       inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${modelText}`;
+    } else if (compactStatus && Buffer.byteLength(compactStatus) <= viewBudget
+      && viewBudget < Buffer.byteLength(modelText.split('\n', 1)[0]) + 1) {
+      const remainingBudget = viewBudget - Buffer.byteLength(compactStatus) - 1;
+      const payload = remainingBudget > 0
+        ? `\n${inlineView(modelText.slice(modelText.indexOf('\n') + 1), remainingBudget, routePolicy.headBytes, routePolicy.tailBytes, routePolicy.maxColumns, true)}`
+        : '';
+      inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${compactStatus}${payload}`;
     } else {
       inline = `${truncateUtf8(header, routePolicy.maxInlineBytes)}${inlineView(
         modelText,
@@ -468,6 +489,11 @@ export function optimizeToolOutput({
     }
     inline = truncateUtf8(inline, routePolicy.maxInlineBytes);
   }
+  const elidedRange = artifact && inline.includes('[middle elided]')
+    ? calculateElidedRange(sourceText, inline)
+    : undefined;
+  if (artifact && recoveryHintAffordable) inline = withRecoveryHint(inline, artifact, elidedRange);
+  inline += disclosureSuffix;
   const stats = {
     mode: normalizedPolicy.mode,
     inputBytes: Buffer.byteLength(input),
@@ -476,20 +502,16 @@ export function optimizeToolOutput({
     artifactBytes: artifact?.bytes ?? 0,
     estimatedInputTokens: estimateTokens(input),
     estimatedInlineTokens: estimateTokens(inline),
-    redactions: redacted.count + previewRedacted.count,
+    redactions: totalRedactions,
     artifactTruncated: artifact?.truncated ?? false,
   };
-  const elidedRange = artifact && inline.includes('[middle elided]')
-    ? calculateElidedRange(sourceText, inline)
-    : undefined;
-  if (artifact && recoveryHintAffordable) inline = withRecoveryHint(inline, artifact, elidedRange);
   const result = {
     inline, route: route.route, reason: route.source, policyVersion: ROUTING_POLICY_VERSION,
     redactionProfileDigest: profile?.digest ?? null, stats,
     disclosure: buildResultDisclosure({
       toolName, route: route.route, reason: route.source, inline,
       redactedText: sourceText, inputBytes: Buffer.byteLength(input), redactedBytes: sourceBytes, artifact,
-      elidedRange,
+      elidedRange, redactionCount: totalRedactions,
     }),
   };
   if (artifact) result.artifact = artifact;

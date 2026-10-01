@@ -16,6 +16,23 @@ test('ANSI cleanup is limited to Bash previews', () => {
   assert.equal(optimizeToolOutput({ toolName: 'Grep', output, cwd: '/work' }).inline, output);
 });
 
+test('Read and Grep mask credentials hidden by ANSI without preserving an unsafe artifact', () => {
+  const output = `api_\x1b[31mkey=ansi-hidden-value\n${'noise\n'.repeat(200)}`;
+
+  for (const toolName of ['Read', 'Grep']) {
+    const result = optimizeToolOutput({
+      toolName, output, cwd: '/work', raw: toolName === 'Read',
+      policy: { maxInlineBytes: 256, maxArtifactBytes: 4096 },
+    });
+
+    assert.equal(result.stats.redactions, 1);
+    assert.match(result.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+    assert.equal(result.artifact.content.includes('ansi-hidden-value'), false);
+    assert.equal(result.artifact.content.includes('\x1b'), false);
+    assert.match(result.artifact.content, /^api_key=\[REDACTED\]/);
+  }
+});
+
 test('ANSI cleanup cannot reassemble an unredacted Bash credential', () => {
   const output = 'Authoriz\x1b[31mation\x1b[0m: Bearer hidden-token';
   const result = optimizeToolOutput({ toolName: 'Bash', output, cwd: '/work' });
@@ -24,7 +41,8 @@ test('ANSI cleanup cannot reassemble an unredacted Bash credential', () => {
   assert.match(result.inline, /Authorization: Bearer \[REDACTED\]/);
   assert.equal(result.stats.redactions, 1);
   assert.equal(result.stats.inputBytes, Buffer.byteLength(output));
-  assert.equal(result.stats.redactedBytes, Buffer.byteLength(result.inline));
+  assert.equal(result.stats.redactedBytes, Buffer.byteLength(result.inline.split('\n[sando] display redacted;')[0]));
+  assert.equal(result.stats.inlineBytes, Buffer.byteLength(result.inline));
 });
 
 test('artifact uses the safe payload when ANSI cleanup exposes a credential', () => {
@@ -83,6 +101,21 @@ test('preview salvages diagnostics displaced by the salvage budget', () => {
   assert.ok(Buffer.byteLength(result.inline) <= 512);
 });
 
+test('artifact recovery range excludes only source lines absent from a diagnostic preview', () => {
+  const lines = Array.from({ length: 300 }, (_, index) => (
+    `L${String(index + 1).padStart(3, '0')} ${index === 149 ? 'ERROR middle diagnostic' : 'xxxxxxxx'}`
+  ));
+  const result = optimizeToolOutput({
+    toolName: 'Bash', output: lines.join('\n'), cwd: '/work',
+    policy: { mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 100_000, redact: false },
+  });
+
+  assert.match(result.inline, /L150 ERROR middle diagnostic/);
+  assert.match(result.inline, /L293 xxxxxxxx/);
+  assert.deepEqual(result.disclosure.artifact.elidedRange, { startLine: 22, endLine: 292 });
+  assert.match(result.disclosure.artifact.recovery.command, /--start-line 22 --end-line 292$/);
+});
+
 test('preview salvages at most eight diagnostic lines', () => {
   const diagnostics = Array.from({ length: 11 }, (_, index) => `ERROR-DIAG-${index}: failed`);
   const output = [
@@ -139,4 +172,16 @@ test('preview caps salvaged diagnostic lines by UTF-8 bytes', () => {
   assert.equal(salvaged.includes('\uFFFD'), false);
   assert.ok(Buffer.byteLength(result.inline) <= 4096);
   assert.equal(result.artifact.content, output);
+});
+
+test('artifact-routed exec preserves status and useful stdout within the redaction budget', () => {
+  const output = `[sando exec exit_code=7 signal=none timed_out=false tty=false]\nstdout:\nERROR actionable_failure\n${'noise\n'.repeat(1000)}\npassword=synthetic-notice-fixture\nstderr:\n`;
+  const result = optimizeToolOutput({
+    toolName: 'Bash', output, cwd: '/work', policy: { maxInlineBytes: 512 },
+  });
+  assert.ok(result.artifact);
+  assert.match(result.inline, /exit_code=7/);
+  assert.match(result.inline, /actionable_failure/);
+  assert.match(result.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.ok(Buffer.byteLength(result.inline) <= 512);
 });

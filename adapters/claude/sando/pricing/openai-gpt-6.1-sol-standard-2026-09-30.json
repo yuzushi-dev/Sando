@@ -1,0 +1,20 @@
+{
+  "schema": "sando-pricing-profile/v1",
+  "id": "openai-gpt-6.1-sol-standard-2026-09-30",
+  "model": "gpt-6.1-sol",
+  "provider": "openai-responses",
+  "service": "standard",
+  "regional_surcharge": false,
+  "currency": "USD",
+  "unit_tokens": 1000000,
+  "verified_on": "2026-09-30",
+  "long_context_input_threshold": 272000,
+  "long_context_operator": ">",
+  "sources": [
+    "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    "https://developers.openai.com/api/docs/guides/prompt-caching"
+  ],
+  "short": { "fresh": 2, "cache_read": 0.1, "cache_write": 2.5, "output": 10 },
+  "long": { "fresh": 4, "cache_read": 0.2, "cache_write": 5, "output": 15 }
+}

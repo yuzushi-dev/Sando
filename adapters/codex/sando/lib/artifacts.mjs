@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
+import { finalizeResultDelivery } from './result-disclosure.mjs';
 
 function artifactPresent(target) {
   let stat;
@@ -40,6 +41,16 @@ export function persistArtifact(cwd, artifact, { cleanup = {} } = {}) {
 }
 
 export function materializeArtifact(result, cwd) {
-  if (!result.artifact) return result.inline;
-  return result.inline.replace(result.artifact.ref, persistArtifact(cwd, result.artifact));
+  return materializeArtifactResult(result, cwd).inline;
+}
+
+export function materializeArtifactResult(result, cwd, { maxInlineBytes, transformInline } = {}) {
+  const materialized = result.artifact
+    ? result.inline.replace(result.artifact.ref, persistArtifact(cwd, result.artifact))
+    : result.inline;
+  const inline = transformInline ? transformInline(materialized) : materialized;
+  return finalizeResultDelivery(result, {
+    inline,
+    maxInlineBytes: maxInlineBytes ?? Math.max(1, Buffer.byteLength(inline)),
+  });
 }

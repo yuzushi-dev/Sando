@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
+import { DISPLAY_REDACTION_NOTICE, finalizeResultDelivery } from './result-disclosure.mjs';
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import { recordAdoption, scheduleAdoptionFlush } from './adoption.mjs';
@@ -134,15 +135,25 @@ export function runHookCli({ host, env = process.env } = {}) {
           policy,
         });
       }
-      failureStage = 'output';
-      const receipt = createReceipt({ host, event, optimization, replacement: shaped });
-      try {
-        recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt });
-      } catch {}
-      recordHookTelemetry({ host, env, policy, optimization });
-      try { recordAdoption({ env, host }); scheduleAdoptionFlush({ env }); } catch { /* adoption must never affect hook output */ }
+      let deliveredOptimization = shaped === undefined
+        ? optimization : accountDeliveredValue(optimization, shaped);
+      let fallback;
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
-        process.stdout.write(`${JSON.stringify(buildCodexFallback({ optimization, cwd: event.cwd }))}\n`);
+        fallback = buildCodexFallback({ optimization, cwd: event.cwd });
+        deliveredOptimization = accountDeliveredValue(optimization, fallback);
+      }
+      failureStage = 'output';
+      const receipt = createReceipt({
+        host, event, optimization: deliveredOptimization,
+        replacement: fallback ?? shaped,
+      });
+      try {
+        recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: deliveredOptimization, receipt });
+      } catch {}
+      recordHookTelemetry({ host, env, policy, optimization: deliveredOptimization });
+      try { recordAdoption({ env, host }); scheduleAdoptionFlush({ env }); } catch { /* adoption must never affect hook output */ }
+      if (fallback) {
+        process.stdout.write(`${JSON.stringify(fallback)}\n`);
         return;
       }
       if (host === 'claude' && policy.mode === 'apply') {
@@ -159,38 +170,83 @@ export function runHookCli({ host, env = process.env } = {}) {
     if (error?.code === 'SANDO_REDACTION_CONFIG') {
       process.stderr.write(`sando invalid redaction config: ${error.message}\n`);
       process.exitCode = 2;
+    } else if (error?.code === 'SANDO_OUTPUT_BUDGET') {
+      process.stderr.write(`sando output budget: ${error.message}\n`);
+      process.exitCode = 2;
+      return;
     }
   }
   process.stdout.write('{}\n');
 }
 
-function materialize(optimization, cwd) {
-  if (!optimization.artifact) return optimization.inline;
-  return optimization.inline.replace(optimization.artifact.ref, artifactPath(cwd, optimization.artifact));
+function materialize(optimization, cwd, maxInlineBytes) {
+  const inline = optimization.artifact
+    ? optimization.inline.replace(optimization.artifact.ref, artifactPath(cwd, optimization.artifact))
+    : optimization.inline;
+  return finalizeResultDelivery(optimization, {
+    inline,
+    maxInlineBytes,
+  });
+}
+
+function accountDeliveredValue(optimization, value) {
+  const inline = typeof value === 'string' ? value : JSON.stringify(value);
+  const inlineBytes = Buffer.byteLength(inline);
+  return {
+    ...optimization,
+    inline,
+    stats: { ...optimization.stats, inlineBytes, estimatedInlineTokens: inlineBytes === 0 ? 0 : Math.ceil(inlineBytes / 4) },
+    ...(optimization.disclosure ? { disclosure: {
+      ...optimization.disclosure,
+      bytes: { ...optimization.disclosure.bytes, visible: inlineBytes },
+    } } : {}),
+  };
 }
 
 export function buildCodexFallback({ optimization, cwd }) {
   const reference = optimization.artifact ? artifactPath(cwd, optimization.artifact) : 'inline output';
+  const disclosure = optimization.stats?.redactions > 0 ? `\n${DISPLAY_REDACTION_NOTICE}` : '';
   return {
     continue: false,
     stopReason: 'Sando fallback: Codex cannot transparently rewrite tool output',
-    systemMessage: `Sando fallback prepared ${reference}; tool output was not rewritten.`,
+    systemMessage: `Sando fallback prepared ${reference}; tool output was not rewritten.${disclosure}`,
   };
 }
 
+function redactStructuredForDisplay(value, profile) {
+  if (typeof value === 'string') {
+    const redacted = profile.redact(value);
+    if (redacted.count === 0 || redacted.text.endsWith(DISPLAY_REDACTION_NOTICE)) return redacted.text;
+    return `${redacted.text}\n${DISPLAY_REDACTION_NOTICE}`;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactStructuredForDisplay(item, profile));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactStructuredForDisplay(item, profile)]));
+  }
+  return value;
+}
+
 function shapeForClaude({ original, optimization, toolName, toolInput, cwd, policy, redactionProfile }) {
-  if (typeof original === 'string') return materialize(optimization, cwd);
+  if (typeof original === 'string') {
+    return materialize(optimization, cwd, policy.maxInlineBytes).inline;
+  }
   if (!original || typeof original !== 'object' || Array.isArray(original)
     || !Object.hasOwn(original, 'stdout') || !Object.hasOwn(original, 'stderr')
     || typeof original.stdout !== 'string' || typeof original.stderr !== 'string'
     || (Object.hasOwn(original, 'interrupted') && typeof original.interrupted !== 'boolean')
     || (Object.hasOwn(original, 'isImage') && typeof original.isImage !== 'boolean')) return undefined;
-  const result = policy.redact ? redactionProfile.redactStructured(original).value : { ...original };
+  const result = policy.redact ? redactStructuredForDisplay(original, redactionProfile) : { ...original };
   if (typeof original.stdout === 'string') {
-    result.stdout = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy, redactionProfile }), cwd);
+    result.stdout = materialize(
+      optimizeToolOutput({ toolName, toolInput, output: original.stdout, cwd, policy, redactionProfile }),
+      cwd, policy.maxInlineBytes,
+    ).inline;
   }
   if (typeof original.stderr === 'string') {
-    result.stderr = materialize(optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy, redactionProfile }), cwd);
+    result.stderr = materialize(
+      optimizeToolOutput({ toolName, toolInput, output: original.stderr, cwd, policy, redactionProfile }),
+      cwd, policy.maxInlineBytes,
+    ).inline;
   }
   return result;
 }

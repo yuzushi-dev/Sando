@@ -34,6 +34,14 @@ The recoverable-history strategy is opt-in and keeps eligible results inline whe
 
 For plugin installation, see the [main project README](https://github.com/yuzushi-dev/Sando#readme).
 
+`buildApiUsageRequest`, `estimateApiRequestCost`, and `aggregateApiRequestCosts`
+provide explicit per-request API list-price estimates. Load a versioned profile
+with `loadPricingProfile(SOL_STANDARD_PROFILE_ID)`. The initial profile covers
+Responses GPT-6.1 Sol Standard without regional surcharges. Supply the regional
+billing context explicitly; missing counters or unsupported combinations remain
+unpriced. Provider-reported amounts and normalized weights stay separate.
+Codex subscription consumption is not an API invoice.
+
 Telemetry is off by default. An interactive npm install asks once for consent; see the [full disclosure](https://github.com/yuzushi-dev/Sando/blob/main/TELEMETRY.md).
 
 License: MIT.

@@ -5,6 +5,10 @@ import path from 'node:path';
 export const ARTIFACT_RECOVERY_SCHEMA = 'sando-artifact-recovery/v1';
 export const ARTIFACT_RECOVERY_VERSION = 1;
 export const MAX_RECOVERY_BYTES = 1_048_576;
+export const ARTIFACT_VIEW_NOTICE = '[sando] artifact view; source-file sanitization is not certified';
+export const ARTIFACT_VIEW_DISCLOSURE = Object.freeze({
+  scope: 'artifact-view', sourceSanitization: 'not-certified',
+});
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 function digest(text) {
@@ -88,6 +92,7 @@ export function recoverArtifactContent({
     sourceBytes: totalSourceBytes,
     range,
     truncated: bounded.truncated,
+    disclosure: ARTIFACT_VIEW_DISCLOSURE,
   };
 }
 

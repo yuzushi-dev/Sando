@@ -151,7 +151,7 @@ test('redaction expansion is recorded as signed transform savings', () => {
     toolName: 'Read', output: 'secret=x', cwd: '/tmp', policy: { mode: 'apply', redact: true },
   });
 
-  assert.equal(optimization.inline, 'secret=[REDACTED]');
+  assert.equal(optimization.inline, 'secret=[REDACTED]\n[sando] display redacted; Sando did not sanitize source files');
   assert.ok(optimization.stats.estimatedInlineTokens > optimization.stats.estimatedInputTokens);
   recordMetrics({
     storagePath,
@@ -163,8 +163,9 @@ test('redaction expansion is recorded as signed transform savings', () => {
   });
 
   const state = readMetrics(storagePath);
-  assert.equal(state.records[0].estimatedTransformSavingsTokens, -3);
-  assert.equal(buildMetricsReport(state).cumulative.estimatedTransformSavingsTokens, -3);
+  const savings = optimization.stats.estimatedInputTokens - optimization.stats.estimatedInlineTokens;
+  assert.equal(state.records[0].estimatedTransformSavingsTokens, savings);
+  assert.equal(buildMetricsReport(state).cumulative.estimatedTransformSavingsTokens, savings);
 });
 
 test('v1 validation accepts event-backed duplicate receipts and rejects receipt-backed duplicates', () => {

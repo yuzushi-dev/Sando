@@ -1,0 +1,84 @@
+{
+  "schemaVersion": "sando.benchmark-manifest.v1",
+  "id": "redaction-notice-diagnostic-20260930",
+  "status": "frozen-not-run",
+  "statusReason": "Separately labeled native diagnostic of the original redaction task; no model calls have been made from this manifest.",
+  "arms": {
+    "control": { "sandoCliRouting": "0" },
+    "apply": { "sandoCliRouting": "1" }
+  },
+  "execution": {
+    "client": "codex-cli 0.159.2",
+    "model": "gpt-6.1-sol",
+    "reasoningEffort": "low",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "authentication": "chatgpt-subscription",
+    "forbidMeteredApiFallback": true,
+    "wallTimeoutMsPerRun": 300000,
+    "totalRuns": 4,
+    "pairConcurrency": 2,
+    "ephemeral": true,
+    "ignoreUserConfig": true,
+    "ignoreRules": true,
+    "unsupportedLimits": [
+      "The native subscription client exposes no verified per-request max-output-token control for this run.",
+      "The native subscription client exposes no verified maximum provider-request count per run."
+    ]
+  },
+  "repetitionsPerArm": 2,
+  "lockedFactors": [
+    "repository commit",
+    "synthetic fixture",
+    "Codex client version and binary hash",
+    "model and exact model snapshot when available",
+    "reasoning effort",
+    "system and user instructions",
+    "tool permissions"
+  ],
+  "scheduleRule": "Run two pairs from fresh copies of the identical original redaction fixture. Pair one is control then apply; pair two is apply then control.",
+  "sharedInstructions": "Work only in the current synthetic repository. Complete the task, use local tools as needed, and do not modify any file listed as protected. Do not access parent directories, user configuration, credentials, network services, or unrelated files. Finish with a concise result.",
+  "attemptRecord": {
+    "schemaVersion": "sando.benchmark-attempt.v1",
+    "required": [
+      "benchmarkId", "taskId", "arm", "repetition", "orderPosition", "outcome",
+      "successVerified", "attempts", "durationMs", "toolCalls", "artifactRetrievals", "cache", "cost"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "redact-secrets",
+      "prompt": "Create sanitized.log from raw.log. Preserve timestamps, levels, and event names, but replace every password, bearer token, and API key value with [REDACTED]. Do not alter raw.log.",
+      "fixture": {
+        "files": {
+          "raw.log": "2026-09-30T08:00:00Z INFO login password=hunter2\n2026-09-30T08:00:01Z WARN api Authorization: Bearer sk-live-123456\n2026-09-30T08:00:02Z INFO sync api_key=key-secret-789 event=complete\n"
+        }
+      },
+      "protectedPaths": ["raw.log"],
+      "successCriteria": [
+        { "type": "file_contains", "path": "sanitized.log", "value": "[REDACTED]" },
+        { "type": "file_contains", "path": "sanitized.log", "value": "event=complete" },
+        { "type": "file_not_contains", "path": "sanitized.log", "value": "hunter2" },
+        { "type": "file_not_contains", "path": "sanitized.log", "value": "sk-live-123456" },
+        { "type": "file_not_contains", "path": "sanitized.log", "value": "key-secret-789" }
+      ],
+      "schedule": [["control", "apply"], ["apply", "control"]]
+    }
+  ],
+  "diagnosticProtocol": {
+    "sourceBenchmarkId": "sando-v1",
+    "sourceTaskId": "redact-secrets",
+    "promptFixtureAndSuccessCriteriaIdentical": true,
+    "scoresDirectlyComparableToBenchmarkSuites": false,
+    "purpose": "Test whether the display-redaction notice changes the observed copy-through failure mode before any broader collection.",
+    "costPolicy": "Subscription usage has no request-level USD meter; record observed usage and leave monetary fields unknown. Never fall back to a metered API."
+  },
+  "evidenceProtocol": {
+    "schemaVersion": "sando.benchmark-evidence.v1",
+    "perFileBytes": 65536,
+    "perAttemptBytes": 262144,
+    "totalBytes": 33554432,
+    "retainOnly": "declared synthetic final outputs, verification results, and bounded redacted diagnostic fields",
+    "cleanup": "Retain through benchmark audit; delete explicitly after publication or cancellation."
+  }
+}

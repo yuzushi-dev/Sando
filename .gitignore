@@ -14,6 +14,12 @@ dashboard/
 scripts/
 canary/
 benchmarks/
+!packages/sando/benchmarks/
+!packages/sando/benchmarks/*.json
+!packages/sando/benchmarks/results/
+!packages/sando/benchmarks/results/*.jsonl
+!packages/sando/benchmarks/results/sando-v1-runner-source.txt
+!packages/sando/benchmarks/results/sando-v1-accounting-source.txt
 
 # Machine-local gateway and timer notes/configuration.
 config/
@@ -54,6 +60,9 @@ docs/changelogs/*
 !docs/changelogs/*.md
 # The README cites these figures, so the page behind them has to ship with it.
 !docs/measurements.md
+!docs/compatibility/
+docs/compatibility/*
+!docs/compatibility/*.md
 
 !scripts/
 scripts/*
@@ -64,6 +73,16 @@ scripts/*
 !scripts/bench-reduction.mjs
 !scripts/bench-codex-shell.mjs
 !scripts/bench-wrap-divergence.mjs
+!scripts/verify-codex-compat.mjs
+!scripts/codex-loopback-contract.mjs
+!scripts/codex-subscription-contract.mjs
+!scripts/codex-subscription-contract.mjs
+!scripts/run-sando-benchmark.mjs
+!scripts/run-sando-cache-benchmark.mjs
+!scripts/summarize-cache-native-benchmark.mjs
 
 # Project instructions for coding agents: local, not distributed with the plugin.
 /CLAUDE.md
+
+# Native benchmark receipts and evidence are machine-private.
+/packages/sando/benchmarks/results/

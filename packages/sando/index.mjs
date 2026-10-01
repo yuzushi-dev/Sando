@@ -25,6 +25,11 @@ export {
 } from './src/paired-accounting.mjs';
 export { formatAccountingReport, runAccountingCli } from './src/accounting-cli.mjs';
 export {
+  API_USAGE_REQUEST_SCHEMA, SOL_STANDARD_PROFILE_ID, loadPricingProfile,
+  validatePricingProfile, buildApiUsageRequest, estimateApiRequestCost, aggregateApiRequestCosts,
+} from './src/pricing.mjs';
+export { summarizeBenchmarkAttempts } from './src/benchmark-accounting.mjs';
+export {
   buildSemanticPrompt,
   createSemanticCompactor,
   SEMANTIC_SUMMARY_SCHEMA,

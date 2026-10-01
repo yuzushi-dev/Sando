@@ -5,12 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { materializeArtifact } from './lib/artifacts.mjs';
+import { materializeArtifactResult } from './lib/artifacts.mjs';
 import { runArtifactCli } from './lib/artifact-cli.mjs';
 import { runAccountingCli } from './lib/accounting-cli.mjs';
 import { runContextAuditCli } from './lib/context-audit-cli.mjs';
 import { runGatewayGateCli } from './lib/gateway-gate-cli.mjs';
 import { normalizePolicy, optimizeToolOutput } from './lib/core.mjs';
+import { DISPLAY_REDACTION_NOTICE } from './lib/result-disclosure.mjs';
 import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './lib/exec-capture.mjs';
 import { callMcpTool } from './lib/mcp-tools.mjs';
 
@@ -43,14 +44,27 @@ function cwdRoot() {
 const CLI_PATH = path.resolve(import.meta.dirname, 'bin', 'sando');
 
 function executableRecoveryHint(text) {
-  return text.replace('recover: sando artifact get ', `recover: ${CLI_PATH} artifact get `);
+  return text.replace('recover: sando artifact get ',
+    `For omitted content, use this bounded recovery call before repeated small reads; recover: ${CLI_PATH} artifact get `);
 }
 
-function writeResult(result, cwd) {
-  const out = executableRecoveryHint(materializeArtifact(result, cwd));
-  const end = result.artifact ? out.indexOf('\n') : -1;
+function writeResult(result, cwd, policy) {
+  const delivered = materializeArtifactResult(result, cwd, {
+    maxInlineBytes: policy.maxInlineBytes,
+    transformInline: executableRecoveryHint,
+  });
+  const out = delivered.inline;
+  const end = delivered.artifact ? out.indexOf('\n') : -1;
   if (end === -1) { process.stdout.write(`${out}\n`); return; }
-  process.stdout.write(`${out.slice(end + 1)}\n${out.slice(0, end)}\n`);
+  const suffix = `\n${DISPLAY_REDACTION_NOTICE}`;
+  const hasDisclosure = out.endsWith(suffix);
+  const body = out.slice(end + 1, hasDisclosure ? -suffix.length : undefined);
+  process.stdout.write(`${body}\n${out.slice(0, end)}${hasDisclosure ? suffix : ''}\n`);
+}
+
+function writeBudgetError(maxInlineBytes) {
+  const message = '[sando] output withheld: delivery budget too small';
+  process.stdout.write(`${Buffer.byteLength(message) <= maxInlineBytes ? message : '[sando] output withheld'}\n`);
 }
 
 const SHELL_WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
@@ -90,7 +104,11 @@ async function runExec(args, cwd, policy) {
   // 4 KB, where the same read through `sando read` is source and gets 32 KB. A shell wrapper
   // is unwrapped first, or the router would only ever see `bash`.
   const prepared = optimizeToolOutput({ toolName: 'Bash', output, cwd, policy, toolInput: { command: routedCommand(command) } });
-  writeResult(prepared, cwd);
+  try { writeResult(prepared, cwd, policy); }
+  catch (error) {
+    if (error?.code !== 'SANDO_OUTPUT_BUDGET') throw error;
+    writeBudgetError(policy.maxInlineBytes);
+  }
   // A child killed by a signal has no exit code, and `|| 1` used to collapse that to a generic
   // failure: an OOM kill and a timeout both arrived as 1, indistinguishable from a command that
   // simply returned 1. A shell reports signal death as 128 + signum, so this does too.
@@ -121,7 +139,7 @@ function readBounds(values) {
 function runRead(args, cwd, policy) {
   const { positional, bounds } = readBounds(commandArgs(args));
   if (positional.length !== 1) throw new Error('read requires one workspace-relative path');
-  writeResult(callMcpTool('sando_read', { path: positional[0], cwd, policy, ...bounds }), cwd);
+  writeResult(callMcpTool('sando_read', { path: positional[0], cwd, policy, ...bounds }), cwd, policy);
 }
 
 function runGrep(args, cwd, policy) {
@@ -136,7 +154,7 @@ function runGrep(args, cwd, policy) {
   }
   if (values.length !== 2) throw new Error('grep requires PATTERN and workspace-relative PATH');
   const result = callMcpTool('sando_grep', { pattern: values[0], path: values[1], cwd, policy });
-  writeResult(result, cwd);
+  writeResult(result, cwd, policy);
   if (result.source?.matches === 0) process.exitCode = 1;
 }
 

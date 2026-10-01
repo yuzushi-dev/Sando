@@ -1,0 +1,15 @@
+{
+  "schema": "sando-codex-shell-fixtures/v1",
+  "provenance": "synthetic",
+  "notice": "These commands exercise the local shell rewrite only; they are not live Codex evidence.",
+  "cases": [
+    { "id": "quoting-unicode", "command": "printf '%s\\n' 'héllo world'" },
+    { "id": "pipe", "command": "printf 'b\\na\\n' | sort" },
+    { "id": "redirect-file-effect", "command": "printf 'changed\\n' > effect.txt" },
+    { "id": "stdin", "command": "IFS= read -r value; printf 'got:%s\\n' \"$value\"", "stdin": "input value\n", "expectedStdout": "got:input value\n" },
+    { "id": "stderr-nonzero", "command": "printf 'problem\\n' >&2; exit 7" },
+    { "id": "working-directory", "command": "basename \"$PWD\"; printf x > cwd-effect.txt" },
+    { "id": "binary-output", "command": "printf '\\000\\001'", "binary": true },
+    { "id": "signal", "command": "kill -TERM $$", "signal": "SIGTERM" }
+  ]
+}

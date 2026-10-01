@@ -124,6 +124,10 @@ test('optimizeToolOutput loads project redaction rules and records the profile d
   assert.ok(result.artifact);
   assert.ok(!result.inline.includes('fixture-secret'));
   assert.ok(!result.artifact.content.includes('fixture-secret'));
+  assert.match(result.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.deepEqual(result.disclosure.redaction, {
+    count: 1, scope: 'display', sourceModifiedBySando: false,
+  });
   assert.equal(result.artifact.content, `TEAM_DB_URL=[REDACTED]\n${'x'.repeat(600)}`);
   assert.match(result.redactionProfileDigest, /^sha256:[a-f0-9]{64}$/);
   const event = normalizeEvent({
@@ -131,6 +135,95 @@ test('optimizeToolOutput loads project redaction rules and records the profile d
   });
   const receipt = createReceipt({ host: 'claude', event, optimization: result });
   assert.equal(receipt.redactionProfileDigest, result.redactionProfileDigest);
+});
+
+test('display redaction discloses masking without changing source bytes', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-display-redaction-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const source = [
+    'password=alpha-secret',
+    'Authorization: Bearer synthetic-bearer-value',
+    'api_key=synthetic-api-value',
+  ].join('\n');
+  const sourcePath = path.join(cwd, 'raw.log');
+  fs.writeFileSync(sourcePath, source);
+  const before = fs.readFileSync(sourcePath);
+
+  const { optimizeToolOutput } = await core();
+  const result = optimizeToolOutput({
+    toolName: 'Read', output: fs.readFileSync(sourcePath, 'utf8'), cwd,
+    toolInput: { path: sourcePath, start_line: 1, end_line: 3 },
+    policy: { mode: 'apply', maxInlineBytes: 512, redact: true },
+  });
+
+  assert.doesNotMatch(result.inline, /alpha-secret|synthetic-bearer-value|synthetic-api-value/);
+  assert.equal((result.inline.match(/\[sando\] display redacted/g) ?? []).length, 1);
+  assert.match(result.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.deepEqual(result.disclosure.redaction, {
+    count: 3, scope: 'display', sourceModifiedBySando: false,
+  });
+  assert.deepEqual(fs.readFileSync(sourcePath), before);
+});
+
+test('display disclosure is based on actual substitutions across edge cases', async () => {
+  const { optimizeToolOutput } = await core();
+  const optimize = (output, overrides = {}) => optimizeToolOutput({
+    toolName: 'Bash', output, cwd: '/work',
+    policy: { mode: 'apply', maxInlineBytes: 512, redact: true, ...overrides },
+  });
+
+  for (const unchanged of ['ordinary output', 'password=[REDACTED]']) {
+    const result = optimize(unchanged);
+    assert.equal(result.inline, unchanged);
+    assert.equal(result.disclosure.redaction, undefined);
+  }
+
+  const repeated = optimize('password=first-secret password=second-secret');
+  assert.equal(repeated.disclosure.redaction.count, 2);
+  assert.equal((repeated.inline.match(/\[sando\] display redacted/g) ?? []).length, 1);
+
+  const ansiHidden = optimize('api_\u001b[31mkey=ansi-hidden-value');
+  assert.doesNotMatch(ansiHidden.inline, /ansi-hidden-value/);
+  assert.equal(ansiHidden.disclosure.redaction.count, 1);
+
+  const disabled = optimize('password=visible-secret', { redact: false });
+  assert.match(disabled.inline, /visible-secret/);
+  assert.doesNotMatch(disabled.inline, /display redacted/);
+  assert.equal(disabled.disclosure.redaction, undefined);
+
+  const observed = optimizeToolOutput({
+    toolName: 'Bash', output: 'password=observed-secret', cwd: '/work',
+    policy: { mode: 'observe', maxInlineBytes: 512, redact: true },
+  });
+  assert.equal(observed.stats.mode, 'observe');
+  assert.doesNotMatch(observed.inline, /observed-secret/);
+  assert.match(observed.inline, /display redacted/);
+
+  const rawRead = optimizeToolOutput({
+    toolName: 'Read', output: 'password=raw-secret', cwd: '/work', raw: true,
+    toolInput: { path: 'raw.log', raw: true },
+    policy: { mode: 'apply', maxInlineBytes: 512, redact: true },
+  });
+  assert.doesNotMatch(rawRead.inline, /raw-secret/);
+  assert.match(rawRead.inline, /display redacted/);
+});
+
+test('display disclosure is reserved inside the exact 64-byte inline budget', async () => {
+  const { optimizeToolOutput } = await core();
+  const result = optimizeToolOutput({
+    toolName: 'Bash', output: 'password=boundary-secret', cwd: '/work',
+    policy: { mode: 'apply', maxInlineBytes: 64, headBytes: 32, tailBytes: 16, redact: true },
+  });
+
+  assert.ok(Buffer.byteLength(result.inline) <= 64);
+  assert.match(result.inline, /\[sando\] display redacted; Sando did not sanitize source files$/);
+  assert.equal(result.stats.inlineBytes, Buffer.byteLength(result.inline));
+  assert.equal(result.stats.estimatedInlineTokens, Math.ceil(Buffer.byteLength(result.inline) / 4));
+  assert.equal(result.disclosure.bytes.visible, Buffer.byteLength(result.inline));
+  assert.throws(() => optimizeToolOutput({
+    toolName: 'Bash', output: 'password=too-small', cwd: '/work',
+    policy: { mode: 'apply', maxInlineBytes: 63, redact: true },
+  }), /invalid policy/);
 });
 
 test('event normalization and receipts are deterministic across host aliases', async () => {

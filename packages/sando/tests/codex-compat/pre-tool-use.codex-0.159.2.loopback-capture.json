@@ -1,0 +1,23 @@
+{
+  "schema": "sando-codex-hook-capture/v1",
+  "provenance": "real-codex-client-with-synthetic-loopback-provider",
+  "captured_on": "2026-09-30",
+  "codex_version": "0.159.2",
+  "authenticated_provider": false,
+  "hook_trust_bypass": true,
+  "notice": "Dynamic identifiers and temporary paths were replaced. permission_mode reflects the hook-trust bypass used by this isolated probe and is not approval-denial evidence.",
+  "input": {
+    "session_id": "<session-id>",
+    "turn_id": "<turn-id>",
+    "transcript_path": "<isolated-codex-home>/sessions/<rollout>.jsonl",
+    "cwd": "<synthetic-workspace>",
+    "hook_event_name": "PreToolUse",
+    "model": "sando-loopback",
+    "permission_mode": "bypassPermissions",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "sleep 0.2; printf 'once\\n' >> executions.log; printf 'MODEL_VISIBLE_TOKEN\\n'"
+    },
+    "tool_use_id": "<tool-use-id>"
+  }
+}

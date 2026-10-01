@@ -1,3 +1,5 @@
+import { aggregateApiRequestCosts } from './pricing.mjs';
+
 const ARMS = new Set(['apply', 'control']);
 
 export const PAIRED_ARMS = Object.freeze(['apply', 'control']);
@@ -95,7 +97,8 @@ function optionalCounter(item, field) {
   return item[field] === undefined ? undefined : counter(item[field]) ? item[field] : null;
 }
 
-export function summarizePairedSessions(records, { host, experimentId, workloadId, pricing } = {}) {
+export function summarizePairedSessions(records, { host, experimentId, workloadId, pricing, apiRequests, pricingProfile } = {}) {
+  if ((apiRequests === undefined) !== (pricingProfile === undefined)) throw new TypeError('API requests and pricing profile are required together');
   if (!Array.isArray(records)) throw new TypeError('usage records must be an array');
   const groups = new Map();
   records.forEach((item, index) => {
@@ -137,6 +140,9 @@ export function summarizePairedSessions(records, { host, experimentId, workloadI
     }
   });
   return [...groups.values()]
-    .map(({ turnIds, ...group }) => ({ ...group, turns: turnIds.size }))
+    .map(({ turnIds, ...group }) => ({ ...group, turns: turnIds.size,
+      ...(apiRequests === undefined ? {} : { apiCost: aggregateApiRequestCosts(apiRequests, pricingProfile,
+        { sessionId: group.sessionId, arm: group.arm }) }),
+    }))
     .sort((left, right) => left.arm.localeCompare(right.arm) || left.sessionId.localeCompare(right.sessionId));
 }

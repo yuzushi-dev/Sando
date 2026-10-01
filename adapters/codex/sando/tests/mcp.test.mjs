@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { callMcpTool } from '../lib/mcp-tools.mjs';
@@ -65,6 +66,28 @@ test('MCP artifact handles recover bounded redacted content', (t) => {
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: prepared.artifact.ref, maxBytes: 0 }), /maxBytes/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: '/tmp/.sando/sando/artifacts/file.txt' }), /invalid/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }), /unavailable in this MCP session/i);
+});
+
+test('MCP artifact recovery discloses source uncertainty in text and structured envelopes', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-mcp-artifact-view-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const content = `${'safe line\n'.repeat(100)}tail`;
+  fs.writeFileSync(path.join(cwd, 'fixture.txt'), content);
+  const ref = `sando:sha256:${createHash('sha256').update(content).digest('hex').slice(0, 16)}`;
+  const requests = [
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'sando_read', arguments: { path: 'fixture.txt', cwd, policy: { maxInlineBytes: 128, maxArtifactBytes: 4_096 } } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'sando_artifact_get', arguments: { ref, startLine: 1, endLine: 1 } } },
+  ];
+  const result = spawnSync(process.execPath, [path.join(root, 'mcp/server.mjs')], {
+    input: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const messages = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(messages[1].result.structuredContent.content, 'safe line');
+  assert.deepEqual(messages[1].result.structuredContent.disclosure, {
+    scope: 'artifact-view', sourceSanitization: 'not-certified',
+  });
+  assert.match(messages[1].result.content[0].text, /safe line\n\[sando\] artifact view; source-file sanitization is not certified$/);
 });
 
 test('MCP transformations record real coverage evidence', (t) => {

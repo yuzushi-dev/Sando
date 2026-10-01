@@ -1,0 +1,590 @@
+{
+  "schemaVersion": "sando.benchmark-manifest.v1",
+  "id": "sando-v2",
+  "status": "frozen-not-run",
+  "statusReason": "Future grading and evidence protocol frozen before collection; sando-v1 and sando-v2 scores are not directly comparable.",
+  "arms": {
+    "control": {
+      "sandoCliRouting": "0"
+    },
+    "apply": {
+      "sandoCliRouting": "1"
+    }
+  },
+  "execution": {
+    "client": "codex-cli 0.159.2",
+    "model": "gpt-6.1-sol",
+    "reasoningEffort": "low",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "authentication": "chatgpt-subscription",
+    "forbidMeteredApiFallback": true,
+    "wallTimeoutMsPerRun": 300000,
+    "totalRuns": 100,
+    "pairConcurrency": 2,
+    "ephemeral": true,
+    "ignoreUserConfig": true,
+    "ignoreRules": true,
+    "unsupportedLimits": [
+      "The native subscription client exposes no verified per-request max-output-token control for this run.",
+      "The native subscription client exposes no verified maximum provider-request count per run."
+    ]
+  },
+  "repetitionsPerArm": 5,
+  "lockedFactors": [
+    "repository commit",
+    "synthetic fixture",
+    "Codex client version and binary hash",
+    "model and exact model snapshot when available",
+    "reasoning effort",
+    "system and user instructions",
+    "tool permissions",
+    "pricing profile applied after collection"
+  ],
+  "primaryMetric": {
+    "name": "verified_completion_rate",
+    "definition": "Successful completions divided by all scheduled runs, including failed runs, reported per task and arm and across the frozen suite."
+  },
+  "regressionGate": {
+    "rule": "The apply arm fails the operational quality gate if it has two or more fewer successful completions than control on any task, or more than one fewer successful completion across all 50 runs.",
+    "statistics": "This operational gate is not a statistical-equivalence test."
+  },
+  "costClaimGate": "Publish cost comparisons only when every scheduled run has complete monetary data and the regression gate passes. Use the cost of all attempts as numerator for cost per successful completion.",
+  "scheduleRule": "Run each listed pair from a fresh copy of the same fixture and commit. Odd-numbered tasks begin control-first; even-numbered tasks begin apply-first. Alternate within each task. This yields 25 first positions per arm.",
+  "sharedInstructions": "Work only in the current synthetic repository. Complete the task, use local tools as needed, and do not modify any file listed as protected. Do not access parent directories, user configuration, credentials, network services, or unrelated files. Finish with a concise result.",
+  "attemptRecord": {
+    "schemaVersion": "sando.benchmark-attempt.v1",
+    "required": [
+      "benchmarkId",
+      "taskId",
+      "arm",
+      "repetition",
+      "orderPosition",
+      "outcome",
+      "successVerified",
+      "attempts",
+      "durationMs",
+      "toolCalls",
+      "artifactRetrievals",
+      "cache",
+      "cost"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "locate-log-failure",
+      "prompt": "Inspect service.log, identify the first request that caused the payment worker to stop, and write report.md with the request ID, exact error code, and the preceding retry count. Quote the entire preceding retry and error lines exactly as they appear in service.log.",
+      "fixture": {
+        "files": {
+          "service.log": "001 INFO request=req-17 worker=payment retry=0 started\n002 WARN request=req-17 worker=payment retry=1 upstream_timeout\n003 INFO request=req-18 worker=search retry=0 completed\n004 WARN request=req-17 worker=payment retry=2 upstream_timeout\n005 ERROR request=req-17 worker=payment retry=2 code=E_PAYMENT_LOCKED stopped\n006 INFO request=req-19 worker=email retry=0 completed\n"
+        }
+      },
+      "protectedPaths": [
+        "service.log"
+      ],
+      "successCriteria": [
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "req-17"
+        },
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "E_PAYMENT_LOCKED"
+        },
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "retry=2"
+        },
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "005"
+        },
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "004 WARN request=req-17 worker=payment retry=2 upstream_timeout"
+        },
+        {
+          "type": "file_contains",
+          "path": "report.md",
+          "value": "005 ERROR request=req-17 worker=payment retry=2 code=E_PAYMENT_LOCKED stopped"
+        }
+      ],
+      "schedule": [
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ]
+      ]
+    },
+    {
+      "id": "repair-csv-parser",
+      "prompt": "Fix parse.mjs so parseRows returns every non-empty CSV data row as an object keyed by the header. Preserve quoted commas. Do not change parse.test.mjs; finish only when its tests pass.",
+      "fixture": {
+        "files": {
+          "parse.mjs": "export function parseRows(text) { const [header, ...rows] = text.trim().split('\\n').map(line => line.split(',')); return rows.slice(0, -1).map(row => Object.fromEntries(header.map((key, index) => [key, row[index]]))); }\n",
+          "parse.test.mjs": "import assert from 'node:assert/strict'; import test from 'node:test'; import { parseRows } from './parse.mjs'; test('all rows and quoted commas', () => assert.deepEqual(parseRows('id,name\\n1,Ada\\n2,\"Lovelace, Ada\"\\n'), [{id:'1',name:'Ada'},{id:'2',name:'Lovelace, Ada'}]));\n"
+        }
+      },
+      "protectedPaths": [
+        "parse.test.mjs"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node --test parse.test.mjs"
+        }
+      ],
+      "schedule": [
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ]
+      ]
+    },
+    {
+      "id": "redact-secrets",
+      "prompt": "Create sanitized.log from raw.log. Preserve timestamps, levels, and event names, but replace every password, bearer token, and API key value with [REDACTED]. Do not alter raw.log.",
+      "fixture": {
+        "files": {
+          "raw.log": "2026-09-30T08:00:00Z INFO login password=hunter2\n2026-09-30T08:00:01Z WARN api Authorization: Bearer sk-live-123456\n2026-09-30T08:00:02Z INFO sync api_key=key-secret-789 event=complete\n"
+        }
+      },
+      "protectedPaths": [
+        "raw.log"
+      ],
+      "successCriteria": [
+        {
+          "type": "file_contains",
+          "path": "sanitized.log",
+          "value": "[REDACTED]"
+        },
+        {
+          "type": "file_contains",
+          "path": "sanitized.log",
+          "value": "event=complete"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "sanitized.log",
+          "value": "hunter2"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "sanitized.log",
+          "value": "sk-live-123456"
+        },
+        {
+          "type": "file_not_contains",
+          "path": "sanitized.log",
+          "value": "key-secret-789"
+        }
+      ],
+      "schedule": [
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ]
+      ]
+    },
+    {
+      "id": "aggregate-events",
+      "prompt": "Read events.json and create summary.json containing counts by event type, total durationMs, and the distinct session IDs sorted lexicographically. The output must be valid JSON with keys counts, totalDurationMs, and sessions.",
+      "fixture": {
+        "files": {
+          "events.json": "[{\"session\":\"s2\",\"type\":\"tool\",\"durationMs\":25},{\"session\":\"s1\",\"type\":\"prompt\",\"durationMs\":10},{\"session\":\"s1\",\"type\":\"tool\",\"durationMs\":15}]\n"
+        }
+      },
+      "protectedPaths": [
+        "events.json"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node -e \"const s=require('./summary.json'); const a=require('node:assert/strict'); a.deepEqual(s,{counts:{tool:2,prompt:1},totalDurationMs:50,sessions:['s1','s2']})\""
+        }
+      ],
+      "schedule": [
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ]
+      ]
+    },
+    {
+      "id": "preserve-argv",
+      "prompt": "Repair wrapper.mjs so it invokes child.mjs with the supplied arguments without shell interpolation or argument splitting. Keep the exported run function and make wrapper.test.mjs pass.",
+      "fixture": {
+        "files": {
+          "child.mjs": "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+          "wrapper.mjs": "import { execFileSync } from 'node:child_process'; export function run(args) { return execFileSync(process.execPath, ['./child.mjs', args.join(' ')], { encoding: 'utf8' }); }\n",
+          "wrapper.test.mjs": "import assert from 'node:assert/strict'; import test from 'node:test'; import { run } from './wrapper.mjs'; test('preserves argv', () => assert.deepEqual(JSON.parse(run(['two words', '$HOME', '*.js'])), ['two words','$HOME','*.js']));\n"
+        }
+      },
+      "protectedPaths": [
+        "child.mjs",
+        "wrapper.test.mjs"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node --test wrapper.test.mjs"
+        }
+      ],
+      "schedule": [
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ]
+      ]
+    },
+    {
+      "id": "deduplicate-usage",
+      "prompt": "Create result.json from usage.jsonl. Deduplicate exact eventId records, sum inputTokens and outputTokens once per event, and list event IDs in first-seen order.",
+      "fixture": {
+        "files": {
+          "usage.jsonl": "{\"eventId\":\"e1\",\"inputTokens\":10,\"outputTokens\":2}\n{\"eventId\":\"e1\",\"inputTokens\":10,\"outputTokens\":2}\n{\"eventId\":\"e2\",\"inputTokens\":7,\"outputTokens\":3}\n"
+        }
+      },
+      "protectedPaths": [
+        "usage.jsonl"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node -e \"const r=require('./result.json'); const a=require('node:assert/strict'); a.deepEqual(r,{inputTokens:17,outputTokens:5,eventIds:['e1','e2']})\""
+        }
+      ],
+      "schedule": [
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ]
+      ]
+    },
+    {
+      "id": "recover-artifact-evidence",
+      "prompt": "The preview omits the middle of artifact.txt. Inspect the full artifact and write evidence.md with the deployment target, the failed check, and the rollback revision. Quote the complete cited source lines exactly as they appear in artifact.txt.",
+      "fixture": {
+        "files": {
+          "preview.txt": "1 deployment report\n2 target=staging-eu\n... 4 lines omitted ...\n7 end\n",
+          "artifact.txt": "1 deployment report\n2 target=staging-eu\n3 build=8421\n4 check=database-migrations status=failed\n5 owner=release-bot\n6 rollback_revision=7fa21c9\n7 end\n"
+        }
+      },
+      "protectedPaths": [
+        "preview.txt",
+        "artifact.txt"
+      ],
+      "successCriteria": [
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "staging-eu"
+        },
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "database-migrations"
+        },
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "7fa21c9"
+        },
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "2 target=staging-eu"
+        },
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "4 check=database-migrations status=failed"
+        },
+        {
+          "type": "file_contains",
+          "path": "evidence.md",
+          "value": "6 rollback_revision=7fa21c9"
+        }
+      ],
+      "schedule": [
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ]
+      ]
+    },
+    {
+      "id": "trace-config-precedence",
+      "prompt": "Inspect defaults.json, project.json, and env.txt. Write effective.json for the documented precedence env over project over defaults. Convert numeric environment values to numbers and preserve defaults not overridden.",
+      "fixture": {
+        "files": {
+          "defaults.json": "{\"host\":\"localhost\",\"port\":3000,\"retries\":2,\"format\":\"text\"}\n",
+          "project.json": "{\"port\":8080,\"format\":\"json\"}\n",
+          "env.txt": "PORT=9090\nRETRIES=5\n"
+        }
+      },
+      "protectedPaths": [
+        "defaults.json",
+        "project.json",
+        "env.txt"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node -e \"const r=require('./effective.json'); const a=require('node:assert/strict'); a.deepEqual(r,{host:'localhost',port:9090,retries:5,format:'json'})\""
+        }
+      ],
+      "schedule": [
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ]
+      ]
+    },
+    {
+      "id": "reconcile-documentation",
+      "prompt": "README.md and CHANGELOG.md disagree about the default timeout. Determine the current value from config.mjs, then update README.md only. Add a source note naming config.mjs and leave CHANGELOG.md as historical evidence.",
+      "fixture": {
+        "files": {
+          "README.md": "# Client\n\nThe default timeout is 15 seconds.\n",
+          "CHANGELOG.md": "## 1.1.0\nChanged the default timeout from 15 to 30 seconds.\n",
+          "config.mjs": "export const DEFAULT_TIMEOUT_MS = 30_000;\n"
+        }
+      },
+      "protectedPaths": [
+        "CHANGELOG.md",
+        "config.mjs"
+      ],
+      "successCriteria": [
+        {
+          "type": "file_contains",
+          "path": "README.md",
+          "value": "30 seconds"
+        },
+        {
+          "type": "file_contains",
+          "path": "README.md",
+          "value": "config.mjs"
+        },
+        {
+          "type": "file_contains",
+          "path": "CHANGELOG.md",
+          "value": "from 15 to 30 seconds"
+        }
+      ],
+      "schedule": [
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ]
+      ]
+    },
+    {
+      "id": "fix-window-calculation",
+      "prompt": "Fix rolling.mjs so movingAverage returns one average for every complete window and rejects window sizes below one or above the input length. Do not modify rolling.test.mjs.",
+      "fixture": {
+        "files": {
+          "rolling.mjs": "export function movingAverage(values, size) { if (size < 1) throw new RangeError('size'); return values.slice(0, -size).map((_, i) => values.slice(i, i + size).reduce((a,b) => a+b, 0) / size); }\n",
+          "rolling.test.mjs": "import assert from 'node:assert/strict'; import test from 'node:test'; import { movingAverage } from './rolling.mjs'; test('complete windows', () => assert.deepEqual(movingAverage([2,4,6,8],2),[3,5,7])); test('invalid sizes', () => { assert.throws(() => movingAverage([1],0), RangeError); assert.throws(() => movingAverage([1],2), RangeError); });\n"
+        }
+      },
+      "protectedPaths": [
+        "rolling.test.mjs"
+      ],
+      "successCriteria": [
+        {
+          "type": "command",
+          "command": "node --test rolling.test.mjs"
+        }
+      ],
+      "schedule": [
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ],
+        [
+          "control",
+          "apply"
+        ],
+        [
+          "apply",
+          "control"
+        ]
+      ]
+    }
+  ],
+  "changesFrom": {
+    "benchmarkId": "sando-v1",
+    "scoresDirectlyComparable": false,
+    "changes": [
+      "Log and artifact prompts now require complete source-line quotations.",
+      "Success criteria validate the complete requested source lines.",
+      "Bounded synthetic evidence, runner receipts, exclusive locking, and interruption handling are required."
+    ]
+  },
+  "evidenceProtocol": {
+    "schemaVersion": "sando.benchmark-evidence.v1",
+    "perFileBytes": 65536,
+    "perAttemptBytes": 262144,
+    "totalBytes": 33554432,
+    "retainOnly": "declared synthetic final outputs, verification results, and bounded redacted diagnostic fields",
+    "cleanup": "Retain through benchmark audit; delete explicitly after publication or cancellation."
+  }
+}

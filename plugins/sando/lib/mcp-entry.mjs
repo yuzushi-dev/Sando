@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
+import { ARTIFACT_VIEW_NOTICE } from './artifact-recovery.mjs';
 import { persistArtifact } from './artifacts.mjs';
 import { exposeMcpResult, rememberArtifact } from './artifact-store.mjs';
 import { callMcpToolAsync, codexSandboxKey, MCP_TOOLS, spawnCodexSandboxedProcess } from './mcp-tools.mjs';
@@ -10,6 +11,11 @@ import { createSliceBridge, isSliceTool, SLICE_TOOLS, SliceRpcError } from './sl
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
 function error(id, code, message, data) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
 export function requestKey(id) { return `${typeof id}:${JSON.stringify(id)}`; }
+
+function modelFacingText(exposed) {
+  const text = exposed.inline ?? exposed.content;
+  return exposed.disclosure?.scope === 'artifact-view' ? `${text}\n${ARTIFACT_VIEW_NOTICE}` : text;
+}
 
 function artifactCwd(name, args, meta) {
   if (name !== 'sando_exec') return args?.cwd;
@@ -56,7 +62,7 @@ async function dispatch(message, active, bridge) {
       const exposed = result.artifact && message.params.name === 'sando_exec'
         ? publicResult(message.params.name, message.params.arguments, message.params?._meta, result)
         : exposeMcpResult(result);
-      return response(message.id, { content: [{ type: 'text', text: exposed.inline ?? exposed.content }], structuredContent: exposed, isError: false });
+      return response(message.id, { content: [{ type: 'text', text: modelFacingText(exposed) }], structuredContent: exposed, isError: false });
     } catch (cause) {
       if (cause instanceof SliceRpcError) return error(message.id, cause.code, cause.message, cause.data);
       return response(message.id, { content: [{ type: 'text', text: cause instanceof Error ? cause.message : 'invalid tool input' }], isError: true });

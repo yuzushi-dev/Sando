@@ -18,8 +18,8 @@ const GENERATED_MODULES = [
   'slice.mjs',
   'core.mjs', 'routing.mjs', 'active-session.mjs', 'statusline.mjs', 'metrics.mjs',
   'redaction-profile.mjs', 'redaction-config.mjs', 'secret-redaction.mjs', 'adaptive-control.mjs',
-  'paired-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs',
-  'context-footprint.mjs', 'context-classifier.mjs', 'context-capture.mjs', 'context-audit-cli.mjs',
+  'paired-accounting.mjs', 'pricing.mjs', 'benchmark-accounting.mjs', 'provider-usage.mjs', 'accounting-cli.mjs',
+  'context-footprint.mjs', 'context-classifier.mjs', 'context-capture.mjs', 'responses-usage.mjs', 'context-audit-cli.mjs',
   'f1-telemetry.mjs', 'f4-telemetry.mjs',
   'result-disclosure.mjs', 'artifact-recovery.mjs', 'artifact-store.mjs', 'artifact-cli.mjs',
   'artifact-lifecycle.mjs',
@@ -87,7 +87,7 @@ test('all installed hook bundles emit the contracted hook telemetry shape', () =
 
 test('canonical and Codex hook bundles preserve the newly written artifact', (t) => {
   const output = 'x'.repeat(60 * 1024);
-  const policy = JSON.stringify({ mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 100_000, redact: false });
+  const policy = JSON.stringify({ mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 100_000, redact: false });
   const entrypoints = [
     ['canonical', path.join(ROOT, 'packages/sando/src/hook-cli.mjs'), 'codex'],
     ['codex adapter', path.join(ROOT, 'adapters/codex/sando/lib/hook-entry.mjs'), 'codex'],
@@ -130,5 +130,38 @@ test('canonical and Codex hook bundles preserve the newly written artifact', (t)
     const artifacts = fsSync.readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.txt$/.test(name));
     assert.equal(artifacts.length, 1, label);
     assert.equal(fsSync.readFileSync(path.join(directory, artifacts[0]), 'utf8'), output, label);
+  }
+});
+
+test('installed hook entrypoints propagate display-only redaction disclosure', (t) => {
+  const entrypoints = [
+    ['canonical', path.join(ROOT, 'packages/sando/src/hook-cli.mjs'), 'claude'],
+    ['Codex adapter', path.join(ROOT, 'adapters/codex/sando/lib/hook-entry.mjs'), 'codex'],
+    ['Claude adapter', path.join(ROOT, 'adapters/claude/sando/lib/hook-entry.mjs'), 'claude'],
+    ['plugin', path.join(ROOT, 'plugins/sando/lib/hook-entry.mjs'), 'claude'],
+  ];
+
+  for (const [label, entrypoint, host] of entrypoints) {
+    const cwd = fsSync.mkdtempSync(path.join(os.tmpdir(), 'sando-hook-disclosure-'));
+    t.after(() => fsSync.rmSync(cwd, { recursive: true, force: true }));
+    const runner = path.join(cwd, 'runner.mjs');
+    fsSync.writeFileSync(runner, `import { runHookCli } from ${JSON.stringify(pathToFileURL(entrypoint).href)};\nrunHookCli({ host: ${JSON.stringify(host)} });\n`);
+    const input = JSON.stringify({
+      hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'password=bundle-secret', cwd,
+    });
+    const result = execFileSync(process.execPath, [runner], {
+      input,
+      encoding: 'utf8',
+      env: {
+        ...process.env, DO_NOT_TRACK: '1', SANDO_MODE: 'apply', SANDO_CODEX_FALLBACK: 'feedback',
+        XDG_CONFIG_HOME: path.join(cwd, 'config'), XDG_STATE_HOME: path.join(cwd, 'state'),
+      },
+    });
+    const emitted = JSON.parse(result);
+    const modelText = host === 'codex'
+      ? emitted.systemMessage
+      : emitted.hookSpecificOutput.updatedToolOutput;
+    assert.doesNotMatch(JSON.stringify(modelText), /bundle-secret/, label);
+    assert.match(JSON.stringify(modelText), /display redacted; Sando did not sanitize source files/, label);
   }
 });

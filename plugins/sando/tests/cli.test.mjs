@@ -7,7 +7,7 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 const launcher = path.join(root, 'bin/sando');
-const policy = JSON.stringify({ mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 4096, redact: true });
+const policy = JSON.stringify({ mode: 'apply', maxInlineBytes: 256, maxArtifactBytes: 4096, redact: true });
 
 function run(cwd, args, extraEnv = {}) {
   return spawnSync(launcher, args, {
@@ -24,6 +24,8 @@ test('CLI read bounds, redacts, and persists a recoverable artifact', (t) => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /hidden/);
+  assert.match(result.stdout, /\[sando\] display redacted; Sando did not sanitize source files\n$/);
+  assert.equal((result.stdout.match(/\[sando\] display redacted/g) ?? []).length, 1);
   // The disclosure trails the content so stdout's first line stays faithful to the file the
   // rewritten shell command asked for.
   assert.doesNotMatch(result.stdout.split('\n')[0], /\[sando\] artifact /);

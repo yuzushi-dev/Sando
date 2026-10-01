@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { computeWeightedUsage } from './paired-accounting.mjs';
+import { normalizeResponsesUsage } from './responses-usage.mjs';
+import { aggregateApiRequestCosts } from './pricing.mjs';
 
 const SCHEMA = 'sando-provider-usage/v1';
 const VERSION = 1;
@@ -34,6 +36,17 @@ function sumUsd(values) {
   return Number.isFinite(total) ? Number(total.toFixed(12)) : null;
 }
 function sha256(value) { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
+function codexEventIdentity(value, sessionId) {
+  const stableId = value.turn_id ?? value.id;
+  return text(stableId) ? sha256(JSON.stringify(['codex', 'codex-transcript', sessionId, value.type, stableId])) : undefined;
+}
+function usageSignature(entry) {
+  return JSON.stringify([entry.inputTokens, entry.cachedInputTokens, entry.cacheWriteInputTokens,
+    entry.outputTokens, entry.reasoningOutputTokens, entry.usageQuality]);
+}
+function quarantineUsage(entry) {
+  entry.usageQuality = { ...entry.usageQuality, status: 'invalid', errors: [{ code: 'conflicting-event-revisions' }] };
+}
 function isoDate(value, fallback = new Date()) {
   const date = value === undefined ? new Date(fallback) : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -151,29 +164,39 @@ function claudeResultRecord(value, entries, { sessionId = null, arm, experimentI
   });
 }
 
-function codexRecord(value, index, { sessionId = null, turnId = null, now, arm, experimentId, workloadId } = {}) {
+function codexRecord(value, index, { sessionId = null, turnId = null, now, arm, experimentId, workloadId, onDiagnostic } = {}) {
   const usage = value.type === 'turn.completed'
     ? value.usage
     : value.type === 'event_msg' && value.payload?.type === 'token_count'
-      ? value.payload.info?.last_token_usage ?? value.payload.info?.usage
+      ? value.payload.info?.last_token_usage
       : undefined;
-  if (!record(usage)) return null;
-  const inputTokens = usage.input_tokens;
-  const cachedInputTokens = optionalCounter(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
-  const cacheWriteInputTokens = optionalCounter(usage.cache_write_input_tokens);
-  const outputTokens = usage.output_tokens;
-  const reasoningOutputTokens = optionalCounter(usage.reasoning_output_tokens);
-  if (!counter(inputTokens) || cachedInputTokens === null || cacheWriteInputTokens === null
-    || !counter(outputTokens) || reasoningOutputTokens === null) return null;
-  const totalTokens = usage.total_tokens === undefined ? safeSum(inputTokens, outputTokens) : usage.total_tokens;
-  if (!counter(totalTokens) || totalTokens !== inputTokens + outputTokens) return null;
+  if (!record(usage)) {
+    if (value.type === 'event_msg' && value.payload?.type === 'token_count'
+      && value.payload.info?.total_token_usage !== undefined) {
+      onDiagnostic?.({ schema: 'sando-usage-quality/v1', status: 'unsupported', scope: 'cumulative',
+        errors: [{ code: 'unverified-cumulative-provenance' }] });
+    } else if (value.type === 'event_msg' && value.payload?.type === 'token_count'
+      && value.payload.info?.usage !== undefined) {
+      onDiagnostic?.({ schema: 'sando-usage-quality/v1', status: 'unsupported', scope: 'unknown',
+        errors: [{ code: 'unverified-usage-provenance' }] });
+    }
+    return null;
+  }
+  const normalized = normalizeResponsesUsage(usage);
+  const usageQuality = { ...normalized.quality, scope: value.type === 'turn.completed' ? 'turn' : 'last-usage',
+    provenance: 'unverified',
+    ...(codexEventIdentity(value, sessionId) ? { eventIdentity: codexEventIdentity(value, sessionId) } : {}) };
+  if (usageQuality.status !== 'complete') onDiagnostic?.(usageQuality);
+  if (!normalized.usage) return null;
+  const { inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens } = normalized.usage;
   const identityAt = value.timestamp === undefined ? undefined : isoDate(value.timestamp, now);
-  return usageRecord({
+  const result = usageRecord({
     host: 'codex', source: 'codex-transcript', sourceKey: value.turn_id ?? value.id ?? value.timestamp ?? String(index),
     sessionId, turnId: value.turn_id ?? value.id ?? (value.timestamp ? `at:${value.timestamp}` : turnId), at: isoDate(value.timestamp, now), identityAt,
     inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens,
     arm, experimentId, workloadId,
   });
+  return result && { ...result, usageQuality };
 }
 
 export function parseClaudeTranscript(textValue, options = {}) {
@@ -194,7 +217,29 @@ export function parseClaudeTranscript(textValue, options = {}) {
 
 export function parseCodexTranscript(textValue, options = {}) {
   const entries = jsonLines(textValue);
-  const records = entries.map(({ value }, index) => codexRecord(value, index, options)).filter(Boolean);
+  const unique = new Map();
+  const conflicted = new Set();
+  entries.forEach(({ value }, index) => {
+    const item = codexRecord(value, index, { ...options, onDiagnostic: (diagnostic) => {
+      if (diagnostic.status === 'invalid' && diagnostic.eventIdentity) {
+        conflicted.add(diagnostic.eventIdentity);
+        unique.delete(diagnostic.eventIdentity);
+      }
+      options.onDiagnostic?.(diagnostic);
+    } });
+    if (!item) return;
+    const key = item.usageQuality.eventIdentity ?? item.eventKey;
+    if (conflicted.has(key)) return;
+    const previous = unique.get(key);
+    if (previous && usageSignature(previous) !== usageSignature(item)) {
+      unique.delete(key);
+      conflicted.add(key);
+      options.onDiagnostic?.({ schema: 'sando-usage-quality/v1', status: 'invalid', scope: item.usageQuality.scope,
+        eventIdentity: item.usageQuality.eventIdentity,
+        errors: [{ code: 'conflicting-event-revisions' }] });
+    } else if (!previous) unique.set(key, item);
+  });
+  const records = [...unique.values()];
   const totalCostUsd = options.totalCostUsd ?? entries.slice().reverse().map(({ value }) => reportedCost(value)).find(usd);
   return attachReportedCost(records, totalCostUsd);
 }
@@ -287,15 +332,42 @@ export function readProviderUsage(storagePath = defaultProviderUsagePath()) {
   return validateState(JSON.parse(fs.readFileSync(filePath, 'utf8')));
 }
 
-export function appendProviderUsage({ storagePath = defaultProviderUsagePath(), records = [] } = {}) {
+export function appendProviderUsage({ storagePath = defaultProviderUsagePath(), records = [], invalidEventIdentities = [] } = {}) {
   if (!Array.isArray(records)) throw new TypeError('provider usage records must be an array');
+  if (!Array.isArray(invalidEventIdentities)
+    || invalidEventIdentities.some((value) => typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value))) {
+    throw new TypeError('invalid event identities must be SHA256 digests');
+  }
   for (const item of records) validateUsage(item);
   const filePath = resolvePath(storagePath);
   ensureDirectory(path.dirname(filePath));
   return withLock(`${filePath}.lock`, () => {
     const state = readProviderUsage(filePath);
+    const invalid = new Set(invalidEventIdentities);
+    for (const item of state.records) {
+      if (invalid.has(item.usageQuality?.eventIdentity)) quarantineUsage(item);
+    }
     const existing = new Map(state.records.map((item, index) => [item.eventKey, index]));
     for (const item of records) {
+      const identity = item.usageQuality?.eventIdentity;
+      if (identity) {
+        const previous = state.records.find((candidate) => candidate.usageQuality?.eventIdentity === identity);
+        if (previous) {
+          if (previous.usageQuality.status === 'invalid') continue;
+          if (usageSignature(previous) !== usageSignature(item)) {
+            quarantineUsage(previous);
+            continue;
+          }
+          // A repeated stable observation may still carry a newer session cost.
+          if (item.costScope === 'session') {
+            previous.totalCostUsd = item.totalCostUsd;
+            previous.costScope = item.costScope;
+            previous.costSource = item.costSource;
+          }
+          continue;
+        }
+        if (invalid.has(identity)) continue;
+      }
       const index = item.aggregation === 'session'
         ? item.sessionId === null
           ? existing.get(item.eventKey) ?? -1
@@ -319,19 +391,25 @@ export function appendProviderUsage({ storagePath = defaultProviderUsagePath(), 
 
 export function collectProviderUsage({ host, transcriptPath, sessionId = null, turnId = null,
   storagePath = defaultProviderUsagePath(), now, totalCostUsd, arm, experimentId, workloadId } = {}) {
+  const diagnostics = [];
   if (!['claude', 'codex'].includes(host) || typeof transcriptPath !== 'string' || !transcriptPath) return { records: [], state: readProviderUsage(storagePath) };
   try {
     const textValue = fs.readFileSync(transcriptPath, 'utf8');
     const parse = host === 'claude' ? parseClaudeTranscript : parseCodexTranscript;
-    const records = parse(textValue, { sessionId, turnId, now, totalCostUsd, arm, experimentId, workloadId });
-    return { records, state: appendProviderUsage({ storagePath, records }) };
+    const records = parse(textValue, { sessionId, turnId, now, totalCostUsd, arm, experimentId, workloadId,
+      onDiagnostic: (value) => diagnostics.push(value) });
+    const invalidEventIdentities = diagnostics.filter((item) => item.status === 'invalid' && item.eventIdentity)
+      .map((item) => item.eventIdentity);
+    return { records, state: appendProviderUsage({ storagePath, records, invalidEventIdentities }), diagnostics };
   } catch {
     return { records: [], state: readProviderUsage(storagePath) };
   }
 }
 
-export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
-  const selected = validateState(state).records.filter((item) => sessionId === undefined || item.sessionId === sessionId);
+export function buildProviderUsageReport(state, { sessionId, pricing, apiRequests, pricingProfile } = {}) {
+  if ((apiRequests === undefined) !== (pricingProfile === undefined)) throw new TypeError('API requests and pricing profile are required together');
+  const scoped = validateState(state).records.filter((item) => sessionId === undefined || item.sessionId === sessionId);
+  const selected = scoped.filter((item) => item.usageQuality?.status !== 'invalid');
   const aggregateSessions = new Set(selected
     .filter((item) => item.aggregation === 'session' && item.sessionId !== null)
     .map(sessionKey));
@@ -345,9 +423,13 @@ export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
   const turnCount = aggregateRecords.length
     ? aggregateCounts.every(counter) ? safeSum(...aggregateCounts, nonAggregateTurns.size) : null
     : turns.size;
-  const sum = (field) => records.reduce((total, item) => total + item[field], 0);
-  const weightedCostUnits = records.reduce((total, item) => total + computeWeightedUsage(item, pricing).costUnits, 0);
-  const freshInputTokens = records.reduce((total, item) => total + item.inputTokens - item.cachedInputTokens - item.cacheWriteInputTokens, 0);
+  const sum = (field) => checkedCounterSum(records.map((item) => item[field]));
+  const weightedCostUnits = records.reduce((total, item) => {
+    const next = total + computeWeightedUsage(item, pricing).costUnits;
+    if (!Number.isFinite(next)) throw new RangeError('provider weighted usage aggregate overflow');
+    return next;
+  }, 0);
+  const freshInputTokens = checkedCounterSum(records.map((item) => item.inputTokens - item.cachedInputTokens - item.cacheWriteInputTokens));
   const billing = reportedCostSummary(records);
   const totalCostUsd = billing.complete ? billing.totalCostUsd : null;
   const effectiveRate = totalCostUsd !== null && totalTokens(records) > 0
@@ -370,6 +452,14 @@ export function buildProviderUsageReport(state, { sessionId, pricing } = {}) {
     providerReportedCostUsd: billing.source === 'provider-reported' && billing.complete ? totalCostUsd : null,
     sessionBlendedEffectiveRateUsdPerMillionTokens: effectiveRate,
     costSource: cost.status,
+    usageQuality: {
+      completeRecords: records.filter((item) => item.usageQuality?.status === 'complete').length,
+      incompleteRecords: records.filter((item) => item.usageQuality?.status === 'incomplete').length,
+      legacyRecords: records.filter((item) => item.usageQuality === undefined).length,
+      unverifiedScopeRecords: records.filter((item) => item.usageQuality?.provenance === 'unverified').length,
+      excludedInvalidRecords: scoped.filter((item) => item.usageQuality?.status === 'invalid').length,
+    },
+    ...(apiRequests === undefined ? {} : { apiCost: aggregateApiRequestCosts(apiRequests, pricingProfile, { sessionId }) }),
   };
 }
 
@@ -416,5 +506,13 @@ function reportedCostSummary(records) {
 }
 
 function totalTokens(records) {
-  return records.reduce((total, item) => total + item.totalTokens, 0);
+  return checkedCounterSum(records.map((item) => item.totalTokens));
+}
+
+function checkedCounterSum(values) {
+  return values.reduce((sum, value) => {
+    const total = sum + value;
+    if (!Number.isSafeInteger(total) || total < 0) throw new RangeError('provider usage aggregate overflow');
+    return total;
+  }, 0);
 }
