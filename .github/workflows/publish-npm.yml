@@ -1,0 +1,65 @@
+name: Publish sandoichi to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandoichi-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out workflow tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow
+          persist-credentials: false
+
+      - name: Check out selected release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node.js and npm registry
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.22.0'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm with OIDC trusted-publishing support
+        run: npm install --global npm@11.21.0
+
+      - name: Validate stable tag and package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node workflow/.github/scripts/validate-npm-release.mjs "$RELEASE_TAG" source/packages/sando/package.json
+
+      - name: Test selected release
+        working-directory: source/packages/sando
+        run: npm test
+
+      - name: Check npm archive
+        working-directory: source/packages/sando
+        shell: bash
+        run: npm pack --dry-run --json | node "$GITHUB_WORKSPACE/workflow/.github/scripts/validate-npm-package.mjs"
+
+      - name: Publish with npm trusted publishing
+        working-directory: source/packages/sando
+        run: npm publish

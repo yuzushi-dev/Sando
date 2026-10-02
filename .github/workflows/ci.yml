@@ -82,15 +82,7 @@ jobs:
       - name: Check npm package contents
         working-directory: packages/sando
         shell: bash
-        run: |
-          sando_pack_json="$(npm pack --dry-run --json)"
-          SANDO_PACK_JSON="$sando_pack_json" node <<'NODE'
-          const packageFiles = JSON.parse(process.env.SANDO_PACK_JSON)[0].files.map(({ path }) => path);
-          const allowed = /^(LICENSE|README\.md|index\.mjs|package\.json|src\/[a-z0-9-]+\.mjs|pricing\/[a-z0-9.-]+\.json)$/;
-          const forbidden = /(?:canary|instruction-plan|f2[-_])/i;
-          const invalid = packageFiles.filter((file) => !allowed.test(file) || forbidden.test(file));
-          if (invalid.length > 0) {
-            console.error(`Unexpected npm package files: ${invalid.join(', ')}`);
-            process.exit(1);
-          }
-          NODE
+        run: npm pack --dry-run --json | node ../../.github/scripts/validate-npm-package.mjs
+
+      - name: Test npm release validators
+        run: node --test .github/scripts/validate-npm-release.test.mjs .github/scripts/validate-npm-package.test.mjs

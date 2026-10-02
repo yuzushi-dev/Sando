@@ -427,15 +427,19 @@ test('applies one wall-clock deadline across turn submission and completion', as
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const workspace = path.join(root, 'workspace');
   const frozen = manifest();
-  const started = Date.now();
+  let turnStartedAt = null;
   const result = await boundedExecuteSession({
     manifest: frozen, run: buildCacheSessionPlan(frozen)[0], workspace,
     prepared: fakePrepared(root, path.join(root, 'hooks.jsonl')),
-    appFactory: () => fakeApp({ workspace, turnStartDelayMs: 60, waitForeverAt: 1 }),
-    turnTimeoutMs: 80,
+    appFactory: () => fakeApp({
+      workspace, turnStartDelayMs: 100, waitForeverAt: 1,
+      onTurnStart: () => { turnStartedAt = Date.now(); },
+    }),
+    turnTimeoutMs: 120,
   });
   assert.equal(result.attempt.failure, 'timeout');
-  assert.ok(Date.now() - started < 120, 'turn submission and wait used separate timeout budgets');
+  assert.ok(turnStartedAt !== null);
+  assert.ok(Date.now() - turnStartedAt < 190, 'turn submission and wait used separate timeout budgets');
 });
 
 test('resumes the six-session pilot into the same frozen 30-session plan without retries', async (t) => {

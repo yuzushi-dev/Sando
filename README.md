@@ -203,6 +203,26 @@ there when necessary to redact a credential split by escape sequences.
 
 </details>
 
+## Publish the npm package
+
+The marketplace plugin is installed from Git tags; `sandoichi` is a separate npm package. Stable
+`vX.Y.Z` tags publish `packages/sando` through the `Publish sandoichi to npm` workflow after its
+tests and package check pass. The package version must match the tag.
+
+Before the first publish, configure npm Trusted Publishing for package `sandoichi` with GitHub
+owner `yuzushi-dev`, repository `Sando`, and workflow file `publish-npm.yml`. Under Allowed actions,
+enable `Allow npm publish`; new trusted publishers default to staged-only publishing. The workflow
+uses OIDC and needs no npm token. It tests the tagged package and enforces the npm archive allowlist
+before publishing. With npm 11.15 or later and account-level 2FA enabled, the equivalent CLI setup is:
+
+```sh
+npm trust github sandoichi --repo yuzushi-dev/Sando --file publish-npm.yml --allow-publish
+```
+
+Later stable tags publish automatically. To publish the existing `v0.7.1` tag,
+first run the workflow once on `main` (the publish job will be skipped), then trigger the tag with
+`gh workflow run publish-npm.yml --ref v0.7.1`. See [npm Trusted Publishing docs](https://docs.npmjs.com/trusted-publishers/).
+
 <details>
 <summary><b>Reference: result progressive disclosure and artifact recovery</b></summary>
 
