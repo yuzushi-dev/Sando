@@ -344,7 +344,8 @@ test('MCP artifact handles recover bounded redacted content', (t) => {
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: prepared.artifact.ref, startByte: 0, startLine: 1 }), /ambiguous/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: prepared.artifact.ref, maxBytes: 0 }), /maxBytes/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: '/tmp/.sando/sando/artifacts/file.txt' }), /invalid/i);
-  assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }), /artifact handle is unavailable/i);
+  fs.mkdirSync(path.join(cwd, '.sando', 'sando', 'artifacts'), { recursive: true, mode: 0o700 });
+  assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }, {}, cwd), /artifact handle is unavailable/i);
 });
 
 test('Codex MCP recovery reads artifacts materialized by the model output helper', (t) => {
