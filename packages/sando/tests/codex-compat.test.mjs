@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { codexIdentity } from '../../../scripts/codex-loopback-contract.mjs';
 import {
   CANDIDATE_VERSIONS,
   computeOutputReceiptEvidenceDigest,
@@ -19,6 +20,19 @@ const fixtureRoot = path.join(import.meta.dirname, 'codex-compat');
 const hookFixtures = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'pre-tool-use.synthetic.json'), 'utf8'));
 const shellFixtures = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'shell-cases.synthetic.json'), 'utf8'));
 const loopbackCapture = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'pre-tool-use.codex-0.159.2.loopback-capture.json'), 'utf8'));
+
+test('Codex identity records a standalone ELF as its native binary', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-codex-identity-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const binary = path.join(root, 'codex');
+  fs.writeFileSync(binary, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+
+  const identity = codexIdentity(binary, '0.160.0', true);
+
+  assert.match(identity.wrapperSha256, /^[a-f0-9]{64}$/u);
+  assert.equal(identity.launcherSha256, null);
+  assert.equal(identity.nativeBinarySha256, identity.wrapperSha256);
+});
 
 test('Codex compatibility fixtures are explicitly synthetic', () => {
   assert.equal(hookFixtures.provenance, 'synthetic');

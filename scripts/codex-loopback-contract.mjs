@@ -814,9 +814,21 @@ function resolvedIdentityFile(candidate) {
   }
 }
 
+function isElfBinary(file) {
+  let descriptor;
+  try { descriptor = fs.openSync(file, 'r'); } catch { return false; }
+  try {
+    const magic = Buffer.alloc(4);
+    return fs.readSync(descriptor, magic, 0, magic.length, 0) === magic.length
+      && magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 function launcherFromWrapper(wrapperPath) {
   const resolved = resolvedIdentityFile(wrapperPath);
-  if (!resolved) return null;
+  if (!resolved || isElfBinary(resolved)) return null;
   const source = fs.readFileSync(resolved, 'utf8');
   if (/^#!.*\bnode(?:\s|$)/.test(source.split('\n', 1)[0]) || /\.(?:c|m)?js$/.test(resolved)) return resolved;
   const matches = [...source.matchAll(/^\s*exec\s+(.+?)\s+"\$@"\s*$/gm)];
@@ -870,7 +882,9 @@ export function codexIdentity(codexPath, version, available, { launcherPath, nat
     ? launcherFromWrapper(codexPath)
     : resolvedIdentityFile(launcherPath);
   const native = nativeBinaryPath === undefined
-    ? (launcher ? findNativeBinary(launcher) : null)
+    ? (launcher
+      ? (isElfBinary(launcher) ? launcher : findNativeBinary(launcher))
+      : (resolvedIdentityFile(codexPath) && isElfBinary(resolvedIdentityFile(codexPath)) ? resolvedIdentityFile(codexPath) : null))
     : resolvedIdentityFile(nativeBinaryPath);
   return {
     name: 'codex',

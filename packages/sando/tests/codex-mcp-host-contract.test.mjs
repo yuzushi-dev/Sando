@@ -278,13 +278,12 @@ test('stock Codex reports fully gated direct MCP, fallback, Code Mode execute/wa
   assert.equal(report.profile, 'full-a1');
   assert.equal(report.reference.commitMatch, 'unknown');
   assert.match(report.client.wrapperSha256, /^[a-f0-9]{64}$/);
-  assert.match(report.client.launcherSha256, /^[a-f0-9]{64}$/);
   assert.match(report.client.nativeBinarySha256, /^[a-f0-9]{64}$/);
-  assert.equal(new Set([
-    report.client.wrapperSha256,
-    report.client.launcherSha256,
-    report.client.nativeBinarySha256,
-  ]).size, 3);
+  if (report.client.launcherSha256 === null) {
+    assert.equal(report.client.nativeBinarySha256, report.client.wrapperSha256);
+  } else {
+    assert.match(report.client.launcherSha256, /^[a-f0-9]{64}$/);
+  }
   assert.equal(report.authenticatedProvider, false);
   assert.equal(report.status, 'passed');
   assert.deepEqual(report.surfaces, {
