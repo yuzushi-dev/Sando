@@ -1,15 +1,20 @@
 {
   "name": "sando-local",
-  "interface": { "displayName": "Sando" },
+  "interface": {
+    "displayName": "Sando"
+  },
   "metadata": {
     "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
-    "version": "0.7.1"
+    "version": "0.8.0"
   },
   "plugins": [
     {
       "name": "sando",
       "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
-      "source": { "source": "local", "path": "./" },
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"

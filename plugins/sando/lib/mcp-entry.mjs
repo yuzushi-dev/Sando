@@ -1,21 +1,16 @@
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { ARTIFACT_VIEW_NOTICE } from './artifact-recovery.mjs';
 import { persistArtifact } from './artifacts.mjs';
 import { exposeMcpResult, rememberArtifact } from './artifact-store.mjs';
 import { callMcpToolAsync, codexSandboxKey, MCP_TOOLS, spawnCodexSandboxedProcess } from './mcp-tools.mjs';
+import { declareMcpEnvelopePolicy, extractMcpEnvelopePolicy, serializeMcpPassthroughResult, serializeMcpProtocolResponse, serializeMcpRpcError, serializeMcpToolError, serializeMcpToolResult } from './mcp-delivery.mjs';
 import { PLUGIN_VERSION } from './version.mjs';
 import { createSliceBridge, isSliceTool, SLICE_TOOLS, SliceRpcError } from './slice.mjs';
 
 function response(id, result) { return { jsonrpc: '2.0', id, result }; }
 function error(id, code, message, data) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
 export function requestKey(id) { return `${typeof id}:${JSON.stringify(id)}`; }
-
-function modelFacingText(exposed) {
-  const text = exposed.inline ?? exposed.content;
-  return exposed.disclosure?.scope === 'artifact-view' ? `${text}\n${ARTIFACT_VIEW_NOTICE}` : text;
-}
 
 function artifactCwd(name, args, meta) {
   if (name !== 'sando_exec') return args?.cwd;
@@ -24,15 +19,14 @@ function artifactCwd(name, args, meta) {
   try { return value.startsWith('file:') ? fileURLToPath(value) : value; } catch { return undefined; }
 }
 
-function publicResult(name, args, meta, result) {
+function persistedResult(name, args, meta, result) {
   if (name !== 'sando_exec' || !result.artifact) return result;
   rememberArtifact(result.artifact);
   const cwd = artifactCwd(name, args, meta);
   if (!cwd) throw new Error('artifact cwd is unavailable');
   const ref = persistArtifact(cwd, result.artifact);
   const inline = result.inline.replace(result.artifact.ref, ref);
-  const { content: _content, ...artifact } = result.artifact;
-  return { ...result, inline, artifact };
+  return { ...result, inline };
 }
 
 async function dispatch(message, active, bridge) {
@@ -46,26 +40,38 @@ async function dispatch(message, active, bridge) {
     protocolVersion: message.params?.protocolVersion || '2025-06-18', capabilities: { tools: { listChanged: false }, experimental: { 'codex/sandbox-state-meta': {} } }, serverInfo: { name: 'sando', version: PLUGIN_VERSION },
   });
   if (message.method === 'ping') return response(message.id, {});
-  const tools = [...MCP_TOOLS, ...SLICE_TOOLS()];
+  const tools = declareMcpEnvelopePolicy([...MCP_TOOLS, ...SLICE_TOOLS()]);
   if (message.method === 'tools/list') return response(message.id, { tools });
   if (message.method === 'tools/call') {
-    if (!tools.some((tool) => tool.name === message.params?.name)) return error(message.id, -32602, 'Unknown tool');
+    let delivery;
+    try {
+      delivery = extractMcpEnvelopePolicy(message.params?.arguments);
+    } catch (cause) {
+      return serializeMcpToolError({ id: message.id, message: cause instanceof Error ? cause.message : 'invalid tool input' });
+    }
+    if (!tools.some((tool) => tool.name === message.params?.name)) {
+      return serializeMcpRpcError({ id: message.id, code: -32602, message: 'Unknown tool', maxEnvelopeBytes: delivery.maxEnvelopeBytes });
+    }
     const controller = new AbortController();
     active.set(requestKey(message.id), controller);
+    const { maxEnvelopeBytes } = delivery;
     try {
       if (isSliceTool(message.params.name)) {
-        return response(message.id, await bridge.call(message.params.name, message.params.arguments, {
+        const result = await bridge.call(message.params.name, delivery.args, {
           meta: message.params?._meta, signal: controller.signal,
-        }));
+        });
+        return serializeMcpPassthroughResult({ id: message.id, result, maxEnvelopeBytes });
       }
-      const result = await callMcpToolAsync(message.params.name, message.params.arguments, process.env, message.params?._meta, controller.signal);
-      const exposed = result.artifact && message.params.name === 'sando_exec'
-        ? publicResult(message.params.name, message.params.arguments, message.params?._meta, result)
-        : exposeMcpResult(result);
-      return response(message.id, { content: [{ type: 'text', text: modelFacingText(exposed) }], structuredContent: exposed, isError: false });
+      const result = await callMcpToolAsync(message.params.name, delivery.args, process.env, message.params?._meta, controller.signal);
+      const prepared = result.artifact && message.params.name === 'sando_exec'
+        ? persistedResult(message.params.name, delivery.args, message.params?._meta, result)
+        : result;
+      return serializeMcpToolResult({ id: message.id, result: prepared, expose: exposeMcpResult, maxEnvelopeBytes });
     } catch (cause) {
-      if (cause instanceof SliceRpcError) return error(message.id, cause.code, cause.message, cause.data);
-      return response(message.id, { content: [{ type: 'text', text: cause instanceof Error ? cause.message : 'invalid tool input' }], isError: true });
+      if (cause instanceof SliceRpcError) return serializeMcpRpcError({
+        id: message.id, code: cause.code, message: cause.message, data: cause.data, maxEnvelopeBytes,
+      });
+      return serializeMcpToolError({ id: message.id, message: cause instanceof Error ? cause.message : 'invalid tool input', maxEnvelopeBytes });
     } finally { active.delete(requestKey(message.id)); }
   }
   return error(message.id, -32601, 'Method not found');
@@ -81,12 +87,16 @@ export function startMcpServer() {
       command: executable, args: [root, '--mcp'], cwd: root, meta,
     }),
   });
+  const writeOutput = (output) => {
+    if (!output) return;
+    process.stdout.write(Buffer.isBuffer(output) ? output : serializeMcpProtocolResponse({ response: output }));
+  };
   lines.on('line', (line) => {
     let message;
-    try { message = JSON.parse(line); } catch { process.stdout.write(`${JSON.stringify(error(null, -32700, 'Parse error'))}\n`); return; }
+    try { message = JSON.parse(line); } catch { writeOutput(error(null, -32700, 'Parse error')); return; }
     const task = dispatch(message, active, bridge).then((output) => {
-      if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
-    }).catch(() => process.stdout.write(`${JSON.stringify(error(message?.id, -32603, 'Internal error'))}\n`));
+      writeOutput(output);
+    }).catch(() => writeOutput(error(message?.id, -32603, 'Internal error')));
     pending.add(task);
     void task.finally(() => pending.delete(task));
   });

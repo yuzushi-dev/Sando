@@ -107,7 +107,7 @@ host (Claude PostToolUse hook | Codex shell routing)
   accounting launchers are likewise manual entrypoints. Sando changes no Claude or Codex global
   configuration, and telemetry is off until you choose.
 
-Release notes: [Sando 0.7.1](docs/changelogs/0.7.1.md). Development branch: `main`.
+Release notes: [Sando 0.8.0](docs/changelogs/0.8.0.md). Development branch: `main`.
 Telemetry is off by default — see the [full disclosure](TELEMETRY.md).
 
 API cost estimates require an explicit versioned profile and complete per-request

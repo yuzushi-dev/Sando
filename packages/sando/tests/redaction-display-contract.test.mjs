@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const ADAPTER = path.resolve(import.meta.dirname, '../../../adapters/codex/sando/cli.mjs');
+const MCP_SERVER = path.resolve(import.meta.dirname, '../../../adapters/codex/sando/mcp/server.mjs');
 const NOTICE = '[sando] display redacted; Sando did not sanitize source files';
 const VALUES = ['alpha-secret', 'synthetic-bearer-value', 'synthetic-api-value'];
 
@@ -105,4 +106,36 @@ test('Codex adapter keeps disclosure last for artifact-routed masked reads', (t)
   assert.match(displayed.stdout, /\[sando\] artifact \.sando\/sando\/artifacts\/[a-f0-9]+\.txt/);
   assert.match(displayed.stdout, new RegExp(`${NOTICE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n$`));
   assert.equal((displayed.stdout.match(/\[sando\] display redacted/g) ?? []).length, 1);
+});
+
+test('bounded MCP envelopes preserve display-redaction disclosure and recovery metadata', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-redaction-mcp-envelope-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'long.log'), [
+    `password=${VALUES[0]}`,
+    `Authorization: Bearer ${VALUES[1]}`,
+    'safe diagnostic line\n'.repeat(600),
+    `api_key=${VALUES[2]}`,
+  ].join('\n'));
+  const maxEnvelopeBytes = 3_200;
+  const request = {
+    jsonrpc: '2.0', id: 'redaction-envelope', method: 'tools/call', params: {
+      name: 'sando_read', arguments: {
+        path: 'long.log', cwd,
+        policy: { maxInlineBytes: 900, maxArtifactBytes: 32_768, maxEnvelopeBytes, redact: true },
+      },
+    },
+  };
+  const result = spawnSync(process.execPath, [MCP_SERVER], { input: Buffer.from(`${JSON.stringify(request)}\n`) });
+  assert.equal(result.status, 0, result.stderr.toString('utf8'));
+  assert.ok(result.stdout.length <= maxEnvelopeBytes, `${result.stdout.length} exceeds ${maxEnvelopeBytes}`);
+  const message = JSON.parse(result.stdout.toString('utf8'));
+  const exposed = message.result.structuredContent;
+  assert.equal(message.result.isError, false);
+  assert.equal(message.result.content[0].text, exposed.inline);
+  assert.doesNotMatch(result.stdout.toString('utf8'), new RegExp(VALUES.join('|')));
+  assert.match(exposed.inline, new RegExp(`${NOTICE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  assert.equal(exposed.disclosure.redaction.scope, 'display');
+  assert.equal(exposed.disclosure.redaction.sourceModifiedBySando, false);
+  assert.match(exposed.artifact.ref, /^sando:sha256:/);
 });

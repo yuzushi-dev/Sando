@@ -8,7 +8,7 @@ import { normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { recordCoverage } from './coverage.mjs';
 import { captureProcess, MAX_EXEC_CAPTURE_BYTES, textOrBinary } from './exec-capture.mjs';
 import { ARTIFACT_TOOL_NAME } from './result-disclosure.mjs';
-import { rememberArtifact, recoverStoredArtifact } from './artifact-store.mjs';
+import { rememberArtifact, recoverArtifact } from './artifact-store.mjs';
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PATTERN_LENGTH = 512;
@@ -476,13 +476,13 @@ async function execTool(args = {}, meta, signal, env = process.env) {
   } };
 }
 
-export function callMcpTool(name, args, env = process.env) {
+export function callMcpTool(name, args, env = process.env, workspaceCwd = process.cwd()) {
   let result;
   try {
     if (name === 'prepare_tool_output') result = prepare(args?.toolName, args?.output, args?.cwd, args?.policy);
     else if (name === 'sando_read') result = readTool(args);
     else if (name === 'sando_grep') result = grepTool(args);
-    else if (name === ARTIFACT_TOOL_NAME) result = recoverStoredArtifact(args);
+    else if (name === ARTIFACT_TOOL_NAME) result = recoverArtifact(args, { cwd: workspaceCwd });
     else if (name === 'sando_exec') {
       sandboxState(undefined);
       throw execError('sando_exec requires asynchronous MCP dispatch', 'async-dispatch-required');

@@ -1,11 +1,10 @@
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
+import { storeArtifactInWorkspace } from './artifact-store.mjs';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { DISPLAY_REDACTION_NOTICE, finalizeResultDelivery } from './result-disclosure.mjs';
-import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import { recordAdoption, scheduleAdoptionFlush } from './adoption.mjs';
 import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
@@ -15,13 +14,6 @@ import {
 import { PLUGIN_VERSION } from './version.mjs';
 
 function todayUtc() { return new Date().toISOString().slice(0, 10); }
-
-function artifactPresent(target) {
-  let stat;
-  try { stat = fs.lstatSync(target); } catch { return false; }
-  if (!stat.isFile() || stat.isSymbolicLink()) return false;
-  try { return fs.realpathSync(target) === target; } catch { return false; }
-}
 
 /** Only counts (never content, paths, or IDs). */
 function recordHookTelemetry({ host, env, policy, optimization }) {
@@ -85,34 +77,7 @@ function claudeProjectRoot(env) {
 }
 
 function artifactPath(cwd, artifact) {
-  const cwdRoot = fs.realpathSync(cwd);
-  const root = projectRoot ?? cwdRoot;
-  const stateRoot = path.join(root, '.sando');
-  const privateRoot = path.join(stateRoot, 'sando');
-  const directory = path.join(privateRoot, 'artifacts');
-  for (const target of [stateRoot, privateRoot, directory]) {
-    const stat = fs.lstatSync(target, { throwIfNoEntry: false });
-    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('artifact directory is unsafe');
-    if (!stat) fs.mkdirSync(target, { mode: 0o700 });
-  }
-  cleanupArtifacts(directory);
-  const name = `${artifact.sourceDigest.slice('sha256:'.length)}.txt`;
-  const destination = path.join(directory, name);
-  const temporary = path.join(directory, `.${name}.${process.pid}.${randomUUID()}`);
-  try {
-    fs.writeFileSync(temporary, artifact.content, { flag: 'wx', mode: 0o600 });
-    try { fs.linkSync(temporary, destination); }
-    catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      reuseArtifact(destination, artifact.content);
-    }
-  } finally {
-    fs.rmSync(temporary, { force: true });
-  }
-  cleanupArtifacts(directory, { preserveName: name });
-  if (!artifactPresent(destination)) throw new Error('artifact storage limit removed the new artifact');
-  // Relative to the cwd when the store is there, absolute otherwise (the cwd moved off the root).
-  return root === cwdRoot ? path.posix.join('.sando/sando', 'artifacts', name) : destination;
+  return storeArtifactInWorkspace({ cwd, artifact, workspaceRoot: projectRoot ?? cwd });
 }
 
 // Sando's own MCP tools (artifact recovery, prepare_tool_output, Slice) are never bounded:

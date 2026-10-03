@@ -1,11 +1,15 @@
 {
   "name": "sando-local",
-  "owner": { "name": "Sando contributors" },
-  "metadata": { "description": "Sando local Claude Code plugin with provider accounting" },
+  "owner": {
+    "name": "Sando contributors"
+  },
+  "metadata": {
+    "description": "Sando local Claude Code plugin with provider accounting"
+  },
   "plugins": [
     {
       "name": "sando",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "source": "./",
       "description": "Bound repeated tool-output context in Claude Code with deterministic hooks and provider accounting."
     }

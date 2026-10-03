@@ -10,6 +10,7 @@ import test from 'node:test';
 import { materializeArtifactResult, persistArtifact } from '../lib/artifacts.mjs';
 import { normalizePolicy, optimizeToolOutput } from '../lib/core.mjs';
 import { callMcpTool } from '../lib/mcp-tools.mjs';
+import { transformModelOutputRequest } from '../lib/output-transform-cli.mjs';
 
 function artifact(content) {
   const digest = createHash('sha256').update(content).digest('hex');
@@ -224,7 +225,49 @@ test('MCP artifact recovery keeps the session handle contract', (t) => {
   assert.throws(() => callMcpTool('sando_artifact_get', { ref, startByte: 0, startLine: 1 }), /ambiguous/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref, maxBytes: 0 }), /maxBytes/i);
   assert.throws(() => callMcpTool('sando_artifact_get', { ref: '/tmp/.sando/sando/artifacts/file.txt' }), /invalid/i);
-  assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }), /unavailable in this MCP session/i);
+  assert.throws(() => callMcpTool('sando_artifact_get', { ref: 'sando:sha256:0123456789abcdef' }), /artifact handle is unavailable/i);
+});
+
+test('plugin MCP recovery reads artifacts materialized by the model output helper', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-output-recovery-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const source = Array.from({ length: 700 }, (_, index) => `output recovery fixture line ${index}`).join('\n');
+  const response = transformModelOutputRequest({
+    schema: 'sando-model-output-transform/v1',
+    requestId: '00000000-0000-4000-8000-000000000001',
+    deliveryId: '00000000-0000-4000-8000-000000000002',
+    surface: 'direct',
+    recoveryDelivery: false,
+    cwd,
+    tool: { name: 'Bash', callId: 'output-recovery-call' },
+    budget: { maxResponseBytes: 1_048_576 },
+    segments: [{ index: 0, text: source }],
+  }, { env: { SANDO_POLICY: '' } });
+
+  assert.equal(response.edits.length, 1);
+  const ref = response.edits[0].text.match(/sando:sha256:[a-f0-9]{16,64}/)?.[0];
+  assert.ok(ref, response.edits[0].text);
+  const recovered = callMcpTool('sando_artifact_get', { ref }, {}, cwd);
+  assert.equal(recovered.schema, 'sando-artifact-recovery/v1');
+  assert.equal(recovered.content, source);
+});
+
+test('standalone plugin artifact recovery discloses uncertainty in text and JSON', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-plugin-artifact-view-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const value = artifact('historical artifact');
+  persistArtifact(cwd, value);
+  const launcher = path.resolve(import.meta.dirname, '..', 'bin', 'sando');
+
+  const textResult = spawnSync(launcher, ['artifact', 'get', '--root', cwd, '--ref', value.ref], { encoding: 'utf8' });
+  assert.equal(textResult.status, 0, textResult.stderr);
+  assert.match(textResult.stdout, /\[sando\] artifact view; source-file sanitization is not certified\n$/);
+
+  const jsonResult = spawnSync(launcher, ['artifact', 'get', '--root', cwd, '--ref', value.ref, '--json'], { encoding: 'utf8' });
+  assert.equal(jsonResult.status, 0, jsonResult.stderr);
+  const report = JSON.parse(jsonResult.stdout);
+  assert.equal(report.content, value.content);
+  assert.deepEqual(report.disclosure, { scope: 'artifact-view', sourceSanitization: 'not-certified' });
 });
 
 test('standalone plugin artifact recovery discloses uncertainty in text and JSON', (t) => {

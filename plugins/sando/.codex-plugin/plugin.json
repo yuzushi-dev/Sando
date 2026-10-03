@@ -1,6 +1,6 @@
 {
   "name": "sando",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Bound repeated tool-output context in Codex with deterministic local routing and provider accounting.",
   "homepage": "https://github.com/yuzushi-dev/Sando",
   "repository": "https://github.com/yuzushi-dev/Sando",
@@ -27,7 +27,9 @@
     "termsOfServiceURL": "https://github.com/yuzushi-dev/Sando/blob/main/TERMS.md",
     "composerIcon": "./assets/sando-mark.png",
     "logo": "./assets/sando-mark.png",
-    "screenshots": ["./assets/screenshot-terminal.png"],
+    "screenshots": [
+      "./assets/screenshot-terminal.png"
+    ],
     "capabilities": [
       "Bounded read MCP tools and opt-in Slice symbol editing",
       "Sandboxed non-interactive terminal MCP tool",

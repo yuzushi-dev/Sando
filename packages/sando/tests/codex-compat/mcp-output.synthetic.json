@@ -1,0 +1,28 @@
+{
+  "provenance": "synthetic",
+  "tool": "fixture_report",
+  "rawMarker": "SANDO_RAW_SENTINEL_001",
+  "replacementMarker": "SANDO_BOUNDED_SENTINEL_001",
+  "fallbackMarker": "Sando fallback: Codex cannot transparently rewrite tool output",
+  "promiseMarkers": {
+    "resolved": "SANDO_PROMISE_RESOLVED_001",
+    "rejected": "SANDO_PROMISE_REJECTED_001",
+    "withheld": "SANDO_PROMISE_WITHHELD_001"
+  },
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "SANDO_RAW_SENTINEL_001 repeated fixture text"
+      }
+    ],
+    "structuredContent": {
+      "count": 3,
+      "label": "SANDO_RAW_SENTINEL_001 typed fixture"
+    },
+    "isError": false,
+    "_meta": {
+      "test": "SANDO_PRIVATE_TOP_META_001"
+    }
+  }
+}

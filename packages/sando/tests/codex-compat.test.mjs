@@ -6,10 +6,12 @@ import test from 'node:test';
 
 import {
   CANDIDATE_VERSIONS,
+  computeOutputReceiptEvidenceDigest,
   createIsolatedEnvironment,
   runCompatibilityCheck,
   runHookFixture,
   runShellFixture,
+  validateOutputContractReceipt,
 } from '../../../scripts/verify-codex-compat.mjs';
 import { prepareSubscriptionEnvironment } from '../../../scripts/codex-subscription-contract.mjs';
 
@@ -84,8 +86,9 @@ test('native and routed shell fixtures preserve declared semantics', (t) => {
 test('compatibility report never turns a binary version probe into live proof', () => {
   const report = runCompatibilityCheck({ probe: { command: '/fixture/codex', version: '0.159.2' } });
   assert.equal(report.offline.status, 'passed');
-  assert.deepEqual(CANDIDATE_VERSIONS, ['0.159.2', '0.153.4']);
+  assert.deepEqual(CANDIDATE_VERSIONS, ['0.160.0', '0.159.2', '0.153.4']);
   assert.deepEqual(report.candidates.map(({ version, status }) => [version, status]), [
+    ['0.160.0', 'not-run'],
     ['0.159.2', 'not-run'],
     ['0.153.4', 'not-run'],
   ]);
@@ -94,6 +97,174 @@ test('compatibility report never turns a binary version probe into live proof', 
   assert.ok(report.codexBundle.fileCount > 3);
   assert.match(report.codexBundle.sha256, /^[a-f0-9]{64}$/);
   assert.match(report.candidates[0].reason, /authenticated live proof/i);
+  assert.equal(report.mcpHostContract.status, 'not-run');
+  assert.deepEqual(report.mcpHostContract.surfaces, {
+    directMcp: 'not-run', codeModeExecute: 'not-run', codeModeWait: 'not-run', serialization: 'not-run',
+  });
+});
+
+test('compatibility report accepts only validated stock MCP host evidence', () => {
+  const mcpHostEvidence = {
+    schema: 'sando-openai-output-contract/v1',
+    verifierVersion: '1.0.0',
+    generatedAt: '2026-10-02T00:00:00.000Z',
+    profile: 'not-requested',
+    status: 'not-run',
+    reason: 'not-requested',
+    provenance: {
+      client: 'real-installed-codex', provider: 'synthetic-http-sse-loopback', mcpServer: 'synthetic-stdio-fixture',
+      externalNetwork: false, authenticatedProvider: false,
+    },
+    reference: {
+      tag: 'rust-v0.160.0', commit: 'a956835d020762cb2b570053af06f643a11c0ecc',
+      commitMatch: 'unknown', testedFeatures: [],
+    },
+    client: { name: 'codex', version: null, available: false, wrapperSha256: null, launcherSha256: null, nativeBinarySha256: null },
+    sando: { head: 'a'.repeat(40), worktreeManifestHash: 'b'.repeat(64), bundleHash: 'c'.repeat(64) },
+    authenticatedProvider: false,
+    surfaces: { directMcp: 'not-run', codeModeExecute: 'not-run', codeModeWait: 'not-run', serialization: 'not-run' },
+    scenarios: {},
+    summary: { passed: 0, failed: 0, notRun: 0 },
+  };
+  const report = runCompatibilityCheck({
+    probe: { command: '/fixture/codex', version: '0.160.0' },
+    mcpHostEvidence,
+  });
+  assert.deepEqual(report.mcpHostContract, mcpHostEvidence);
+  assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'direct-mcp-output-replacement').status, 'not-run');
+  assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'code-mode-execute-value').status, 'not-run');
+  assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'code-mode-wait-value').status, 'not-run');
+  assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'mcp-envelope-serialization').status, 'not-run');
+});
+
+function validOutputReceipt() {
+  const receipt = {
+    schema: 'sando-openai-output-contract/v1',
+    verifierVersion: '1.0.0',
+    status: 'passed',
+    client: {
+      name: 'codex', version: '0.160.0', available: true,
+      wrapperSha256: 'a'.repeat(64), launcherSha256: '2'.repeat(64), nativeBinarySha256: null,
+    },
+    provenance: {
+      client: 'real-installed-codex', provider: 'synthetic-http-sse-loopback', mcpServer: 'synthetic-stdio-fixture',
+      externalNetwork: false, authenticatedProvider: false,
+    },
+    reference: {
+      tag: 'rust-v0.160.0', commit: 'a956835d020762cb2b570053af06f643a11c0ecc',
+      commitMatch: 'unknown', testedFeatures: ['direct-mcp-output'],
+    },
+    sando: { head: 'b'.repeat(40), worktreeManifestHash: 'c'.repeat(64), bundleHash: 'd'.repeat(64) },
+    scenario: { id: 'direct-no-hook', surface: 'direct', stage: 'post-tool-use', hook: 'none', resultType: 'mcp-tool-result' },
+    observations: {
+      process: { exitStatus: 0, signal: null, termination: 'completed' },
+      executionCount: 1,
+      typedValueVisible: true,
+      isErrorVisible: false,
+      rawMarkerVisible: true,
+      replacementMarkerVisible: false,
+      fallbackMarkerVisible: false,
+      privateTopMetaVisible: true,
+      executeWait: 'not-applicable',
+      blockBehavior: 'not-applicable',
+      hookObserved: false,
+      hookEffect: 'absent',
+      promiseOutcome: 'not-applicable',
+      approval: { requested: false, decision: 'not-applicable' },
+      cancel: { requested: false, observed: false },
+      expectedSatisfied: true,
+    },
+    delivery: {
+      actualBytes: 120,
+      resultUtf8Bytes: 144,
+      sha256: 'e'.repeat(64),
+      controlledField: { classification: 'raw', startByte: 20, endByte: 80, byteLength: 60, sha256: 'f'.repeat(64) },
+      controlledFieldDeltaBytes: 0,
+      evidenceDigest: '0'.repeat(64),
+    },
+    usage: { provider: null, localEstimates: { requestCount: 2, requestBytes: 240 } },
+    recovery: { status: 'not-needed', attempted: false, method: null, artifactRef: null, recoveredBytes: null, errorClass: null },
+  };
+  receipt.delivery.evidenceDigest = computeOutputReceiptEvidenceDigest(receipt);
+  return receipt;
+}
+
+test('output receipt schema rejects missing evidence, contradictions, raw leakage, and ambiguous promise outcomes', () => {
+  const valid = validOutputReceipt();
+  assert.doesNotThrow(() => validateOutputContractReceipt(valid));
+
+  const missing = structuredClone(valid);
+  delete missing.delivery.controlledField;
+  assert.throws(() => validateOutputContractReceipt(missing), /controlledField/);
+
+  const contradictory = structuredClone(valid);
+  contradictory.status = 'failed';
+  assert.throws(() => validateOutputContractReceipt(contradictory), /expectedSatisfied/);
+
+  const leaking = structuredClone(valid);
+  leaking.rawProviderRequest = 'SANDO_WHOLE_REPORT_LEAK_SENTINEL';
+  assert.throws(() => validateOutputContractReceipt(leaking), /unexpected field/);
+
+  const ambiguous = structuredClone(valid);
+  ambiguous.observations.promiseOutcome = 'rejected-or-withheld';
+  assert.throws(() => validateOutputContractReceipt(ambiguous), /promiseOutcome/);
+
+  const unavailable = structuredClone(valid);
+  unavailable.client.available = false;
+  assert.throws(() => validateOutputContractReceipt(unavailable), /unavailable/);
+
+  const nonzero = structuredClone(valid);
+  nonzero.observations.process.exitStatus = 7;
+  nonzero.observations.process.termination = 'nonzero-exit';
+  nonzero.delivery.evidenceDigest = computeOutputReceiptEvidenceDigest(nonzero);
+  assert.throws(() => validateOutputContractReceipt(nonzero), /exitStatus|process/);
+
+  const wrongObservation = structuredClone(valid);
+  wrongObservation.observations.rawMarkerVisible = false;
+  wrongObservation.delivery.evidenceDigest = computeOutputReceiptEvidenceDigest(wrongObservation);
+  assert.throws(() => validateOutputContractReceipt(wrongObservation), /scenario contract/);
+});
+
+test('whole compatibility report projection excludes raw request, hook, prompt, output, stderr, and error sentinels', () => {
+  const sentinel = 'SANDO_WHOLE_REPORT_LEAK_SENTINEL';
+  const report = runCompatibilityCheck({
+    probe: null,
+    loopbackEvidence: {
+      status: 'failed',
+      capture: { rawHookPayload: sentinel },
+      prompt: sentinel,
+      diagnostics: { stderr: sentinel, errorText: sentinel },
+    },
+    mcpHostEvidence: {
+      schema: 'sando-openai-output-contract/v1',
+      verifierVersion: '1.0.0',
+      generatedAt: '2026-10-02T00:00:00.000Z',
+      profile: 'not-requested',
+      status: 'not-run',
+      reason: 'not-requested',
+      provenance: {
+        client: 'real-installed-codex', provider: 'synthetic-http-sse-loopback', mcpServer: 'synthetic-stdio-fixture',
+        externalNetwork: false, authenticatedProvider: false,
+      },
+      reference: {
+        tag: 'rust-v0.160.0', commit: 'a956835d020762cb2b570053af06f643a11c0ecc',
+        commitMatch: 'unknown', testedFeatures: [],
+      },
+      client: { name: 'codex', version: null, available: false, wrapperSha256: null, launcherSha256: null, nativeBinarySha256: null },
+      sando: { head: 'a'.repeat(40), worktreeManifestHash: 'b'.repeat(64), bundleHash: 'c'.repeat(64) },
+      authenticatedProvider: false,
+      surfaces: { directMcp: 'not-run', codeModeExecute: 'not-run', codeModeWait: 'not-run', serialization: 'not-run' },
+      scenarios: {},
+      summary: { passed: 0, failed: 0, notRun: 0 },
+      rawProviderRequest: sentinel,
+      rawHookPayload: sentinel,
+      prompt: sentinel,
+      output: sentinel,
+      stderr: sentinel,
+      errorText: sentinel,
+    },
+  });
+  assert.equal(JSON.stringify(report).includes(sentinel), false);
 });
 
 test('loopback client evidence remains distinct from authenticated provider compatibility', () => {
@@ -108,9 +279,9 @@ test('loopback client evidence remains distinct from authenticated provider comp
     loopbackEvidence,
   });
   assert.deepEqual(report.loopbackClient, loopbackEvidence);
-  assert.equal(report.candidates[0].status, 'not-run');
-  assert.equal(report.candidates[0].authenticatedProvider, 'not-run');
-  assert.equal(report.candidates[0].syntheticLoopback, 'passed');
+  assert.equal(report.candidates[1].status, 'not-run');
+  assert.equal(report.candidates[1].authenticatedProvider, 'not-run');
+  assert.equal(report.candidates[1].syntheticLoopback, 'passed');
   assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'startup').status, 'passed');
   assert.equal(report.clientBoundary.find(({ scenario }) => scenario === 'approval-denial').status, 'not-run');
 });
