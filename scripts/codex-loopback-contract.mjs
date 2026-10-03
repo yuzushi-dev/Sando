@@ -369,7 +369,7 @@ export function resolveExecutable(value) {
 
 function isolatedEnvironment(root, codexPath) {
   const env = {
-    PATH: `${path.dirname(codexPath)}:/usr/bin:/bin`,
+    PATH: `${path.dirname(codexPath)}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: path.join(root, 'home'),
     CODEX_HOME: path.join(root, 'codex-home'),
     XDG_CONFIG_HOME: path.join(root, 'xdg-config'),

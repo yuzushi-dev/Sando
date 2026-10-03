@@ -285,7 +285,17 @@ test('stock Codex reports fully gated direct MCP, fallback, Code Mode execute/wa
     assert.match(report.client.launcherSha256, /^[a-f0-9]{64}$/);
   }
   assert.equal(report.authenticatedProvider, false);
-  assert.equal(report.status, 'passed');
+  assert.equal(report.status, 'passed', JSON.stringify({
+    reason: report.reason,
+    surfaces: report.surfaces,
+    scenarios: Object.fromEntries(Object.entries(report.scenarios).map(([key, scenario]) => [key, {
+      id: scenario.scenario.id,
+      status: scenario.status,
+      reason: scenario.reason,
+      observations: scenario.observations,
+    }])),
+    summary: report.summary,
+  }, null, 2));
   assert.deepEqual(report.surfaces, {
     directMcp: 'passed',
     codeModeExecute: 'passed',
