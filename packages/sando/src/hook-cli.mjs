@@ -7,7 +7,7 @@ import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } fr
 import { DISPLAY_REDACTION_NOTICE, finalizeResultDelivery } from './result-disclosure.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import { recordAdoption, scheduleAdoptionFlush } from './adoption.mjs';
-import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
+import { appendMetricsRecord, defaultMetricsPath } from './metrics.mjs';
 import {
   closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordActiveDay, recordFailure,
 } from './telemetry.mjs';
@@ -99,23 +99,26 @@ function boundMcpContent({ event, input, policy, env }) {
   if (!Array.isArray(response)) return undefined;
   const redactionProfile = policy.redact ? loadProjectRedactionProfile(event.cwd).profile : undefined;
   const isText = (block) => block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string';
+  const textBlocks = response.filter(isText);
   const optimizeText = (original) => optimizeToolOutput({
     toolName: event.toolName, toolInput: event.toolInput, output: original, cwd: event.cwd,
     policy, redactionProfile, recoveryStyle: 'mcp',
   });
   let changed = false;
-  const deliver = (original, optimization) => {
+  const deliver = (original, optimization, blockIndex) => {
     const text = materialize(optimization, event.cwd, policy.maxInlineBytes).inline;
     if (text === original) return original;
     changed = true;
     const blockEvent = { ...event, output: original };
+    if (textBlocks.length > 1 && blockIndex !== undefined && event.eventId) {
+      blockEvent.eventId = `sando-mcp-block:${event.eventId}:${blockIndex}`;
+    }
     const delivered = accountDeliveredValue(optimization, text);
     const receipt = createReceipt({ host: 'claude', event: blockEvent, optimization: delivered, replacement: text });
-    try { recordMetrics({ storagePath: defaultMetricsPath(env), host: 'claude', event: blockEvent, optimization: delivered, receipt }); } catch {}
+    try { appendMetricsRecord({ storagePath: defaultMetricsPath(env), host: 'claude', event: blockEvent, optimization: delivered, receipt }); } catch {}
     recordHookTelemetry({ host: 'claude', env, policy, optimization: delivered });
     return text;
   };
-  const textBlocks = response.filter(isText);
   const bounded = textBlocks.map((block) => optimizeText(block.text));
   const boundedBytes = bounded.reduce((sum, optimization) => sum + Buffer.byteLength(optimization.inline), 0);
   if (textBlocks.length > 1 && boundedBytes > MCP_AGGREGATE_BYTES) {
@@ -133,8 +136,9 @@ function boundMcpContent({ event, input, policy, env }) {
   const blocks = response.map((block) => {
     if (!isText(block)) return block;
     const optimization = bounded[index];
+    const blockIndex = index;
     index += 1;
-    return { ...block, text: deliver(block.text, optimization) };
+    return { ...block, text: deliver(block.text, optimization, blockIndex) };
   });
   return changed ? blocks : undefined;
 }
@@ -246,7 +250,7 @@ export function runHookCli({ host, env = process.env } = {}) {
         replacement: fallback ?? shaped ?? (claudeApply ? event.output : undefined),
       });
       try {
-        recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization: deliveredOptimization, receipt });
+        appendMetricsRecord({ storagePath: defaultMetricsPath(env), host, event, optimization: deliveredOptimization, receipt });
       } catch {}
       recordHookTelemetry({ host, env, policy, optimization: deliveredOptimization });
       try { recordAdoption({ env, host }); scheduleAdoptionFlush({ env }); } catch { /* adoption must never affect hook output */ }

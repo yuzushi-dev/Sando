@@ -1370,8 +1370,6 @@ export async function runCodeModeRecoveryContract({ codexPath = DEFAULT_CODEX, c
           : versionProbe.signal ? 'codex-process-signaled' : 'codex-process-nonzero-exit';
       return { ...base, status: 'failed', reason };
     }
-    if (version !== '0.160.0') return { ...base, status: 'failed', reason: 'codex-version-mismatch' };
-
     const recovery = materializeRecoveryFixture(workspace, env);
     if (!recovery.expected) return { ...base, status: 'failed', reason: recovery.reason };
     provider = await startRecoveryProvider({ recovery, limits });

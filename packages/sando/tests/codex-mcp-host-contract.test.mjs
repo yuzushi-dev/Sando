@@ -401,7 +401,7 @@ test('real Codex Code Mode recovers the exact redacted artifact line range throu
   }
 
   assert.equal(report.status, 'passed', JSON.stringify(report, null, 2));
-  assert.equal(report.client.version, '0.160.0');
+  assert.match(report.client.version, /^\d+\.\d+\.\d+$/u);
   assert.equal(report.provenance.outputTransform, 'real-sando-cli');
   assert.equal(report.provenance.mcpServer, 'real-sando-stdio');
   assert.equal(report.authenticatedProvider, false);

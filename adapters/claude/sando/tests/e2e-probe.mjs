@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createReceipt, normalizeEvent, optimizeToolOutput } from '../lib/core.mjs';
+import { readMetrics } from '../lib/metrics.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const fixturePath = process.argv[2] || path.join(root, 'tests/fixtures/post-tool-use-bash.json');
@@ -58,7 +59,7 @@ try {
   } };
   const receipt = createReceipt({ host: 'claude', event, optimization: measuredOptimization, replacement });
   assert.equal(receipt.inlineDigest, digest(stableJson(replacement)));
-  const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+  const metrics = readMetrics(metricsPath);
   assert.equal(metrics.records[0].receiptDigest, receipt.digest);
 
   process.stdout.write(`${JSON.stringify({

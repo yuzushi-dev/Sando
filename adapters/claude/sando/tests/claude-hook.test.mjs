@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import { createReceipt, normalizeEvent, optimizeToolOutput } from '../lib/core.mjs';
+import { readMetrics } from '../lib/metrics.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const hook = path.join(root, 'hooks/post-tool-use.mjs');
@@ -35,7 +36,7 @@ function runHook(input, cwd, policy, extraEnv = {}) {
     env,
   });
   assert.equal(result.status, 0, result.stderr);
-  return { output: JSON.parse(result.stdout), metrics: JSON.parse(fs.readFileSync(metricsPath, 'utf8')) };
+  return { output: JSON.parse(result.stdout), metrics: readMetrics(metricsPath) };
 }
 
 test('Claude defaults to apply when no mode is configured', (t) => {

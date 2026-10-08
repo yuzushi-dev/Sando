@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createReceipt, normalizeEvent, normalizePolicy, optimizeToolOutput } from './core.mjs';
 import { DISPLAY_REDACTION_NOTICE } from './result-disclosure.mjs';
 import { cleanupArtifacts, reuseArtifact } from './artifact-lifecycle.mjs';
-import { defaultMetricsPath, recordMetrics } from './metrics.mjs';
+import { appendMetricsRecord, defaultMetricsPath } from './metrics.mjs';
 import { loadProjectRedactionProfile } from './redaction-config.mjs';
 import {
   closeFinishedDays, defaultTelemetryConfigPath, defaultTelemetryStatePaths, incrementCounter, isDoNotTrack, readTelemetryConfig, recordActiveDay, recordFailure,
@@ -115,7 +115,7 @@ export function runHookCli({ host, env = process.env } = {}) {
       const optimization = optimizeToolOutput({ toolName: event.toolName, toolInput: event.toolInput, output: event.output, cwd: event.cwd, policy, redactionProfile });
       failureStage = 'output';
       const receipt = createReceipt({ host, event, optimization });
-      try { recordMetrics({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
+      try { appendMetricsRecord({ storagePath: defaultMetricsPath(env), host, event, optimization, receipt }); } catch {}
       recordHookTelemetry({ host, env, policy, optimization });
       if (host === 'codex' && policy.mode === 'apply' && env.SANDO_CODEX_FALLBACK === 'feedback') {
         failureStage = 'artifact';

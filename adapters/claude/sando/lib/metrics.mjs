@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 const SCHEMA = 'sando-metrics/v1';
+const JOURNAL_SCHEMA = 'sando-metrics-journal/v1';
 const REPORT_SCHEMA = 'sando-report/v1';
 const VERSION = 1;
+const JOURNAL_HEADER_MAX_BYTES = 4096;
 const LOCK_WAIT_MS = 10;
 const LOCK_ATTEMPTS = 250;
 const STALE_LOCK_MS = 30_000;
@@ -111,11 +113,184 @@ function validateState(value, requestedTimezone) {
   return value;
 }
 
+function readSnapshotTimezone(filePath, { allowFullRead = false } = {}) {
+  assertRegularFile(filePath);
+  const handle = fs.openSync(filePath, 'r');
+  let prefix;
+  try {
+    const buffer = Buffer.alloc(JOURNAL_HEADER_MAX_BYTES);
+    const bytesRead = fs.readSync(handle, buffer, 0, buffer.length, 0);
+    prefix = buffer.toString('utf8', 0, bytesRead);
+  } finally {
+    fs.closeSync(handle);
+  }
+  const header = /^\s*\{\s*"schema"\s*:\s*("(?:\\.|[^"\\])*")\s*,\s*"version"\s*:\s*(\d+)\s*,\s*"timezone"\s*:\s*("(?:\\.|[^"\\])*")\s*,\s*"records"\s*:\s*\[/.exec(prefix);
+  if (header) {
+    try {
+      if (JSON.parse(header[1]) === SCHEMA && Number(header[2]) === VERSION) {
+        return validateTimezone(JSON.parse(header[3]));
+      }
+    } catch { /* fall through to the full-state validation below */ }
+  }
+  if (!allowFullRead) return undefined;
+  try {
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (state?.schema !== SCHEMA || state.version !== VERSION || !Array.isArray(state.records)) {
+      throw new Error('metrics state is invalid');
+    }
+    return validateTimezone(state.timezone);
+  } catch {
+    throw new Error('metrics state is invalid');
+  }
+}
+
+function journalPathFor(filePath) {
+  return `${filePath}.journal`;
+}
+
+function parseJournalHeader(line) {
+  try {
+    const header = JSON.parse(line);
+    if (!header || header.schema !== JOURNAL_SCHEMA || header.version !== VERSION) throw new Error();
+    validateTimezone(header.timezone);
+    return header;
+  } catch {
+    throw new Error('metrics journal is invalid');
+  }
+}
+
+function readJournalHeader(filePath) {
+  assertRegularFile(filePath);
+  const handle = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(JOURNAL_HEADER_MAX_BYTES);
+    const bytesRead = fs.readSync(handle, buffer, 0, buffer.length, 0);
+    const newline = buffer.subarray(0, bytesRead).indexOf(0x0a);
+    if (newline < 0) {
+      const error = new Error(bytesRead < JOURNAL_HEADER_MAX_BYTES ? 'metrics journal header is incomplete' : 'metrics journal is invalid');
+      error.code = bytesRead < JOURNAL_HEADER_MAX_BYTES ? 'SANDO_METRICS_JOURNAL_HEADER_INCOMPLETE' : 'SANDO_METRICS_JOURNAL_INVALID';
+      throw error;
+    }
+    const header = parseJournalHeader(buffer.toString('utf8', 0, newline));
+    return { header, headerBytes: newline + 1 };
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function readJournal(filePath) {
+  assertRegularFile(filePath);
+  const contents = fs.readFileSync(filePath, 'utf8');
+  const headerEnd = contents.indexOf('\n');
+  if (headerEnd < 0) throw new Error('metrics journal is invalid');
+  const header = parseJournalHeader(contents.slice(0, headerEnd));
+  const payload = contents.slice(headerEnd + 1);
+  if (payload.startsWith('\n')) throw new Error('metrics journal is invalid');
+  const lastNewline = payload.lastIndexOf('\n');
+  const complete = lastNewline < 0 ? '' : payload.slice(0, lastNewline);
+  const records = [];
+  if (complete) {
+    for (const line of complete.split('\n')) {
+      if (!line) throw new Error('metrics journal is invalid');
+      try {
+        const record = JSON.parse(line);
+        validateRecord(record);
+        records.push(record);
+      } catch {
+        throw new Error('metrics journal is invalid');
+      }
+    }
+  }
+  return { header, records };
+}
+
+function sameRecord(left, right) {
+  const canonical = (record) => JSON.stringify(Object.keys(record).filter((key) => key !== 'at').sort().map((key) => [key, record[key]]));
+  return canonical(left) === canonical(right);
+}
+
+function mergeJournalRecords(state, records) {
+  const byEventKey = new Map(state.records.map((record) => [record.eventKey, record]));
+  const receiptKeys = new Set(state.records.map((record) => `${record.host}\0${record.receiptDigest}`));
+  for (const record of records) {
+    const receiptKey = `${record.host}\0${record.receiptDigest}`;
+    if (!record.eventKey.startsWith('event:') && receiptKeys.has(receiptKey)) continue;
+    const existing = byEventKey.get(record.eventKey);
+    if (existing) {
+      if (!sameRecord(existing, record)) throw new Error('metrics journal contains a conflicting event');
+      continue;
+    }
+    state.records.push(record);
+    byEventKey.set(record.eventKey, record);
+    receiptKeys.add(receiptKey);
+  }
+  return state;
+}
+
+function repairJournalTail(filePath, headerBytes) {
+  const handle = fs.openSync(filePath, 'r+');
+  try {
+    const size = fs.fstatSync(handle).size;
+    if (size <= headerBytes) return;
+    const lastByte = Buffer.alloc(1);
+    fs.readSync(handle, lastByte, 0, 1, size - 1);
+    if (lastByte[0] === 0x0a) return;
+    const buffer = Buffer.alloc(4096);
+    let end = size;
+    let truncateAt = headerBytes;
+    while (end > headerBytes) {
+      const start = Math.max(headerBytes, end - buffer.length);
+      const bytesRead = fs.readSync(handle, buffer, 0, end - start, start);
+      const newline = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
+      if (newline >= 0) {
+        truncateAt = start + newline + 1;
+        break;
+      }
+      end = start;
+    }
+    fs.ftruncateSync(handle, truncateAt);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function writeJournalHeader(filePath, timezone) {
+  const handle = fs.openSync(filePath, 'wx', 0o600);
+  try {
+    fs.writeFileSync(handle, `${JSON.stringify({ schema: JOURNAL_SCHEMA, version: VERSION, timezone })}\n`);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+  fs.chmodSync(filePath, 0o600);
+  syncDirectory(path.dirname(filePath));
+}
+
+function appendJournalRecord(filePath, record) {
+  assertRegularFile(filePath);
+  const handle = fs.openSync(filePath, 'a', 0o600);
+  try {
+    fs.chmodSync(filePath, 0o600);
+    fs.writeFileSync(handle, `${JSON.stringify(record)}\n`);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
 function ensureDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('metrics directory is unsafe');
   fs.chmodSync(directory, 0o700);
+}
+
+function syncDirectory(directory) {
+  try {
+    const handle = fs.openSync(directory, 'r');
+    try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+  } catch {}
 }
 
 function assertRegularFile(filePath) {
@@ -127,26 +302,152 @@ function waitForLock() {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_WAIT_MS);
 }
 
-function withLock(lockPath, operation) {
+function processIsAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code !== 'ESRCH'; }
+}
+
+function ownerPid(filePath) {
+  try {
+    const contents = fs.readFileSync(filePath, 'utf8').trim();
+    let value;
+    try { value = JSON.parse(contents); }
+    catch {
+      if (!/^\d+$/.test(contents)) return undefined;
+      value = Number(contents);
+    }
+    const pid = typeof value === 'number' ? value : value?.pid;
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  } catch { return undefined; }
+}
+
+function sameFile(leftPath, rightPath) {
+  const left = fs.lstatSync(leftPath, { bigint: true, throwIfNoEntry: false });
+  const right = fs.lstatSync(rightPath, { bigint: true, throwIfNoEntry: false });
+  return Boolean(left?.isFile() && right?.isFile() && left.dev === right.dev && left.ino === right.ino);
+}
+
+function writeLockTicket(filePath) {
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.ticket-tmp.${randomUUID()}`);
   let handle;
-  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
-    try {
-      handle = fs.openSync(lockPath, 'wx', 0o600);
-      fs.writeSync(handle, `${process.pid}\n`);
-      break;
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      const stat = fs.statSync(lockPath, { throwIfNoEntry: false });
-      if (stat && Date.now() - stat.mtimeMs > STALE_LOCK_MS) fs.rmSync(lockPath, { force: true });
-      else waitForLock();
+  try {
+    handle = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(handle, JSON.stringify({ pid: process.pid }));
+    fs.fsyncSync(handle);
+    fs.closeSync(handle);
+    handle = undefined;
+    fs.renameSync(temporary, filePath);
+    syncDirectory(path.dirname(filePath));
+  } finally {
+    try { if (handle !== undefined) fs.closeSync(handle); }
+    finally { fs.rmSync(temporary, { force: true }); }
+  }
+}
+
+function reclaimMetadataPaths(lockPath) {
+  const directory = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.reclaim.`;
+  return fs.readdirSync(directory).filter((name) => name.startsWith(prefix) && !name.includes('.tmp.'))
+    .map((name) => ({ metadataPath: path.join(directory, name), token: name.slice(prefix.length) }));
+}
+
+function cleanAbandonedReclaimers(lockPath) {
+  let active = false;
+  for (const { metadataPath, token } of reclaimMetadataPaths(lockPath)) {
+    const pid = ownerPid(metadataPath);
+    if (pid === undefined || processIsAlive(pid)) {
+      active = true;
+      continue;
+    }
+    fs.rmSync(`${lockPath}.claim.${token}`, { force: true });
+    fs.rmSync(metadataPath, { force: true });
+  }
+  return active;
+}
+
+function cleanOrphanedClaims(lockPath) {
+  const directory = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.claim.`;
+  const reclaimers = new Set(reclaimMetadataPaths(lockPath).map(({ token }) => token));
+  for (const name of fs.readdirSync(directory).filter((entry) => entry.startsWith(prefix))) {
+    const token = name.slice(prefix.length);
+    if (!reclaimers.has(token)) fs.rmSync(path.join(directory, name), { force: true });
+  }
+}
+
+function cleanAbandonedTickets(lockPath) {
+  const directory = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.owner.`;
+  for (const name of fs.readdirSync(directory).filter((entry) => entry.startsWith(prefix))) {
+    const ticketPath = path.join(directory, name);
+    const pid = ownerPid(ticketPath);
+    const stat = fs.statSync(ticketPath, { throwIfNoEntry: false });
+    if ((pid !== undefined && !processIsAlive(pid))
+      || (pid === undefined && stat && Date.now() - stat.mtimeMs > STALE_LOCK_MS)) {
+      fs.rmSync(ticketPath, { force: true });
     }
   }
-  if (handle === undefined) throw new Error('metrics lock timeout');
-  try { return operation(); }
-  finally {
-    fs.closeSync(handle);
-    fs.rmSync(lockPath, { force: true });
+}
+
+function lockOwnerIsDead(filePath) {
+  assertRegularFile(filePath);
+  const pid = ownerPid(filePath);
+  return pid !== undefined && !processIsAlive(pid);
+}
+
+function tryReclaimLock(lockPath) {
+  if (!lockOwnerIsDead(lockPath)) return false;
+  const token = randomUUID();
+  const metadataPath = `${lockPath}.reclaim.${token}`;
+  const claimPath = `${lockPath}.claim.${token}`;
+  writeLockTicket(metadataPath);
+  let claimCreated = false;
+  try {
+    fs.linkSync(lockPath, claimPath);
+    claimCreated = true;
+    if (lockOwnerIsDead(claimPath) && sameFile(lockPath, claimPath)) {
+      try { fs.unlinkSync(lockPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  } finally {
+    if (claimCreated) fs.rmSync(claimPath, { force: true });
+    fs.rmSync(metadataPath, { force: true });
   }
+  return true;
+}
+
+function releaseLockIfOwned(lockPath, ticketPath) {
+  if (sameFile(lockPath, ticketPath)) fs.unlinkSync(lockPath);
+}
+
+function withLock(lockPath, operation) {
+  const ticketPath = `${lockPath}.owner.${randomUUID()}`;
+  writeLockTicket(ticketPath);
+  try {
+    cleanAbandonedTickets(lockPath);
+    cleanOrphanedClaims(lockPath);
+    for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+      if (cleanAbandonedReclaimers(lockPath)) { waitForLock(); continue; }
+      try { fs.linkSync(ticketPath, lockPath); }
+      catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        assertRegularFile(lockPath);
+        if (tryReclaimLock(lockPath)) continue;
+        waitForLock();
+        continue;
+      }
+      if (!sameFile(ticketPath, lockPath) || cleanAbandonedReclaimers(lockPath)) {
+        releaseLockIfOwned(lockPath, ticketPath);
+        waitForLock();
+        continue;
+      }
+      try { return operation(); }
+      finally { releaseLockIfOwned(lockPath, ticketPath); }
+    }
+    throw new Error('metrics lock timeout');
+  } finally { fs.rmSync(ticketPath, { force: true }); }
 }
 
 function atomicWrite(filePath, value) {
@@ -170,10 +471,7 @@ function atomicWrite(filePath, value) {
       if (!renamed) fs.rmSync(temporary, { force: true });
     }
   }
-  try {
-    const directoryHandle = fs.openSync(path.dirname(filePath), 'r');
-    try { fs.fsyncSync(directoryHandle); } finally { fs.closeSync(directoryHandle); }
-  } catch {}
+  syncDirectory(path.dirname(filePath));
 }
 
 export function defaultMetricsPath(env = process.env) {
@@ -187,13 +485,24 @@ export function defaultMetricsPath(env = process.env) {
 export function readMetrics(storagePath = defaultMetricsPath(), { timezone } = {}) {
   const filePath = resolvePath(storagePath);
   const requestedTimezone = timezone === undefined ? undefined : validateTimezone(timezone);
-  const exists = fs.existsSync(filePath);
-  if (!exists) return emptyState(requestedTimezone || defaultTimezone());
-  assertRegularFile(filePath);
-  let value;
-  try { value = JSON.parse(fs.readFileSync(filePath, 'utf8')); }
-  catch { throw new Error('metrics state is invalid'); }
-  return validateState(value, requestedTimezone);
+  let state;
+  if (fs.existsSync(filePath)) {
+    assertRegularFile(filePath);
+    let value;
+    try { value = JSON.parse(fs.readFileSync(filePath, 'utf8')); }
+    catch { throw new Error('metrics state is invalid'); }
+    state = validateState(value, requestedTimezone);
+  }
+  const journalPath = journalPathFor(filePath);
+  if (fs.existsSync(journalPath)) {
+    const journal = readJournal(journalPath);
+    if (requestedTimezone && requestedTimezone !== journal.header.timezone) throw new Error('metrics timezone mismatch');
+    if (state && state.timezone !== journal.header.timezone) throw new Error('metrics timezone mismatch');
+    state ??= emptyState(journal.header.timezone);
+    mergeJournalRecords(state, journal.records);
+  }
+  state ??= emptyState(requestedTimezone || defaultTimezone());
+  return validateState(state, requestedTimezone);
 }
 
 function providerSavings(providerUsage) {
@@ -243,19 +552,59 @@ function makeRecord({ host, event, receipt, optimization, now }) {
   };
 }
 
+function appendMetricsRecordLocked(filePath, journalPath, requestedTimezone, record) {
+  const snapshotExists = fs.existsSync(filePath);
+  let journalExists = fs.existsSync(journalPath);
+  let journalInfo;
+  if (journalExists) {
+    try { journalInfo = readJournalHeader(journalPath); }
+    catch (error) {
+      if (error?.code !== 'SANDO_METRICS_JOURNAL_HEADER_INCOMPLETE') throw error;
+      fs.rmSync(journalPath, { force: true });
+      journalExists = false;
+    }
+  }
+  let storedTimezone = snapshotExists
+    ? readSnapshotTimezone(filePath, { allowFullRead: !journalExists })
+    : undefined;
+  if (storedTimezone && journalInfo && storedTimezone !== journalInfo.header.timezone) {
+    throw new Error('metrics timezone mismatch');
+  }
+  storedTimezone ??= journalInfo?.header.timezone;
+  const metricsTimezone = storedTimezone ?? requestedTimezone ?? defaultTimezone();
+  if (requestedTimezone && requestedTimezone !== metricsTimezone) throw new Error('metrics timezone mismatch');
+  if (!snapshotExists) atomicWrite(filePath, emptyState(metricsTimezone));
+  if (!journalExists) writeJournalHeader(journalPath, metricsTimezone);
+  else repairJournalTail(journalPath, journalInfo.headerBytes);
+  appendJournalRecord(journalPath, record);
+}
+
+export function appendMetricsRecord({ storagePath = defaultMetricsPath(), timezone, host, event, receipt, optimization, now = new Date() } = {}) {
+  const filePath = resolvePath(storagePath);
+  const journalPath = journalPathFor(filePath);
+  const requestedTimezone = timezone === undefined ? undefined : validateTimezone(timezone);
+  const record = makeRecord({ host, event, receipt, optimization, now });
+  ensureDirectory(path.dirname(filePath));
+  assertRegularFile(journalPath);
+  return withLock(`${filePath}.lock`, () => {
+    appendMetricsRecordLocked(filePath, journalPath, requestedTimezone, record);
+    return record;
+  });
+}
+
 export function recordMetrics({ storagePath = defaultMetricsPath(), timezone, host, event, receipt, optimization, now = new Date() } = {}) {
   const filePath = resolvePath(storagePath);
-  const directory = path.dirname(filePath);
-  ensureDirectory(directory);
-  const lockPath = `${filePath}.lock`;
-  return withLock(lockPath, () => {
+  const journalPath = journalPathFor(filePath);
+  ensureDirectory(path.dirname(filePath));
+  assertRegularFile(journalPath);
+  return withLock(`${filePath}.lock`, () => {
     const state = readMetrics(filePath, { timezone });
     const record = makeRecord({ host, event, receipt, optimization, now });
     if (state.records.some((candidate) => candidate.eventKey === record.eventKey
       || (!record.eventKey.startsWith('event:')
         && candidate.host === record.host && candidate.receiptDigest === record.receiptDigest))) return state;
+    appendMetricsRecordLocked(filePath, journalPath, state.timezone, record);
     state.records.push(record);
-    atomicWrite(filePath, state);
     return state;
   });
 }

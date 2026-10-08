@@ -13,6 +13,7 @@ import {
   readMetrics,
   recordMetrics,
 } from '../index.mjs';
+import { appendMetricsRecord } from '../src/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,6 +40,29 @@ function input({ id, eventId = id, sessionId, timestamp, host = 'claude', receip
     },
     receipt: { digest: receiptDigest },
     optimization: { inline: 'bounded', stats: { estimatedInputTokens, estimatedInlineTokens } },
+  };
+}
+
+function writeLegacyState(storagePath, records = []) {
+  const state = { schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records };
+  fs.writeFileSync(storagePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  return fs.readFileSync(storagePath);
+}
+
+function legacyRecord() {
+  return {
+    eventKey: 'event:legacy',
+    receiptDigest: 'sha256:legacy',
+    at: '2026-02-01T00:00:00.000Z',
+    host: 'codex',
+    sessionId: 'legacy-session',
+    client: 'Codex',
+    clientVersion: '1',
+    model: 'gpt-6',
+    estimatedInputTokens: 10,
+    estimatedInlineTokens: 5,
+    estimatedTransformSavingsTokens: 5,
+    providerReportedSavingsTokens: null,
   };
 }
 
@@ -314,12 +338,234 @@ test('malformed metrics input is rejected without persisting secrets', () => {
   assert.equal(fs.readdirSync(directory).some((name) => name.endsWith('.tmp')), false);
 });
 
-test('atomic locked writers preserve all distinct events and safe file modes', async () => {
+test('journal appends records without rewriting the v1 snapshot', () => {
   const { directory, storagePath } = tempMetricsPath();
+  const snapshotBytes = writeLegacyState(storagePath, [legacyRecord()]);
+
+  appendMetricsRecord({
+    storagePath,
+    timezone: 'UTC',
+    ...input({ id: 'journal-1', host: 'codex', timestamp: '2026-02-02T12:00:00.000Z' }),
+  });
+
+  assert.deepEqual(fs.readFileSync(storagePath), snapshotBytes);
+  const lines = fs.readFileSync(`${storagePath}.journal`, 'utf8').trimEnd().split('\n').map(JSON.parse);
+  assert.deepEqual(lines[0], { schema: 'sando-metrics-journal/v1', version: 1, timezone: 'UTC' });
+  const state = readMetrics(storagePath, { timezone: 'UTC' });
+  assert.equal(state.records.length, 2);
+  assert.equal(state.records[0].eventKey, 'event:legacy');
+  assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(`${storagePath}.journal`).mode & 0o777, 0o600);
+});
+
+test('journal migration reads timezone after records in a reordered v1 snapshot', () => {
+  const { storagePath } = tempMetricsPath();
+  const records = Array.from({ length: 24 }, (_, index) => ({
+    ...legacyRecord(), eventKey: `event:legacy-${index}`, receiptDigest: `sha256:legacy-${index}`,
+    headerLike: { schema: 'sando-metrics/v1', version: 1, timezone: 'Europe/Rome' },
+  }));
+  const snapshot = JSON.stringify({ records, timezone: 'UTC', version: 1, schema: 'sando-metrics/v1' });
+  assert.ok(snapshot.lastIndexOf('"timezone"') > 4096);
+  fs.writeFileSync(storagePath, snapshot, { mode: 0o600 });
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'after-reordered-header', host: 'codex' }) });
+
+  const readFileSync = fs.readFileSync;
+  fs.readFileSync = function (file, ...args) {
+    if (String(file) === storagePath) throw new Error('legacy snapshot read after migration');
+    return readFileSync.call(this, file, ...args);
+  };
+  try {
+    appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'after-reordered-header-again', host: 'codex' }) });
+  } finally {
+    fs.readFileSync = readFileSync;
+  }
+
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, records.length + 2);
+});
+
+test('an old lock owned by a live process is not reclaimed', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  fs.writeFileSync(lockPath, `${process.pid}\n`, { mode: 0o600 });
+  fs.utimesSync(lockPath, stale, stale);
+  const wait = Atomics.wait;
+  Atomics.wait = () => 'timed-out';
+  try {
+    assert.throws(() => appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'blocked' }) }), /metrics lock timeout/);
+  } finally {
+    Atomics.wait = wait;
+  }
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), `${process.pid}\n`);
+  assert.equal(fs.existsSync(`${storagePath}.journal`), false);
+});
+
+test('an old lock without a verifiable owner is not reclaimed', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  fs.writeFileSync(lockPath, 'not-a-pid\n', { mode: 0o600 });
+  fs.utimesSync(lockPath, stale, stale);
+  const wait = Atomics.wait;
+  Atomics.wait = () => 'timed-out';
+  try {
+    assert.throws(() => appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'unknown-owner' }) }), /metrics lock timeout/);
+  } finally {
+    Atomics.wait = wait;
+  }
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), 'not-a-pid\n');
+  assert.equal(fs.existsSync(`${storagePath}.journal`), false);
+});
+
+test('an old lock with a dead owner is reclaimed', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  fs.writeFileSync(lockPath, `${process.pid + 1_000_000}\n`, { mode: 0o600 });
+  fs.utimesSync(lockPath, stale, stale);
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'reclaimed-lock' }) });
+
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+  assert.equal(fs.existsSync(lockPath), false);
+});
+
+test('an abandoned reclaimer claim is cleaned before reclaiming the lock', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  const deadPid = process.pid + 1_000_000;
+  const token = 'abandoned';
+  const claimPath = `${lockPath}.claim.${token}`;
+  const reclaimerPath = `${lockPath}.reclaim.${token}`;
+  fs.writeFileSync(lockPath, `${deadPid}\n`, { mode: 0o600 });
+  fs.linkSync(lockPath, claimPath);
+  fs.writeFileSync(reclaimerPath, JSON.stringify({ pid: deadPid }), { mode: 0o600 });
+  fs.utimesSync(lockPath, stale, stale);
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'recover-abandoned-reclaimer' }) });
+
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+  assert.equal(fs.existsSync(claimPath), false);
+  assert.equal(fs.existsSync(reclaimerPath), false);
+});
+
+test('an old reclaimer claim without an owner keeps its reclamation barrier', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  const deadPid = process.pid + 1_000_000;
+  const claimPath = `${lockPath}.claim.unknown-owner`;
+  const reclaimerPath = `${lockPath}.reclaim.unknown-owner`;
+  fs.writeFileSync(lockPath, `${deadPid}\n`, { mode: 0o600 });
+  fs.linkSync(lockPath, claimPath);
+  fs.writeFileSync(reclaimerPath, 'partial metadata', { mode: 0o600 });
+  fs.utimesSync(reclaimerPath, stale, stale);
+  const wait = Atomics.wait;
+  Atomics.wait = () => 'timed-out';
+  try {
+    assert.throws(() => appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'unknown-reclaimer' }) }), /metrics lock timeout/);
+  } finally {
+    Atomics.wait = wait;
+  }
+  assert.equal(fs.existsSync(claimPath), true);
+  assert.equal(fs.existsSync(reclaimerPath), true);
+  assert.equal(fs.existsSync(`${storagePath}.journal`), false);
+});
+
+test('an abandoned reclaimer temporary does not become a permanent lock barrier', () => {
+  const { storagePath } = tempMetricsPath();
+  const lockPath = `${storagePath}.lock`;
+  const stale = new Date(Date.now() - 60_000);
+  const deadPid = process.pid + 1_000_000;
+  const temporaryPath = `${lockPath}.reclaim.abandoned.tmp.crashed`;
+  fs.writeFileSync(lockPath, `${deadPid}\n`, { mode: 0o600 });
+  fs.writeFileSync(temporaryPath, 'partial metadata', { mode: 0o600 });
+  fs.utimesSync(lockPath, stale, stale);
+  fs.utimesSync(temporaryPath, stale, stale);
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'recover-temp-reclaimer' }) });
+
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+  assert.equal(fs.existsSync(lockPath), false);
+});
+
+test('journal initializes a v1 snapshot for a fresh metrics path', () => {
+  const { storagePath } = tempMetricsPath();
+  appendMetricsRecord({
+    storagePath,
+    timezone: 'UTC',
+    ...input({ id: 'first-journal', host: 'codex', timestamp: '2026-02-02T12:00:00.000Z' }),
+  });
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(storagePath, 'utf8')).records, []);
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+});
+
+test('journal deduplicates receipt retries and rejects conflicting event ids', () => {
+  const { storagePath } = tempMetricsPath();
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'first', eventId: null, host: 'codex', receiptDigest: 'sha256:shared' }) });
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'retry', eventId: null, host: 'codex', receiptDigest: 'sha256:shared', timestamp: '2026-02-02T12:00:01.000Z' }) });
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'stable-event', host: 'codex', timestamp: '2026-02-02T12:00:00.000Z' }) });
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'stable-event', host: 'codex', timestamp: '2026-02-02T12:00:00.000Z' }) });
+  const journalPath = `${storagePath}.journal`;
+  const state = readMetrics(storagePath, { timezone: 'UTC' });
+  assert.equal(state.records.length, 2);
+  const written = state.records.at(-1);
+  fs.appendFileSync(journalPath, `${JSON.stringify({ ...written, model: 'different-model' })}\n`);
+  assert.throws(() => readMetrics(storagePath, { timezone: 'UTC' }), /conflicting event/);
+});
+
+test('event retries without timestamps preserve the first observed time', () => {
+  const { storagePath } = tempMetricsPath();
+  const event = input({ id: 'retry-without-timestamp', timestamp: undefined });
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...event, now: new Date('2026-02-01T00:00:00.000Z') });
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...event, now: new Date('2026-02-01T00:00:01.000Z') });
+
+  const { records } = readMetrics(storagePath, { timezone: 'UTC' });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].at, '2026-02-01T00:00:00.000Z');
+});
+
+test('journal ignores and repairs only a torn final line', () => {
+  const { storagePath } = tempMetricsPath();
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'before-crash', host: 'codex' }) });
+  const journalPath = `${storagePath}.journal`;
+  fs.appendFileSync(journalPath, '{"eventKey":"partial');
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
+
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'after-recovery', host: 'codex' }) });
+  const lines = fs.readFileSync(journalPath, 'utf8').trimEnd().split('\n');
+  assert.equal(lines.length, 3);
+  for (const line of lines) JSON.parse(line);
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 2);
+});
+
+test('journal rejects malformed complete lines and timezone mismatches', () => {
+  const { storagePath } = tempMetricsPath();
+  appendMetricsRecord({ storagePath, timezone: 'UTC', ...input({ id: 'valid', host: 'codex' }) });
+  const journalPath = `${storagePath}.journal`;
+  const contents = fs.readFileSync(journalPath, 'utf8');
+  const [header, ...records] = contents.trimEnd().split('\n');
+  fs.writeFileSync(journalPath, [header, '{invalid}', ...records, ''].join('\n'));
+  assert.throws(() => readMetrics(storagePath, { timezone: 'UTC' }), /metrics journal is invalid/);
+
+  fs.writeFileSync(journalPath, contents);
+  assert.throws(() => readMetrics(storagePath, { timezone: 'Europe/Rome' }), /metrics timezone mismatch/);
+});
+
+test('atomic locked journal writers preserve all distinct events and safe file modes', async () => {
+  const { directory, storagePath } = tempMetricsPath();
+  const stale = new Date(Date.now() - 60_000);
+  fs.writeFileSync(`${storagePath}.lock`, `${process.pid + 1_000_000}\n`, { mode: 0o600 });
+  fs.utimesSync(`${storagePath}.lock`, stale, stale);
   const metricsUrl = pathToFileURL(path.join(ROOT, 'src/metrics.mjs')).href;
   const children = Array.from({ length: 8 }, (_, index) => {
-    const script = `import { recordMetrics } from ${JSON.stringify(metricsUrl)};
-recordMetrics({ storagePath: ${JSON.stringify(storagePath)}, timezone: 'UTC', host: 'codex', event: { eventName: 'PostToolUse', toolName: 'Read', output: 'secret=child-secret', cwd: '/tmp', eventId: 'child-${index}', sessionId: 's', timestamp: '2026-02-02T12:00:00.000Z' }, receipt: { digest: 'sha256:child-${index}' }, optimization: { inline: 'bounded', stats: { estimatedInputTokens: 10, estimatedInlineTokens: 5 } } });`;
+    const script = `import { appendMetricsRecord } from ${JSON.stringify(metricsUrl)};
+appendMetricsRecord({ storagePath: ${JSON.stringify(storagePath)}, timezone: 'UTC', host: 'codex', event: { eventName: 'PostToolUse', toolName: 'Read', output: 'secret=child-secret', cwd: '/tmp', eventId: 'child-${index}', sessionId: 's', timestamp: '2026-02-02T12:00:00.000Z' }, receipt: { digest: 'sha256:child-${index}' }, optimization: { inline: 'bounded', stats: { estimatedInputTokens: 10, estimatedInlineTokens: 5 } } });`;
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stderr = '';
@@ -338,4 +584,23 @@ recordMetrics({ storagePath: ${JSON.stringify(storagePath)}, timezone: 'UTC', ho
   assert.equal(fs.existsSync(`${storagePath}.lock`), false);
   assert.equal(fs.readdirSync(directory).some((name) => name.endsWith('.tmp')), false);
   assert.doesNotMatch(fs.readFileSync(storagePath, 'utf8'), /child-secret/);
+  assert.doesNotMatch(fs.readFileSync(`${storagePath}.journal`, 'utf8'), /child-secret/);
+});
+
+test('recordMetrics keeps concurrent duplicate retries idempotent', async () => {
+  const { storagePath } = tempMetricsPath();
+  const metricsUrl = pathToFileURL(path.join(ROOT, 'src/metrics.mjs')).href;
+  const children = Array.from({ length: 4 }, (_, index) => {
+    const script = `import { recordMetrics } from ${JSON.stringify(metricsUrl)};
+recordMetrics({ storagePath: ${JSON.stringify(storagePath)}, timezone: 'UTC', host: 'codex', event: { eventName: 'PostToolUse', toolName: 'Read', output: 'small', cwd: '/tmp', eventId: 'shared-retry', sessionId: 's', timestamp: '2026-02-02T12:00:0${index}.000Z' }, receipt: { digest: 'sha256:shared-retry' }, optimization: { inline: 'bounded', stats: { estimatedInputTokens: 10, estimatedInlineTokens: 5 } } });`;
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `child exited ${code}`)));
+    });
+  });
+  await Promise.all(children);
+  assert.equal(readMetrics(storagePath, { timezone: 'UTC' }).records.length, 1);
 });

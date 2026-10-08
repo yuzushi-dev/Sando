@@ -21,6 +21,21 @@ function runnerScript(dir) {
   return scriptPath;
 }
 
+function runnerScriptThatCannotReadMetrics(dir) {
+  const scriptPath = path.join(dir, 'run-without-metrics-read.mjs');
+  fs.writeFileSync(scriptPath, `
+    import fs from 'node:fs';
+    import { runHookCli } from ${JSON.stringify(HOOK_CLI_PATH)};
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = function (file, ...args) {
+      if (String(file) === process.env.SANDO_METRICS_PATH) throw new Error('full metrics read');
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    runHookCli({ host: process.env.SANDO_TEST_HOST, env: process.env });
+  `);
+  return scriptPath;
+}
+
 function tempEnv() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-hook-cli-'));
   return {
@@ -121,10 +136,82 @@ test('Claude receipts and metrics account for the final materialized delivery', 
   const delivered = JSON.parse(output).hookSpecificOutput.updatedToolOutput;
   const [record] = readMetrics(metricsPath).records;
 
+  assert.deepEqual(JSON.parse(fs.readFileSync(metricsPath, 'utf8')).records, []);
+  assert.equal(fs.readFileSync(`${metricsPath}.journal`, 'utf8').trimEnd().split('\n').length, 2);
   assert.ok(Buffer.byteLength(delivered) <= policy.maxInlineBytes);
   assert.doesNotMatch(delivered, /hook-secret/);
   assert.match(delivered, /\[sando\] display redacted; Sando did not sanitize source files$/);
   assert.equal(record.estimatedInlineTokens, Math.ceil(Buffer.byteLength(delivered) / 4));
+});
+
+test('PostToolUse records metrics without reading the legacy snapshot', () => {
+  const { dir, env } = tempEnv();
+  const metricsPath = path.join(dir, 'metrics.json');
+  const snapshot = Buffer.from(`${JSON.stringify({ schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: [] }, null, 2)}\n`);
+  fs.writeFileSync(metricsPath, snapshot, { mode: 0o600 });
+  const script = runnerScriptThatCannotReadMetrics(dir);
+  const output = execFileSync(process.execPath, [script], {
+    input: JSON.stringify({
+      hook_event_name: 'PostToolUse', event_id: 'fast-metrics-path', tool_name: 'Read',
+      tool_response: 'small output', cwd: dir,
+    }),
+    env: {
+      ...env, SANDO_TEST_HOST: 'claude', DO_NOT_TRACK: '1', SANDO_METRICS_PATH: metricsPath,
+      SANDO_POLICY: JSON.stringify({ mode: 'observe', maxInlineBytes: 4_096, maxArtifactBytes: 16_384, redact: false }),
+    },
+  });
+
+  assert.ok(output.length > 0);
+  assert.deepEqual(fs.readFileSync(metricsPath), snapshot);
+  assert.equal(readMetrics(metricsPath, { timezone: 'UTC' }).records.length, 1);
+});
+
+test('MCP PostToolUse records metrics without reading the legacy snapshot', () => {
+  const { dir, env } = tempEnv();
+  const metricsPath = path.join(dir, 'metrics.json');
+  const snapshot = Buffer.from(`${JSON.stringify({ schema: 'sando-metrics/v1', version: 1, timezone: 'UTC', records: [] }, null, 2)}\n`);
+  fs.writeFileSync(metricsPath, snapshot, { mode: 0o600 });
+  const script = runnerScriptThatCannotReadMetrics(dir);
+  const output = execFileSync(process.execPath, [script], {
+    input: JSON.stringify({
+      hook_event_name: 'PostToolUse', event_id: 'mcp-fast-metrics',
+      tool_name: 'mcp__example__lookup',
+      tool_response: [{ type: 'text', text: 'large output '.repeat(400) }], cwd: dir,
+    }),
+    env: {
+      ...env, SANDO_TEST_HOST: 'claude', DO_NOT_TRACK: '1', SANDO_METRICS_PATH: metricsPath,
+      SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 128, maxArtifactBytes: 4_096, redact: false }),
+    },
+  });
+
+  assert.ok(output.length > 0);
+  assert.deepEqual(fs.readFileSync(metricsPath), snapshot);
+  assert.equal(readMetrics(metricsPath, { timezone: 'UTC' }).records.length, 1);
+});
+
+test('Claude MCP gives changed text blocks distinct metric identities', () => {
+  const { dir, env } = tempEnv();
+  const metricsPath = path.join(dir, 'metrics.json');
+  const script = runnerScript(dir);
+  const output = execFileSync(process.execPath, [script], {
+    input: JSON.stringify({
+      hook_event_name: 'PostToolUse', event_id: 'mcp-two-changed-blocks',
+      tool_name: 'mcp__example__lookup',
+      tool_response: [
+        { type: 'text', text: 'first output '.repeat(100) },
+        { type: 'text', text: 'second output '.repeat(100) },
+      ], cwd: dir,
+    }),
+    env: {
+      ...env, SANDO_TEST_HOST: 'claude', DO_NOT_TRACK: '1', SANDO_METRICS_PATH: metricsPath,
+      SANDO_POLICY: JSON.stringify({ mode: 'apply', maxInlineBytes: 512, maxArtifactBytes: 4_096, redact: false }),
+    },
+  });
+
+  assert.ok(output.length > 0);
+  const { records } = readMetrics(metricsPath);
+  assert.equal(records.length, 2);
+  assert.notEqual(records[0].eventKey, records[1].eventKey);
 });
 
 test('Claude structured stdout and stderr disclose each transformed textual field', () => {
