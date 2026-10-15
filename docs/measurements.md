@@ -261,3 +261,52 @@ Two of these were defects, found by the probes and not by the corpus, and both a
 Both are covered by regression tests in `tests/exec.test.mjs` in each Codex bundle, verified to
 fail against the previous code. Binary output remains withheld rather than bounded; that is
 deliberate and is visible in the result.
+
+## Recovery gap R0: transcript census, 2026-10-15
+
+This is a partial snapshot, not a replay of the exact trim-1 cohort. The earlier report names 700
+Codex sessions and 76,694 Claude transcripts, but its file manifest and excluded-session list are
+not available. The current roots contain 703 and 76,739 files. The scan excluded marker-bearing
+transcripts modified in the preceding hour and retained aggregate counts only; no transcript text,
+prompt, session ID, or artifact path was written.
+
+| Corpus | Marker files | Artifact markers | Elided markers | Present marker refs | Full bytes | Visible bytes (approx.) |
+|---|---:|---:|---:|---:|---:|---:|
+| Codex | 471 | 17,920 | 16,665 | 19 (0.1%) | 317,965,038 | 61,687,071 |
+| Claude | 363 | 745 | 619 | 250 (33.6%) | 6,159,730 | 2,455,268 |
+
+Availability is a current filesystem check, not historical evidence that an artifact was absent when
+the transcript was written. The lifecycle policy is a 7-day TTL and 64 MiB maximum, but cleanup is
+opportunistic during artifact writes: 74 of the present Claude refs were already older than 7 days.
+
+| Corpus | Channel | Attempts or candidates | Matches to earlier elisions | Output recovered/judged successful | Input / output bytes |
+|---|---|---:|---:|---:|---:|
+| Claude | MCP `sando_artifact_get` | 17 | 13 | 13 | 1,395 / 46,449 |
+| Claude | Direct artifact-file reads | 24 | 11 | 11 | 6,734 / 43,958 |
+| Claude | CLI `sando artifact get` | 0 | 0 | 0 | 0 / 0 |
+| Claude | Candidate command/source reruns | 12 | 12 | 11 | 6,977 / 19,929 |
+| Codex | CLI `sando artifact get` | 154 | 141 | 105 | 26,617 / 738,628 |
+| Codex | Direct artifact-file reads | 15 | 9 | 8 | 6,954 / 24,940 |
+| Codex | MCP `sando_artifact_get` | 0 | 0 | 0 | 0 / 0 |
+| Codex | Candidate command/source reruns | 2,087 | 2,087 | 1,886 | 865,704 / 5,313,633 |
+
+The rerun detector is heuristic and can count an ordinary repeated command; treat those rows as
+candidates, not confirmed evidence reuse. The byte counts are transcript input/output sizes, not
+token, latency, or monetary costs. Claude recoveries were in the same user turn. In Codex, 140 of
+141 matching CLI calls, 7 of 9 matching direct reads, and 1,407 of 2,087 rerun candidates were in the
+same user turn; the rest followed later.
+
+The 2026-10-01 Luna ten-pair ledger records **0 CLI retrievals in control and 14 in Sando**, matching
+the published result; it is not 0 retrievals in the Sando arm. The separate two-session native trial
+did have a collector undercount: its raw count was zero while the command trace contains two
+absolute-path CLI recoveries. In the ten-pair ledger, no direct artifact-file read appears in saved
+command inputs. The ledger does not retain full MCP/dynamic-tool inputs, so it cannot rule out those
+channels. The transcript census does show MCP and direct reads outside that cohort, so a CLI-only
+counter misses some recovery activity in general.
+
+**Gate: partial and inconclusive; stop after R0.** Artifact availability is below half in both
+corpora, so the plan's evidence-use classification and class-specific cap curve were not run. These
+channel hits show retrieval attempts, not that the recovered evidence was later reused; the
+30-useful-cases-per-corpus threshold therefore cannot be evaluated. Direct reads are present but are
+not the predominant confirmed channel in these data. Do not proceed to R1–R3 from this census. No
+collector, hint, cap, or README change was made.
