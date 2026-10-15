@@ -84,6 +84,19 @@ test('CLI exec keeps the inherited sandbox path and redacts output', (t) => {
   assert.equal(fs.readFileSync(path.join(cwd, 'marker.txt'), 'utf8'), 'ok');
 });
 
+test('CLI exec writes stream headers only when stderr is present', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sando-cli-exec-lean-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const status = '[sando exec exit_code=0 signal=none timed_out=false tty=false]';
+  const exec = (script) => run(cwd, ['exec', '--', process.execPath, '-e', script]).stdout;
+
+  assert.equal(exec(''), `${status}\n`);
+  assert.equal(exec("process.stdout.write('a\\n')"), `${status}\na\n\n`);
+  assert.equal(exec("process.stdout.write('a\\n'); process.stderr.write('b\\n')"), `${status}\nstdout:\na\n\nstderr:\nb\n\n`);
+  // Bare stdout that looks like the two-stream form keeps its headers, so it stays unambiguous.
+  assert.equal(exec("process.stdout.write('stdout:\\nx')"), `${status}\nstdout:\nstdout:\nx\nstderr:\n\n`);
+});
+
 test('plugin ships an explicit-upstream provider proxy launcher', () => {
   const launcher = path.join(root, 'bin/sando-proxy');
   const help = spawnSync(launcher, ['--help'], { encoding: 'utf8' });

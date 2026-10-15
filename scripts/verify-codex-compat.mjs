@@ -114,12 +114,15 @@ function normalizeExit(result) {
 function parseRoutedOutput(buffer) {
   let text = buffer.toString('utf8');
   if (text.endsWith('\n')) text = text.slice(0, -1);
-  const match = /^\[sando exec exit_code=(null|\d+) signal=(none|[A-Z0-9]+) timed_out=(?:true|false) tty=false\]\nstdout:\n([\s\S]*?)\nstderr:\n([\s\S]*)$/.exec(text);
+  const match = /^\[sando exec exit_code=(null|\d+) signal=(none|[A-Z0-9]+) timed_out=(?:true|false) tty=false\](?:\n([\s\S]*))?$/.exec(text);
+  if (match && match[3] === '[binary output withheld]') return { stdout: null, stderr: null, binary: true };
+  // stderr empty: stdout follows bare; otherwise both streams carry headers.
+  const streams = match && /^stdout:\n([\s\S]*?)\nstderr:\n([\s\S]*)$/.exec(match[3] ?? '');
   return match ? {
     exitCode: match[1] === 'null' ? null : Number(match[1]),
     signal: match[2] === 'none' ? null : match[2],
-    stdout: Buffer.from(match[3]),
-    stderr: Buffer.from(match[4]),
+    stdout: Buffer.from(streams ? streams[1] : (match[3] ?? '')),
+    stderr: Buffer.from(streams ? streams[2] : ''),
     binary: false,
   }
     : { stdout: null, stderr: null, binary: text.includes('[binary output withheld]') };

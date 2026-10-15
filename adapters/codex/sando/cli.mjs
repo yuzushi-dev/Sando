@@ -81,6 +81,15 @@ function commandArgs(args) {
   return args[0] === '--' ? args.slice(1) : args;
 }
 
+// Codex shows the tail of a shell result, so an always-present `stderr:` header was what most
+// cells displayed. Headers are written only when they disambiguate: stdout alone goes out bare,
+// unless it begins with `stdout:\n` itself and would read as the two-stream form.
+function execBody(stdout, stderr) {
+  if (stderr) return `\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+  if (!stdout) return '';
+  return stdout.startsWith('stdout:\n') ? `\nstdout:\n${stdout}\nstderr:\n` : `\n${stdout}`;
+}
+
 async function runExec(args, cwd, policy) {
   const command = commandArgs(args);
   if (!command.length) throw new Error('exec requires a command');
@@ -98,7 +107,7 @@ async function runExec(args, cwd, policy) {
   const status = `[sando exec exit_code=${result.exitCode ?? 'null'} signal=${result.exitSignal || 'none'} timed_out=${result.timedOut} tty=false]`;
   const output = binary
     ? `${status}\n[binary output withheld]`
-    : `${status}\nstdout:\n${stdout.text}\nstderr:\n${stderr.text}${result.truncated ? `\n[sando exec output bounded at ${maxBytes} bytes per stream]` : ''}`;
+    : `${status}${execBody(stdout.text, stderr.text)}${result.truncated ? `\n[sando exec output bounded at ${maxBytes} bytes per stream]` : ''}`;
   // The router classifies by what the command reads, so the command has to reach it: without
   // this a `sando exec -- bash -lc 'cat app.mjs'` is scored as process-output and capped at
   // 4 KB, where the same read through `sando read` is source and gets 32 KB. A shell wrapper
