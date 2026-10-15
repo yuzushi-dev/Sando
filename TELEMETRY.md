@@ -13,6 +13,10 @@ blocks a session or prompts by itself.
 
 The Codex marketplace plugin shows the same one-line reminder at `SessionStart`.
 
+Both hosts list plugin hooks but cannot run one only once, so after the reminder the
+`SessionStart` and `UserPromptSubmit` hooks switch themselves off: each leaves a marker
+next to `telemetry.json` and its shell gate then answers without starting `node`.
+
 The local consent state is explicit: `unasked`, `asked`, `enabled`, or
 `declined`. A decline is final for the first-use reminder. The state and any
 queued data stay on the local machine.
@@ -102,7 +106,7 @@ For privacy questions or telemetry requests, contact support@yuzushi.party.
 
 ## Controlling it
 
-When the SessionStart reminder is visible, reply with one exact full message:
+In the session that shows the SessionStart reminder, reply with one exact full message:
 
 ```text
 sando telemetry yes
@@ -110,7 +114,9 @@ sando telemetry no
 ```
 
 These commands are matched literally; natural-language variants and partial
-matches are ignored. `yes` enables collection and `no` declines or revokes it.
+matches are ignored. `yes` enables collection and `no` declines it. They are
+accepted only in that first session: from the next session on, the reminder is
+closed and telemetry stays off unless you run `enable` below.
 
 The package does not install a global `sando` command. Run
 `telemetry-cli.mjs` directly. Only the script path changes by installation type:
@@ -136,8 +142,7 @@ node node_modules/sandoichi/src/telemetry-cli.mjs disable --purge
 ```
 
 To disable telemetry persistently, run `disable` (optionally with `--purge` to
-remove queued local data), or reply `sando telemetry no` when the hook is
-installed. To disable it for a process or environment without changing the
+remove queued local data). To disable it for a process or environment without changing the
 saved consent, set `DO_NOT_TRACK=1` (or any non-empty value other than `0`).
 
 For the Claude Code marketplace plugin (`sando@yuzushi`), the same script lives

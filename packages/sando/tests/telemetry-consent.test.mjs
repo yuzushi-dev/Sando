@@ -5,7 +5,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-import { runSessionStart } from '../src/session-start.mjs';
+import {
+  CONSENT_SESSION, PROMPT_SUBMIT_DONE, runSessionStart, SESSION_START_DONE,
+} from '../src/session-start.mjs';
 import { runUserPromptSubmit } from '../src/user-prompt-submit.mjs';
 import {
   CONSENT_VERSION, enableTelemetry, readTelemetryConfig,
@@ -79,18 +81,19 @@ test('blank or ambiguous consent stays off without recording a decline', () => {
   }
 });
 
-test('legacy disabled consent markers remain recoverable as asked', () => {
+test('a consent reply in a session other than the one that asked is ignored and closes the hook', () => {
   const h = harness();
   fs.mkdirSync(path.dirname(h.configPath), { recursive: true });
   fs.writeFileSync(h.configPath, JSON.stringify({ schema_version: 1, enabled: false, prompted_consent_version: 1 }));
   const output = [];
   runUserPromptSubmit({
     env: h.env,
-    input: JSON.stringify({ prompt: 'sando telemetry yes' }),
+    input: JSON.stringify({ prompt: 'sando telemetry yes', session_id: 'later' }),
     stdout: { write: (chunk) => output.push(chunk) },
   });
-  assert.equal(readTelemetryConfig(h.configPath).enabled, true);
-  assert.match(JSON.parse(output.join('')).systemMessage, /enabled/i);
+  assert.equal(readTelemetryConfig(h.configPath).enabled, false);
+  assert.deepEqual(JSON.parse(output.join('')), {});
+  assert.ok(fs.existsSync(path.join(path.dirname(h.configPath), PROMPT_SUBMIT_DONE)));
 });
 
 test('an ambiguous answer leaves the one-time question answered but not declined', () => {
@@ -173,5 +176,72 @@ test('installed Claude and plugin UserPromptSubmit wrappers preserve the fail-op
     assert.equal(response.status, 0, response.stderr);
     assert.deepEqual(JSON.parse(response.stdout), {});
     assert.equal(readTelemetryConfig(h.configPath).consent_state, 'asked');
+  }
+});
+
+const marker = (h, name) => fs.existsSync(path.join(path.dirname(h.configPath), name));
+
+test('SessionStart asks once, records the asking session and switches itself off', () => {
+  const h = harness();
+  runSessionStart({ env: h.env, configPath: h.configPath, statePaths: h.statePaths, stdout: h.stdout, input: JSON.stringify({ session_id: 's1' }) });
+  assert.equal(typeof JSON.parse(h.output()).systemMessage, 'string');
+  assert.equal(fs.readFileSync(path.join(path.dirname(h.configPath), CONSENT_SESSION), 'utf8'), 's1');
+  assert.ok(marker(h, SESSION_START_DONE));
+  assert.ok(!marker(h, PROMPT_SUBMIT_DONE), 'the asking session must still be able to reply');
+});
+
+test('UserPromptSubmit keeps listening in the asking session and closes after the reply', () => {
+  const h = harness();
+  runSessionStart({ env: h.env, configPath: h.configPath, statePaths: h.statePaths, stdout: { write() {} }, input: JSON.stringify({ session_id: 's1' }) });
+  const prompt = (text) => runUserPromptSubmit({ env: h.env, input: JSON.stringify({ prompt: text, session_id: 's1' }), stdout: { write() {} } });
+  prompt('fix the parser');
+  assert.ok(!marker(h, PROMPT_SUBMIT_DONE));
+  prompt('sando telemetry no');
+  assert.equal(readTelemetryConfig(h.configPath).consent_state, 'declined');
+  assert.ok(marker(h, PROMPT_SUBMIT_DONE));
+});
+
+test('an unanswered question closes UserPromptSubmit at the first prompt of a later session', () => {
+  const h = harness();
+  runSessionStart({ env: h.env, configPath: h.configPath, statePaths: h.statePaths, stdout: { write() {} }, input: JSON.stringify({ session_id: 's1' }) });
+  runUserPromptSubmit({ env: h.env, input: JSON.stringify({ prompt: 'hello', session_id: 's2' }), stdout: { write() {} } });
+  assert.ok(marker(h, PROMPT_SUBMIT_DONE));
+  assert.equal(readTelemetryConfig(h.configPath).consent_state, 'asked');
+});
+
+test('an install that was already asked switches both hooks off at the next SessionStart', () => {
+  const h = harness();
+  enableTelemetry({ configPath: h.configPath, answer: 'maybe', interactive: true });
+  runSessionStart({ env: h.env, configPath: h.configPath, statePaths: h.statePaths, stdout: { write() {} } });
+  assert.ok(marker(h, SESSION_START_DONE));
+  assert.ok(marker(h, PROMPT_SUBMIT_DONE));
+});
+
+test('the hooks.json shell gate stops starting node once the marker exists', (t) => {
+  const root = path.resolve(import.meta.dirname, '../../..');
+  for (const [bundle, rootEnv] of [['plugins/sando', 'PLUGIN_ROOT'], ['adapters/claude/sando', 'CLAUDE_PLUGIN_ROOT']]) {
+    const h = harness();
+    t.after(() => fs.rmSync(h.directory, { recursive: true, force: true }));
+    // A `node` shim that records each start, so the test sees whether the gate let node run.
+    const bin = path.join(h.directory, 'bin');
+    const starts = path.join(h.directory, 'starts');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh\necho x >> '${starts}'\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+    const hooks = JSON.parse(fs.readFileSync(path.join(root, bundle, 'hooks/hooks.json'), 'utf8')).hooks;
+    const env = { ...process.env, ...h.env, PATH: `${bin}:${process.env.PATH}`, [rootEnv]: path.join(root, bundle) };
+    const run = (event, input) => {
+      const result = spawnSync('sh', ['-c', hooks[event][0].hooks[0].command], { input, encoding: 'utf8', env });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const count = () => (fs.existsSync(starts) ? fs.readFileSync(starts, 'utf8').split('\n').filter(Boolean).length : 0);
+    const session = JSON.stringify({ session_id: 's1' });
+
+    assert.equal(typeof run('SessionStart', session).systemMessage, 'string', bundle);
+    assert.deepEqual(run('SessionStart', session), {}, bundle);
+    assert.equal(count(), 1, `${bundle}: SessionStart started node after its first run`);
+    assert.deepEqual(run('UserPromptSubmit', JSON.stringify({ prompt: 'hello', session_id: 's2' })), {}, bundle);
+    assert.deepEqual(run('UserPromptSubmit', JSON.stringify({ prompt: 'hello', session_id: 's3' })), {}, bundle);
+    assert.equal(count(), 2, `${bundle}: UserPromptSubmit started node after the window closed`);
   }
 });

@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"",
+            "command": "d=\"$XDG_CONFIG_HOME\"; [ -n \"$d\" ] || d=\"$HOME/.config\"; if [ -e \"$d/sando/session-start.done\" ]; then echo '{}'; else exec node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"; fi",
             "timeout": 5
           }
         ]
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"",
+            "command": "d=\"$XDG_CONFIG_HOME\"; [ -n \"$d\" ] || d=\"$HOME/.config\"; if [ -e \"$d/sando/user-prompt-submit.done\" ]; then echo '{}'; else exec node \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs\"; fi",
             "timeout": 1
           }
         ]
