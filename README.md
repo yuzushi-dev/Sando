@@ -39,7 +39,7 @@ numbers were measured before that and exclude them. Method and per-corpus variat
 
 ## Install
 
-Requirements: Claude Code or Codex, and Node.js `>=22.22.0 <23` with `node` on `PATH`
+Requirements: Claude Code or Codex, and Node.js `>=22.23.4 <23` with `node` on `PATH`
 (`node --version`). Each marketplace source ships its hooks and bundles, so there is no build
 step.
 
@@ -107,7 +107,7 @@ host (Claude PostToolUse hook | Codex shell routing)
   accounting launchers are likewise manual entrypoints. Sando changes no Claude or Codex global
   configuration, and telemetry is off until you choose.
 
-Release notes: [Sando 0.8.3](docs/changelogs/0.8.3.md). Development branch: `main`.
+Release notes: [Sando 0.8.4](docs/changelogs/0.8.4.md). Development branch: `main`.
 Telemetry is off by default — see the [full disclosure](TELEMETRY.md).
 
 API cost estimates require an explicit versioned profile and complete per-request

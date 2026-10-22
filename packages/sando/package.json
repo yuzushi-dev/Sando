@@ -1,6 +1,6 @@
 {
   "name": "sandoichi",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Bound repeated tool-output context in Claude Code and Codex with deterministic local routing and provider accounting.",
   "license": "MIT",
   "author": "yuzushi",
@@ -12,7 +12,7 @@
   "homepage": "https://github.com/yuzushi-dev/Sando#readme",
   "type": "module",
   "engines": {
-    "node": ">=22.22.0 <23"
+    "node": ">=22.23.4 <23"
   },
   "exports": {
     ".": "./index.mjs"

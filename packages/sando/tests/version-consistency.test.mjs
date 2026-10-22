@@ -28,6 +28,16 @@ test('all local Sando release metadata uses the package version', () => {
   assert.deepEqual(observed, observed.map((entry) => ({ ...entry, version: canonical })));
 });
 
+test('runtime requirements and release workflows pin the canary-verified Node.js floor', () => {
+  assert.equal(readField('package.json', ['engines', 'node']), '>=22.23.4 <23');
+  assert.equal(readField('packages/sando/package.json', ['engines', 'node']), '>=22.23.4 <23');
+
+  for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/publish-npm.yml']) {
+    const source = fs.readFileSync(path.join(ROOT, workflow), 'utf8');
+    assert.ok(source.includes("node-version: '22.23.4'"), `${workflow} must use the canary-verified Node.js release`);
+  }
+});
+
 test('telemetry entrypoints use the shared runtime version module', () => {
   const entrypoints = [
     'packages/sando/src/hook-cli.mjs',

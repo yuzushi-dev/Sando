@@ -1,10 +1,10 @@
 {
   "name": "sando",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.22.0 <23"
+    "node": ">=22.23.4 <23"
   },
   "scripts": {
     "test": "npm run test:package && npm run test:bundles",
